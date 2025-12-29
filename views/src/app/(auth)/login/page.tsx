@@ -1,24 +1,51 @@
+
 "use client";
 
 import { motion } from "framer-motion";
-import { Lock, Mail, ArrowRight } from "lucide-react";
+import { Lock, Mail, ArrowRight, AlertCircle } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { useRouter } from "next/navigation";
+import { api } from "@/lib/api";
+import { useAuthStore } from "@/lib/store";
 
 function cn(...inputs: (string | undefined | null | false)[]) {
     return twMerge(clsx(inputs));
 }
 
 export default function LoginPage() {
-    const [isLoading, setIsLoading] = useState(false);
+    const router = useRouter();
+    const setAuth = useAuthStore((state) => state.setAuth);
 
-    const handleLogin = async (e: React.FormEvent) => {
+    const [formData, setFormData] = useState({
+        email: "",
+        password: "",
+    });
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setIsLoading(true);
-        // Simulate login
-        setTimeout(() => setIsLoading(false), 2000);
+        setError(null);
+
+        try {
+            const res = await api.post("/auth/login", formData);
+
+            // Store user and token
+            setAuth(res.data.data, res.data.data.token);
+
+            // Redirect to dashboard
+            router.push("/dashboard");
+        } catch (err: any) {
+            setError(
+                err.response?.data?.message || "Something went wrong. Please try again."
+            );
+        } finally {
+            setIsLoading(false);
+        }
     };
 
     return (
@@ -51,7 +78,18 @@ export default function LoginPage() {
                     <p className="text-zinc-500 text-sm">Access your financial vault</p>
                 </div>
 
-                <form onSubmit={handleLogin} className="space-y-6">
+                {error && (
+                    <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm flex items-center gap-2"
+                    >
+                        <AlertCircle className="w-4 h-4" />
+                        {error}
+                    </motion.div>
+                )}
+
+                <form onSubmit={handleSubmit} className="space-y-6">
                     <div className="space-y-4">
                         <div className="group">
                             <div className="relative">
@@ -59,6 +97,8 @@ export default function LoginPage() {
                                 <input
                                     type="email"
                                     placeholder="Email Address"
+                                    value={formData.email}
+                                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                                     className="w-full bg-zinc-900/50 border-b border-zinc-800 focus:border-purple-500 text-zinc-300 placeholder:text-zinc-600 pl-10 pr-4 py-3 outline-none transition-all duration-300 rounded-t-sm"
                                     required
                                 />
@@ -71,6 +111,8 @@ export default function LoginPage() {
                                 <input
                                     type="password"
                                     placeholder="Password"
+                                    value={formData.password}
+                                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                                     className="w-full bg-zinc-900/50 border-b border-zinc-800 focus:border-purple-500 text-zinc-300 placeholder:text-zinc-600 pl-10 pr-4 py-3 outline-none transition-all duration-300 rounded-t-sm"
                                     required
                                 />
@@ -117,3 +159,4 @@ export default function LoginPage() {
         </div>
     );
 }
+

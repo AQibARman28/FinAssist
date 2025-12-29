@@ -1,31 +1,45 @@
 "use client";
 
-import { ShoppingBag, Coffee, Car, Home } from "lucide-react";
+import { ShoppingBag, Coffee, Car, Home, CreditCard, DollarSign } from "lucide-react";
+import { format } from "date-fns";
+import { CATEGORY_ICONS_MAP } from "@/components/dashboard/expenses/ExpenseList";
 
-const transactions = [
-    { id: 1, name: "Grocery Shopping", date: "Today, 10:45 AM", amount: "-$125.00", icon: ShoppingBag, color: "bg-orange-500/10 text-orange-400" },
-    { id: 2, name: "Starbucks Coffee", date: "Today, 08:30 AM", amount: "-$5.50", icon: Coffee, color: "bg-amber-500/10 text-amber-400" },
-    { id: 3, name: "Uber Ride", date: "Yesterday, 6:20 PM", amount: "-$24.00", icon: Car, color: "bg-blue-500/10 text-blue-400" },
-    { id: 4, name: "Rent Payment", date: "Oct 01, 2024", amount: "-$1,200.00", icon: Home, color: "bg-purple-500/10 text-purple-400" },
-];
+interface Transaction {
+    _id: string;
+    title: string;
+    amount: number;
+    date: string;
+    category: string;
+}
 
-export function RecentTransactions() {
+interface RecentTransactionsProps {
+    transactions: Transaction[];
+}
+
+export function RecentTransactions({ transactions }: RecentTransactionsProps) {
+    if (transactions.length === 0) {
+        return <div className="text-zinc-500 text-sm text-center py-10">No recent transactions</div>;
+    }
+
     return (
         <div className="space-y-4">
-            {transactions.map((tx) => (
-                <div key={tx.id} className="flex items-center justify-between p-3 rounded-2xl hover:bg-white/5 transition-colors cursor-pointer group">
-                    <div className="flex items-center gap-4">
-                        <div className={`p-3 rounded-xl ${tx.color} group-hover:scale-105 transition-transform`}>
-                            <tx.icon className="w-5 h-5" />
+            {transactions.map((tx) => {
+                const Icon = CATEGORY_ICONS_MAP[tx.category] || CreditCard;
+                return (
+                    <div key={tx._id} className="flex items-center justify-between p-3 rounded-2xl hover:bg-white/5 transition-colors cursor-pointer group">
+                        <div className="flex items-center gap-4">
+                            <div className={`p-3 rounded-xl bg-zinc-800 text-purple-400 group-hover:scale-105 transition-transform`}>
+                                <Icon className="w-5 h-5" />
+                            </div>
+                            <div>
+                                <h4 className="text-white font-medium text-sm">{tx.title}</h4>
+                                <p className="text-zinc-500 text-xs">{format(new Date(tx.date), "MMM d, h:mm a")}</p>
+                            </div>
                         </div>
-                        <div>
-                            <h4 className="text-white font-medium text-sm">{tx.name}</h4>
-                            <p className="text-zinc-500 text-xs">{tx.date}</p>
-                        </div>
+                        <span className="text-white font-medium text-sm">-${tx.amount.toLocaleString()}</span>
                     </div>
-                    <span className="text-white font-medium text-sm">{tx.amount}</span>
-                </div>
-            ))}
+                );
+            })}
         </div>
     );
 }

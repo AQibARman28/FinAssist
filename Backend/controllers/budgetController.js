@@ -4,26 +4,24 @@ const Expense = require('../models/Expense');
 // @desc    Create new budget
 // @route   POST /api/budgets
 // @access  Private
+// @desc    Create or Update budget
+// @route   POST /api/budgets
+// @access  Private
 const createBudget = async (req, res) => {
     try {
         const { category, limit, month, year, alertThreshold } = req.body;
 
         // Check if budget already exists for this category/month/year
-        const existingBudget = await Budget.findOne({
+        let budget = await Budget.findOne({
             user: req.user._id,
             category,
             month,
             year
         });
 
-        if (existingBudget) {
-            return res.status(400).json({
-                success: false,
-                message: 'Budget already exists for this category and month'
-            });
-        }
-
-        // Calculate current spent amount for this category/month
+        // Calculate current spent amount for this category/month if creating new or updating logic requires it
+        // Note: For simple limit update, we might not strictly need to recalculate spent if it's already coherent,
+        // but best practice is to ensure it's up to date.
         const startDate = new Date(year, month - 1, 1);
         const endDate = new Date(year, month, 0, 23, 59, 59);
 
@@ -45,19 +43,29 @@ const createBudget = async (req, res) => {
 
         const spent = spentResult.length > 0 ? spentResult[0].total : 0;
 
-        const budget = await Budget.create({
-            user: req.user._id,
-            category,
-            limit,
-            spent,
-            month,
-            year,
-            alertThreshold: alertThreshold || 80
-        });
+        if (budget) {
+            // Update existing budget
+            budget.limit = limit;
+            budget.spent = spent; // Refresh spent just in case
+            if (alertThreshold) budget.alertThreshold = alertThreshold;
+            await budget.save();
+        } else {
+            // Create new budget
+            budget = await Budget.create({
+                user: req.user._id,
+                category,
+                limit,
+                spent,
+                month,
+                year,
+                alertThreshold: alertThreshold || 80
+            });
+        }
 
-        res.status(201).json({
+        res.status(200).json({
             success: true,
-            data: budget
+            data: budget,
+            message: budget.isNew ? 'Budget created' : 'Budget updated'
         });
     } catch (error) {
         console.error('Create budget error:', error);

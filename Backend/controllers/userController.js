@@ -8,6 +8,14 @@ const registerUser = async (req, res) => {
     try {
         const { name, email, password, currency } = req.body;
 
+        // Validation
+        if (!name || !email || !password) {
+            return res.status(400).json({
+                success: false,
+                message: 'Please include all fields'
+            });
+        }
+
         // Check if user exists
         const userExists = await User.findOne({ email });
         if (userExists) {
@@ -36,17 +44,22 @@ const registerUser = async (req, res) => {
                     token: generateToken(user._id)
                 }
             });
-        } else {
-            res.status(400).json({
-                success: false,
-                message: 'Invalid user data'
-            });
         }
     } catch (error) {
         console.error('Register error:', error);
+
+        // Handle Mongoose Validation Errors
+        if (error.name === 'ValidationError') {
+            const messages = Object.values(error.errors).map(val => val.message);
+            return res.status(400).json({
+                success: false,
+                message: messages.join(', ') || 'Validation Error'
+            });
+        }
+
         res.status(500).json({
             success: false,
-            message: 'Server error during registration'
+            message: error.message || 'Server error during registration'
         });
     }
 };

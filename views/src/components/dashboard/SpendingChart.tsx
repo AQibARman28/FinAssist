@@ -2,17 +2,19 @@
 
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 
-const data = [
-    { name: "Mon", amount: 120 },
-    { name: "Tue", amount: 250 },
-    { name: "Wed", amount: 180 },
-    { name: "Thu", amount: 300 },
-    { name: "Fri", amount: 280 },
-    { name: "Sat", amount: 350 },
-    { name: "Sun", amount: 210 },
-];
+interface SpendingChartProps {
+    data: { name: string; amount: number }[];
+}
 
-export function SpendingChart() {
+export function SpendingChart({ data }: SpendingChartProps) {
+    if (!data || data.length === 0) {
+        return (
+            <div className="h-[300px] w-full mt-4 flex items-center justify-center text-zinc-600">
+                No spending data available
+            </div>
+        );
+    }
+
     return (
         <div className="h-[300px] w-full mt-4">
             <ResponsiveContainer width="100%" height="100%">
@@ -44,6 +46,7 @@ export function SpendingChart() {
                             padding: '12px'
                         }}
                         itemStyle={{ color: '#e4e4e7' }}
+                        formatter={(value: number) => [`$${value}`, "Amount"]}
                     />
                     <Area
                         type="monotone"
