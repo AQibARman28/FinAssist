@@ -4,7 +4,7 @@ const {
     recurringExpenses,
     highSpendingCategories,
     expenseIncomeRatio
-} = require('../Controllers/analyticsController');
+} = require('../controllers/analyticsController');
 const { protect } = require('../middleware/authMiddleware');
 
 const router = express.Router();

@@ -1,5 +1,5 @@
 const express = require('express');
-const { budgetOptimization, smartTips, financialHealthScore } = require('../Controllers/aiController');
+const { budgetOptimization, smartTips, financialHealthScore } = require('../controllers/aiController');
 const { protect } = require('../middleware/authMiddleware');
 
 const router = express.Router();
