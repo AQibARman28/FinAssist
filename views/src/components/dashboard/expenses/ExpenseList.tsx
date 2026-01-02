@@ -29,6 +29,9 @@ const CATEGORY_ICONS: Record<string, any> = {
     'Other': HelpCircle
 };
 
+// Export for use in other components
+export const CATEGORY_ICONS_MAP = CATEGORY_ICONS;
+
 export function ExpenseList({ refreshTrigger }: ExpenseListProps) {
     const [expenses, setExpenses] = useState<Expense[]>([]);
     const [isLoading, setIsLoading] = useState(true);

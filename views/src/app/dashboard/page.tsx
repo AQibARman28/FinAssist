@@ -1,8 +1,3 @@
-import { StatCard } from "@/components/dashboard/StatCard";
-import { SpendingChart } from "@/components/dashboard/SpendingChart";
-import { RecentTransactions } from "@/components/dashboard/RecentTransactions";
-import { Wallet, CreditCard, TrendingUp, Bell } from "lucide-react";
-
 "use client";
 
 import { useEffect, useState } from "react";
@@ -11,7 +6,7 @@ import { SpendingChart } from "@/components/dashboard/SpendingChart";
 import { RecentTransactions } from "@/components/dashboard/RecentTransactions";
 import { Wallet, CreditCard, TrendingUp, Bell, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
-import { useAuthStore } from "@/store/useAuthStore";
+import { useAuthStore } from "@/lib/store";
 
 export default function DashboardPage() {
     const { user } = useAuthStore();

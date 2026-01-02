@@ -21,5 +21,16 @@ router.route('/')
     .get(getGoals)
     .post(createGoal);
 
+
 router.get('/dashboard', getGoalsDashboard);
 router.get('/reminders', getGoalReminders);
+
+router.route('/:id')
+    .get(getGoalById)
+    .put(updateGoal)
+    .delete(deleteGoal);
+
+router.post('/:id/contribute', addContribution);
+router.get('/:id/progress', getGoalProgress);
+
+module.exports = router;

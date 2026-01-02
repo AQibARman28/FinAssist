@@ -22,10 +22,12 @@ app.use(cors({
 }));
 
 // Routes
-app.use('/api/auth', require('./routes/authRoutes'));
-app.use('/api/expenses', require('./routes/expenseRoutes'));
-app.use('/api/budgets', require('./routes/budgetRoutes'));
-app.use('/api/goals', require('./routes/goalRoutes'));
+app.use('/api/auth', require('./Routes/authRoutes'));
+app.use('/api/expenses', require('./Routes/expenseRoutes'));
+app.use('/api/budgets', require('./Routes/budgetRoutes'));
+app.use('/api/goals', require('./Routes/goalsRoutes'));
+app.use('/api/analytics', require('./Routes/analyticsRoutes'));
+app.use('/api/ai', require('./Routes/aiRoutes'));
 
 // Health check route
 app.get('/api/health', (req, res) => {

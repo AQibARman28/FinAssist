@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Wallet, CreditCard, Target, Settings, LogOut } from "lucide-react";
+import { LayoutDashboard, Wallet, CreditCard, Target, Settings, LogOut, PieChart } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const menuItems = [
     { icon: LayoutDashboard, label: "Dashboard", href: "/dashboard" },
+    { icon: PieChart, label: "Analytics", href: "/dashboard/analytics" },
     { icon: Wallet, label: "Budgets", href: "/dashboard/budgets" },
     { icon: CreditCard, label: "Expenses", href: "/dashboard/expenses" },
     { icon: Target, label: "Goals", href: "/dashboard/goals" },
