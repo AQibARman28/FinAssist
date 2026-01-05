@@ -208,25 +208,62 @@ const deleteBudget = async (req, res) => {
 const getBudgetTracking = async (req, res) => {
     try {
         const { year, month } = req.params;
+        const userId = req.user._id;
 
+        const startDate = new Date(year, month - 1, 1);
+        const endDate = new Date(year, month, 0, 23, 59, 59);
+
+        // 1. Get all budgets for the month
         const budgets = await Budget.find({
-            user: req.user._id,
+            user: userId,
             month: parseInt(month),
             year: parseInt(year),
             isActive: true
         });
 
-        const trackingData = budgets.map(budget => ({
-            _id: budget._id,
-            category: budget.category,
-            limit: budget.limit,
-            spent: budget.spent,
-            remaining: budget.remainingAmount,
-            usagePercentage: budget.usagePercentage,
-            isOverLimit: budget.isOverLimit,
-            isNearLimit: budget.isNearLimit,
-            alertThreshold: budget.alertThreshold
-        }));
+        // 2. Get all expenses for the month grouped by category
+        const expenses = await Expense.aggregate([
+            {
+                $match: {
+                    user: userId,
+                    date: { $gte: startDate, $lte: endDate }
+                }
+            },
+            {
+                $group: {
+                    _id: "$category",
+                    totalSpent: { $sum: "$amount" }
+                }
+            }
+        ]);
+
+        // 3. Merge expenses with budgets
+        const budgetMap = new Map();
+        budgets.forEach(b => budgetMap.set(b.category, b));
+
+        const categories = new Set([
+            ...budgets.map(b => b.category),
+            ...expenses.map(e => e._id)
+        ]);
+
+        const trackingData = Array.from(categories).map(cat => {
+            const budget = budgetMap.get(cat);
+            const expense = expenses.find(e => e._id === cat);
+            const spent = expense ? expense.totalSpent : 0;
+            const limit = budget ? budget.limit : 0;
+
+            return {
+                _id: budget ? budget._id : `virtual-${cat}`,
+                category: cat,
+                limit: limit,
+                spent: spent,
+                remaining: limit - spent,
+                usagePercentage: limit > 0 ? Math.round((spent / limit) * 100) : 0,
+                isOverLimit: limit > 0 && spent > limit,
+                isNearLimit: limit > 0 && spent > (limit * (budget?.alertThreshold || 80)) / 100,
+                hasBudget: !!budget
+            };
+        });
 
         res.json({
             success: true,

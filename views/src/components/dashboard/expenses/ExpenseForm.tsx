@@ -22,14 +22,14 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!formData.title || !formData.amount || !formData.category) return;
+        if (!formData.title || !formData.amount) return;
 
         setIsLoading(true);
         try {
             await api.post("/expenses", {
                 description: formData.title,
                 amount: parseFloat(formData.amount),
-                category: formData.category,
+                category: formData.category || undefined,
                 date: formData.date
             });
 
@@ -73,16 +73,27 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
                     />
                 </div>
 
+                {/* Date Input */}
+                <div className="w-full md:w-1/4 space-y-2">
+                    <label className="text-xs text-zinc-500">Date</label>
+                    <input
+                        type="date"
+                        value={formData.date}
+                        onChange={(e) => setFormData({ ...formData, date: e.target.value })}
+                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-zinc-300 focus:outline-none focus:border-purple-500/50 transition-colors cursor-pointer"
+                        required
+                    />
+                </div>
+
                 {/* Category Select */}
                 <div className="w-full md:w-1/4 space-y-2">
-                    <label className="text-xs text-zinc-500">Category</label>
+                    <label className="text-xs text-zinc-500">Category (Optional)</label>
                     <select
                         value={formData.category}
                         onChange={(e) => setFormData({ ...formData, category: e.target.value })}
                         className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-zinc-300 focus:outline-none focus:border-purple-500/50 transition-colors appearance-none cursor-pointer"
-                        required
                     >
-                        <option value="" disabled>Select Category</option>
+                        <option value="">Auto-Detect</option>
                         {CATEGORIES.map(cat => <option key={cat} value={cat}>{cat}</option>)}
                     </select>
                 </div>

@@ -12,7 +12,6 @@ export default function DashboardPage() {
     const { user } = useAuthStore();
     const [loading, setLoading] = useState(true);
     const [stats, setStats] = useState({
-        totalSaved: 0,
         monthlySpend: 0,
         recentTransactions: [],
         chartData: [] as { name: string, amount: number }[]
@@ -29,23 +28,16 @@ export default function DashboardPage() {
                 const expenseRes = await api.get(`/expenses/summary/${year}/${month}`);
                 const monthlySpend = expenseRes.data.data.totalSpent || 0;
 
-                // Process chart data (summary by category as a proxy for trend, or dummy daily data if backend doesn't provide daily breakdown yet)
-                // For now, let's map categories to chart for visualization
                 const chartData = expenseRes.data.data.summary.map((item: any) => ({
                     name: item.category,
                     amount: item.amount
                 }));
 
                 // 2. Fetch Recent Transactions
-                const txRes = await api.get("/expenses"); // Assumes this returns list sorted by date desc
+                const txRes = await api.get("/expenses");
                 const recentTransactions = txRes.data.data.slice(0, 5);
 
-                // 3. Fetch Goals for "Total Saved" (Total Assets)
-                const goalsRes = await api.get("/goals/dashboard");
-                const totalSaved = goalsRes.data.data.totalSavedAmount || 0;
-
                 setStats({
-                    totalSaved,
                     monthlySpend,
                     recentTransactions,
                     chartData
@@ -78,16 +70,7 @@ export default function DashboardPage() {
             </div>
 
             {/* Stats Bento Grid - Top Row */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <StatCard
-                    title="Total Assets"
-                    value={`$${stats.totalSaved.toLocaleString()}`}
-                    trend="In Vaults"
-                    trendUp={true}
-                    icon={Wallet}
-                    gradient={true}
-                    className="col-span-1 md:col-span-1 bg-gradient-to-br from-yellow-900/20 to-black border-yellow-500/20"
-                />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <StatCard
                     title="Monthly Spend"
                     value={`$${stats.monthlySpend.toLocaleString()}`}
