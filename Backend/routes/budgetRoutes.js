@@ -20,13 +20,14 @@ router.route('/')
     .get(getBudgets)
     .post(createBudget);
 
+// Specific routes MUST come before /:id to avoid being captured as an id param
+router.get('/tracking/:year/:month', getBudgetTracking);
+router.get('/alerts', getBudgetAlerts);
+router.post('/reset', resetBudgets);
+
 router.route('/:id')
     .get(getBudgetById)
     .put(updateBudget)
     .delete(deleteBudget);
-
-router.get('/tracking/:year/:month', getBudgetTracking);
-router.get('/alerts', getBudgetAlerts);
-router.post('/reset', resetBudgets);
 
 module.exports = router;

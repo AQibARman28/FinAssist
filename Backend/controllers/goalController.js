@@ -1,361 +1,257 @@
 const Goal = require('../models/Goal');
+const { encrypt, safeDecrypt, generateHMAC, verifyHMAC } = require('../utils/encryption');
 
-// @desc    Create new goal
-// @route   POST /api/goals
-// @access  Private
+function decryptGoal(goal, dataKey) {
+    const obj         = goal.toJSON ? goal.toJSON() : { ...goal };
+    obj.title         = safeDecrypt(goal.title,       dataKey);
+    obj.description   = safeDecrypt(goal.description, dataKey);
+    return obj;
+}
+
+function goalHmacPayload(title, targetAmount, goalType) {
+    return { title, targetAmount, goalType };
+}
+
+// POST /api/goals
 const createGoal = async (req, res) => {
     try {
         const { title, description, targetAmount, targetDate, goalType } = req.body;
 
+        const hmac     = generateHMAC(goalHmacPayload(title, targetAmount, goalType), req.user._id);
+        const encTitle = encrypt(title, req.dataKey);
+        const encDesc  = description ? encrypt(description, req.dataKey) : undefined;
+
         const goal = await Goal.create({
             user: req.user._id,
-            title,
-            description,
+            title: encTitle,
+            description: encDesc,
             targetAmount,
             targetDate,
-            goalType
+            goalType,
+            hmac
         });
 
-        res.status(201).json({
-            success: true,
-            data: goal
-        });
+        res.status(201).json({ success: true, data: decryptGoal(goal, req.dataKey) });
     } catch (error) {
         console.error('Create goal error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Server error creating goal'
-        });
+        res.status(500).json({ success: false, message: 'Server error creating goal' });
     }
 };
 
-// @desc    Get all goals for user
-// @route   GET /api/goals
-// @access  Private
+// GET /api/goals
 const getGoals = async (req, res) => {
     try {
         const { status, goalType } = req.query;
 
         const query = { user: req.user._id };
-
-        if (status) query.status = status;
+        if (status)   query.status   = status;
         if (goalType) query.goalType = goalType;
 
         const goals = await Goal.find(query).sort({ createdAt: -1 });
 
-        res.json({
-            success: true,
-            data: goals
-        });
+        res.json({ success: true, data: goals.map(g => decryptGoal(g, req.dataKey)) });
     } catch (error) {
         console.error('Get goals error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Server error fetching goals'
-        });
+        res.status(500).json({ success: false, message: 'Server error fetching goals' });
     }
 };
 
-// @desc    Get goal by ID
-// @route   GET /api/goals/:id
-// @access  Private
+// GET /api/goals/:id
 const getGoalById = async (req, res) => {
     try {
-        const goal = await Goal.findOne({
-            _id: req.params.id,
-            user: req.user._id
-        });
+        const goal = await Goal.findOne({ _id: req.params.id, user: req.user._id });
+        if (!goal) return res.status(404).json({ success: false, message: 'Goal not found' });
 
-        if (!goal) {
-            return res.status(404).json({
-                success: false,
-                message: 'Goal not found'
-            });
+        const plainTitle = safeDecrypt(goal.title, req.dataKey);
+        if (goal.hmac && !verifyHMAC(goalHmacPayload(plainTitle, goal.targetAmount, goal.goalType), goal.hmac, req.user._id)) {
+            console.warn(`HMAC integrity failure on goal ${goal._id}`);
         }
 
-        res.json({
-            success: true,
-            data: goal
-        });
+        res.json({ success: true, data: decryptGoal(goal, req.dataKey) });
     } catch (error) {
         console.error('Get goal error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Server error fetching goal'
-        });
+        res.status(500).json({ success: false, message: 'Server error fetching goal' });
     }
 };
 
-// @desc    Update goal
-// @route   PUT /api/goals/:id
-// @access  Private
+// PUT /api/goals/:id
 const updateGoal = async (req, res) => {
     try {
-        const goal = await Goal.findOne({
-            _id: req.params.id,
-            user: req.user._id
-        });
+        const goal = await Goal.findOne({ _id: req.params.id, user: req.user._id });
+        if (!goal) return res.status(404).json({ success: false, message: 'Goal not found' });
 
-        if (!goal) {
-            return res.status(404).json({
-                success: false,
-                message: 'Goal not found'
-            });
+        const updates = {};
+        if (req.body.description  !== undefined) updates.description  = encrypt(req.body.description, req.dataKey);
+        if (req.body.targetAmount !== undefined) updates.targetAmount = req.body.targetAmount;
+        if (req.body.targetDate   !== undefined) updates.targetDate   = req.body.targetDate;
+        if (req.body.goalType     !== undefined) updates.goalType     = req.body.goalType;
+        if (req.body.status       !== undefined) updates.status       = req.body.status;
+
+        let finalTitle = safeDecrypt(goal.title, req.dataKey);
+        if (req.body.title !== undefined) {
+            finalTitle       = req.body.title;
+            updates.title    = encrypt(req.body.title, req.dataKey);
         }
+
+        const finalTargetAmount = updates.targetAmount ?? goal.targetAmount;
+        const finalGoalType     = updates.goalType     ?? goal.goalType;
+        updates.hmac = generateHMAC(goalHmacPayload(finalTitle, finalTargetAmount, finalGoalType), req.user._id);
 
         const updatedGoal = await Goal.findByIdAndUpdate(
-            req.params.id,
-            req.body,
-            { new: true, runValidators: true }
+            req.params.id, updates, { new: true, runValidators: true }
         );
 
-        res.json({
-            success: true,
-            data: updatedGoal
-        });
+        res.json({ success: true, data: decryptGoal(updatedGoal, req.dataKey) });
     } catch (error) {
         console.error('Update goal error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Server error updating goal'
-        });
+        res.status(500).json({ success: false, message: 'Server error updating goal' });
     }
 };
 
-// @desc    Delete goal
-// @route   DELETE /api/goals/:id
-// @access  Private
+// DELETE /api/goals/:id
 const deleteGoal = async (req, res) => {
     try {
-        const goal = await Goal.findOne({
-            _id: req.params.id,
-            user: req.user._id
-        });
-
-        if (!goal) {
-            return res.status(404).json({
-                success: false,
-                message: 'Goal not found'
-            });
-        }
+        const goal = await Goal.findOne({ _id: req.params.id, user: req.user._id });
+        if (!goal) return res.status(404).json({ success: false, message: 'Goal not found' });
 
         await Goal.findByIdAndDelete(req.params.id);
-
-        res.json({
-            success: true,
-            message: 'Goal deleted successfully'
-        });
+        res.json({ success: true, message: 'Goal deleted successfully' });
     } catch (error) {
         console.error('Delete goal error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Server error deleting goal'
-        });
+        res.status(500).json({ success: false, message: 'Server error deleting goal' });
     }
 };
 
-// @desc    Add contribution to goal
-// @route   POST /api/goals/:id/contribute
-// @access  Private
+// POST /api/goals/:id/contribute
 const addContribution = async (req, res) => {
     try {
         const { amount, note } = req.body;
 
-        const goal = await Goal.findOne({
-            _id: req.params.id,
-            user: req.user._id
-        });
-
-        if (!goal) {
-            return res.status(404).json({
-                success: false,
-                message: 'Goal not found'
-            });
-        }
+        const goal = await Goal.findOne({ _id: req.params.id, user: req.user._id });
+        if (!goal) return res.status(404).json({ success: false, message: 'Goal not found' });
 
         if (goal.status === 'Completed') {
-            return res.status(400).json({
-                success: false,
-                message: 'Cannot add contribution to completed goal'
-            });
+            return res.status(400).json({ success: false, message: 'Cannot add contribution to completed goal' });
         }
 
-        goal.contributions.push({
-            amount,
-            note,
-            date: new Date()
-        });
-
+        goal.contributions.push({ amount, note, date: new Date() });
         await goal.save();
 
-        res.json({
-            success: true,
-            data: goal,
-            message: 'Contribution added successfully'
-        });
+        res.json({ success: true, data: decryptGoal(goal, req.dataKey), message: 'Contribution added successfully' });
     } catch (error) {
         console.error('Add contribution error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Server error adding contribution'
-        });
+        res.status(500).json({ success: false, message: 'Server error adding contribution' });
     }
 };
 
-// @desc    Get goal progress
-// @route   GET /api/goals/:id/progress
-// @access  Private
+// GET /api/goals/:id/progress
 const getGoalProgress = async (req, res) => {
     try {
-        const goal = await Goal.findOne({
-            _id: req.params.id,
-            user: req.user._id
-        });
+        const goal = await Goal.findOne({ _id: req.params.id, user: req.user._id });
+        if (!goal) return res.status(404).json({ success: false, message: 'Goal not found' });
 
-        if (!goal) {
-            return res.status(404).json({
-                success: false,
-                message: 'Goal not found'
-            });
-        }
-
-        const progressData = {
-            goalId: goal._id,
-            title: goal.title,
-            targetAmount: goal.targetAmount,
-            currentAmount: goal.currentAmount,
-            remainingAmount: goal.remainingAmount,
-            progressPercentage: goal.progressPercentage,
-            daysRemaining: goal.daysRemaining,
-            isOverdue: goal.isOverdue,
-            status: goal.status,
-            contributions: goal.contributions.sort((a, b) => new Date(b.date) - new Date(a.date)),
-            monthlyTarget: goal.daysRemaining > 0 ? Math.ceil(goal.remainingAmount / (goal.daysRemaining / 30)) : 0
-        };
+        const plainTitle = safeDecrypt(goal.title, req.dataKey);
 
         res.json({
             success: true,
-            data: progressData
+            data: {
+                goalId:            goal._id,
+                title:             plainTitle,
+                targetAmount:      goal.targetAmount,
+                currentAmount:     goal.currentAmount,
+                remainingAmount:   goal.remainingAmount,
+                progressPercentage: goal.progressPercentage,
+                daysRemaining:     goal.daysRemaining,
+                isOverdue:         goal.isOverdue,
+                status:            goal.status,
+                contributions:     goal.contributions.sort((a, b) => new Date(b.date) - new Date(a.date)),
+                monthlyTarget:     goal.daysRemaining > 0 ? Math.ceil(goal.remainingAmount / (goal.daysRemaining / 30)) : 0
+            }
         });
     } catch (error) {
         console.error('Get goal progress error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Server error fetching goal progress'
-        });
+        res.status(500).json({ success: false, message: 'Server error fetching goal progress' });
     }
 };
 
-// @desc    Get goal reminders/nudges
-// @route   GET /api/goals/reminders
-// @access  Private
+// GET /api/goals/reminders
 const getGoalReminders = async (req, res) => {
     try {
-        const goals = await Goal.find({
-            user: req.user._id,
-            status: 'Active'
-        });
+        const goals = await Goal.find({ user: req.user._id, status: 'Active' });
 
         const reminders = [];
+        for (const goal of goals) {
+            const title            = safeDecrypt(goal.title, req.dataKey);
+            const daysRemaining    = goal.daysRemaining;
+            const progressPct      = goal.progressPercentage;
+            const remainingAmount  = goal.remainingAmount;
 
-        goals.forEach(goal => {
-            const daysRemaining = goal.daysRemaining;
-            const progressPercentage = goal.progressPercentage;
-            const remainingAmount = goal.remainingAmount;
-
-            // Goal is overdue
             if (goal.isOverdue) {
                 reminders.push({
-                    type: 'overdue',
-                    severity: 'high',
-                    goalId: goal._id,
-                    title: goal.title,
-                    message: `Your goal "${goal.title}" is overdue. Consider adjusting the target date or increasing contributions.`
+                    type: 'overdue', severity: 'high',
+                    goalId: goal._id, title,
+                    message: `Your goal "${title}" is overdue. Consider adjusting the target date or increasing contributions.`
                 });
-            }
-            // Goal is behind schedule
-            else if (daysRemaining > 0 && progressPercentage < 50 && daysRemaining < 90) {
-                const suggestedWeeklyAmount = Math.ceil(remainingAmount / (daysRemaining / 7));
+            } else if (daysRemaining > 0 && progressPct < 50 && daysRemaining < 90) {
+                const suggestedWeekly = Math.ceil(remainingAmount / (daysRemaining / 7));
                 reminders.push({
-                    type: 'behind_schedule',
-                    severity: 'medium',
-                    goalId: goal._id,
-                    title: goal.title,
-                    message: `You're behind on "${goal.title}". Consider adding ${suggestedWeeklyAmount} BDT weekly to stay on track.`
+                    type: 'behind_schedule', severity: 'medium',
+                    goalId: goal._id, title,
+                    message: `You're behind on "${title}". Consider adding ${suggestedWeekly} ${req.user.currency} weekly to stay on track.`
                 });
-            }
-            // Encourage regular contributions
-            else if (goal.contributions.length === 0 ||
-                (goal.contributions.length > 0 &&
-                    new Date() - new Date(goal.contributions[goal.contributions.length - 1].date) > 7 * 24 * 60 * 60 * 1000)) {
+            } else if (
+                goal.contributions.length === 0 ||
+                new Date() - new Date(goal.contributions[goal.contributions.length - 1].date) > 7 * 24 * 60 * 60 * 1000
+            ) {
                 const suggestedAmount = Math.ceil(remainingAmount / Math.max(1, daysRemaining / 30));
                 reminders.push({
-                    type: 'contribution_reminder',
-                    severity: 'low',
-                    goalId: goal._id,
-                    title: goal.title,
-                    message: `Add ${suggestedAmount} BDT to "${goal.title}" this month to stay on track.`
+                    type: 'contribution_reminder', severity: 'low',
+                    goalId: goal._id, title,
+                    message: `Add ${suggestedAmount} ${req.user.currency} to "${title}" this month to stay on track.`
                 });
             }
-        });
+        }
 
-        res.json({
-            success: true,
-            data: reminders
-        });
+        res.json({ success: true, data: reminders });
     } catch (error) {
         console.error('Get goal reminders error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Server error fetching goal reminders'
-        });
+        res.status(500).json({ success: false, message: 'Server error fetching goal reminders' });
     }
 };
 
-// @desc    Get goals dashboard
-// @route   GET /api/goals/dashboard
-// @access  Private
+// GET /api/goals/dashboard
 const getGoalsDashboard = async (req, res) => {
     try {
         const goals = await Goal.find({ user: req.user._id });
 
+        const sorted = [...goals].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
         const dashboard = {
-            totalGoals: goals.length,
-            activeGoals: goals.filter(g => g.status === 'Active').length,
-            completedGoals: goals.filter(g => g.status === 'Completed').length,
-            pausedGoals: goals.filter(g => g.status === 'Paused').length,
+            totalGoals:        goals.length,
+            activeGoals:       goals.filter(g => g.status === 'Active').length,
+            completedGoals:    goals.filter(g => g.status === 'Completed').length,
+            pausedGoals:       goals.filter(g => g.status === 'Paused').length,
             totalTargetAmount: goals.reduce((sum, g) => sum + g.targetAmount, 0),
-            totalSavedAmount: goals.reduce((sum, g) => sum + g.currentAmount, 0),
-            overallProgress: 0,
-            recentGoals: goals.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 5),
-            urgentGoals: goals.filter(g => g.status === 'Active' && g.daysRemaining < 30 && g.daysRemaining > 0)
+            totalSavedAmount:  goals.reduce((sum, g) => sum + g.currentAmount, 0),
+            overallProgress:   0,
+            recentGoals:       sorted.slice(0, 5).map(g => decryptGoal(g, req.dataKey)),
+            urgentGoals:       goals
+                .filter(g => g.status === 'Active' && g.daysRemaining < 30 && g.daysRemaining > 0)
+                .map(g => decryptGoal(g, req.dataKey))
         };
 
         if (dashboard.totalTargetAmount > 0) {
             dashboard.overallProgress = Math.round((dashboard.totalSavedAmount / dashboard.totalTargetAmount) * 100);
         }
 
-        res.json({
-            success: true,
-            data: dashboard
-        });
+        res.json({ success: true, data: dashboard });
     } catch (error) {
         console.error('Get goals dashboard error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Server error fetching goals dashboard'
-        });
+        res.status(500).json({ success: false, message: 'Server error fetching goals dashboard' });
     }
 };
 
 module.exports = {
-    createGoal,
-    getGoals,
-    getGoalById,
-    updateGoal,
-    deleteGoal,
-    addContribution,
-    getGoalProgress,
-    getGoalReminders,
-    getGoalsDashboard
+    createGoal, getGoals, getGoalById, updateGoal, deleteGoal,
+    addContribution, getGoalProgress, getGoalReminders, getGoalsDashboard
 };

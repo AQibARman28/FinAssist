@@ -18,11 +18,12 @@ router.route('/')
     .get(getExpenses)
     .post(createExpense);
 
+// Specific routes before /:id to prevent Express shadowing them
+router.get('/summary/:year/:month', getMonthlySummary);
+
 router.route('/:id')
     .get(getExpenseById)
     .put(updateExpense)
     .delete(deleteExpense);
-
-router.get('/summary/:year/:month', getMonthlySummary);
 
 module.exports = router;

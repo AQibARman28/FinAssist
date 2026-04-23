@@ -1,170 +1,173 @@
 const User = require('../models/User');
-const { generateToken } = require('../middleware/authMiddleware');
+const { generateToken, generateTempToken } = require('../middleware/authMiddleware');
+const { masterEncrypt, masterDecrypt, encrypt, safeDecrypt, hashEmail, generateDataKey } = require('../utils/encryption');
+const { generateUserKeyBundle } = require('../utils/keyManagement');
 
-// @desc    Register new user
-// @route   POST /api/auth/register
-// @access  Public
+const buildPublicUser = (user, plainName, plainEmail) => ({
+    _id: user._id,
+    name: plainName,
+    email: plainEmail,
+    currency: user.currency,
+    role: user.role,
+    twoFactorEnabled: user.twoFactorEnabled
+});
+
+// POST /api/auth/register
 const registerUser = async (req, res) => {
     try {
         const { name, email, password, currency } = req.body;
 
-        // Validation
         if (!name || !email || !password) {
-            return res.status(400).json({
-                success: false,
-                message: 'Please include all fields'
-            });
+            return res.status(400).json({ success: false, message: 'Name, email and password are required' });
+        }
+        if (password.length < 6) {
+            return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
         }
 
-        // Check if user exists
-        const userExists = await User.findOne({ email });
-        if (userExists) {
-            return res.status(400).json({
-                success: false,
-                message: 'User already exists with this email'
-            });
+        const emailHash = hashEmail(email);
+        if (await User.findOne({ emailHash })) {
+            return res.status(400).json({ success: false, message: 'Email already registered' });
         }
 
-        // Create user
+        // Generate per-user AES data key, encrypt it with the system master key
+        const rawDataKey = generateDataKey();
+        const encryptedDataKey = masterEncrypt(rawDataKey);
+        const dataKeyBuf = Buffer.from(rawDataKey, 'hex');
+
+        // Encrypt PII
+        const encName  = encrypt(name, dataKeyBuf);
+        const encEmail = encrypt(email, dataKeyBuf);
+
+        // Generate RSA-2048 + ECC P-256 key pairs; store private keys encrypted
+        const keyBundle = generateUserKeyBundle(dataKeyBuf);
+
         const user = await User.create({
-            name,
-            email,
+            name: encName,
+            email: encEmail,
+            emailHash,
             password,
-            currency: currency || 'BDT'
+            currency: currency || 'BDT',
+            encryptedDataKey,
+            ...keyBundle
         });
 
-        if (user) {
-            res.status(201).json({
-                success: true,
-                data: {
-                    _id: user._id,
-                    name: user.name,
-                    email: user.email,
-                    currency: user.currency,
-                    token: generateToken(user._id)
-                }
-            });
-        }
+        res.status(201).json({
+            success: true,
+            data: {
+                ...buildPublicUser(user, name, email),
+                token: generateToken(user._id)
+            }
+        });
     } catch (error) {
         console.error('Register error:', error);
-
-        // Handle Mongoose Validation Errors
         if (error.name === 'ValidationError') {
-            const messages = Object.values(error.errors).map(val => val.message);
-            return res.status(400).json({
-                success: false,
-                message: messages.join(', ') || 'Validation Error'
-            });
+            const msg = Object.values(error.errors).map(e => e.message).join(', ');
+            return res.status(400).json({ success: false, message: msg });
         }
-
-        res.status(500).json({
-            success: false,
-            message: error.message || 'Server error during registration'
-        });
+        res.status(500).json({ success: false, message: 'Server error during registration' });
     }
 };
 
-// @desc    Authenticate user & get token
-// @route   POST /api/auth/login
-// @access  Public
+// POST /api/auth/login
 const loginUser = async (req, res) => {
     try {
         const { email, password } = req.body;
+        if (!email || !password) {
+            return res.status(400).json({ success: false, message: 'Email and password are required' });
+        }
 
-        // Check for user email
-        const user = await User.findOne({ email });
+        const emailHash = hashEmail(email);
+        const user = await User.findOne({ emailHash });
 
-        if (user && (await user.comparePassword(password))) {
-            res.json({
+        if (!user || !(await user.comparePassword(password))) {
+            return res.status(401).json({ success: false, message: 'Invalid email or password' });
+        }
+
+        // 2FA — issue a short-lived temp token and wait for TOTP verification
+        if (user.twoFactorEnabled) {
+            return res.json({
                 success: true,
-                data: {
-                    _id: user._id,
-                    name: user.name,
-                    email: user.email,
-                    currency: user.currency,
-                    token: generateToken(user._id)
-                }
-            });
-        } else {
-            res.status(401).json({
-                success: false,
-                message: 'Invalid email or password'
+                requires2FA: true,
+                tempToken: generateTempToken(user._id)
             });
         }
+
+        // Decrypt PII for the response
+        const rawKey = masterDecrypt(user.encryptedDataKey);
+        const dataKey = Buffer.from(rawKey, 'hex');
+
+        res.json({
+            success: true,
+            data: {
+                ...buildPublicUser(user, safeDecrypt(user.name, dataKey), safeDecrypt(user.email, dataKey)),
+                token: generateToken(user._id)
+            }
+        });
     } catch (error) {
         console.error('Login error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Server error during login'
-        });
+        res.status(500).json({ success: false, message: 'Server error during login' });
     }
 };
 
-// @desc    Get user profile
-// @route   GET /api/auth/profile
-// @access  Private
+// GET /api/auth/profile
 const getUserProfile = async (req, res) => {
     try {
-        const user = await User.findById(req.user._id).select('-password');
         res.json({
             success: true,
-            data: user
+            data: {
+                ...buildPublicUser(req.user, req.user._name, req.user._email),
+                rsaPublicKey: req.user.rsaPublicKey,
+                eccPublicKey: req.user.eccPublicKey,
+                keyVersion:   req.user.keyVersion
+            }
         });
     } catch (error) {
         console.error('Get profile error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Server error fetching profile'
-        });
+        res.status(500).json({ success: false, message: 'Server error fetching profile' });
     }
 };
 
-// @desc    Update user profile
-// @route   PUT /api/auth/profile
-// @access  Private
+// PUT /api/auth/profile
 const updateUserProfile = async (req, res) => {
     try {
         const user = await User.findById(req.user._id);
+        if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-        if (user) {
-            user.name = req.body.name || user.name;
-            user.email = req.body.email || user.email;
-            user.currency = req.body.currency || user.currency;
+        const dataKey = req.dataKey;
 
-            if (req.body.password) {
-                user.password = req.body.password;
+        if (req.body.name)     user.name  = encrypt(req.body.name, dataKey);
+        if (req.body.currency) user.currency = req.body.currency;
+
+        // Email change requires updating emailHash too
+        if (req.body.email) {
+            const newEmail = req.body.email.toLowerCase().trim();
+            const newHash  = hashEmail(newEmail);
+            const existing = await User.findOne({ emailHash: newHash });
+            if (existing && existing._id.toString() !== user._id.toString()) {
+                return res.status(400).json({ success: false, message: 'Email already in use' });
             }
-
-            const updatedUser = await user.save();
-
-            res.json({
-                success: true,
-                data: {
-                    _id: updatedUser._id,
-                    name: updatedUser.name,
-                    email: updatedUser.email,
-                    currency: updatedUser.currency,
-                    token: generateToken(updatedUser._id)
-                }
-            });
-        } else {
-            res.status(404).json({
-                success: false,
-                message: 'User not found'
-            });
+            user.email     = encrypt(newEmail, dataKey);
+            user.emailHash = newHash;
         }
+
+        if (req.body.password) user.password = req.body.password;
+
+        await user.save();
+
+        const plainName  = req.body.name  || req.user._name;
+        const plainEmail = req.body.email || req.user._email;
+
+        res.json({
+            success: true,
+            data: {
+                ...buildPublicUser(user, plainName, plainEmail),
+                token: generateToken(user._id)
+            }
+        });
     } catch (error) {
         console.error('Update profile error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Server error updating profile'
-        });
+        res.status(500).json({ success: false, message: 'Server error updating profile' });
     }
 };
 
-module.exports = {
-    registerUser,
-    loginUser,
-    getUserProfile,
-    updateUserProfile
-};
+module.exports = { registerUser, loginUser, getUserProfile, updateUserProfile };

@@ -1,29 +1,29 @@
 const Expense = require('../models/Expense');
 const Budget = require('../models/Budget');
-const User = require('../models/User');
 
-// Helper: get first and last day of a month
 const getMonthDateRange = (year, month) => {
     const start = new Date(year, month - 1, 1);
     const end = new Date(year, month, 0, 23, 59, 59);
     return { start, end };
 };
 
-// 4.1 Monthly spending analytics dashboard
 const monthlyAnalytics = async (req, res) => {
     try {
-        const { year, month } = req.query;
+        const year = parseInt(req.query.year);
+        const month = parseInt(req.query.month);
         const userId = req.user._id;
+
+        if (!year || !month || isNaN(year) || isNaN(month) || month < 1 || month > 12) {
+            return res.status(400).json({ success: false, message: 'Valid year and month are required' });
+        }
 
         const { start: currentStart, end: currentEnd } = getMonthDateRange(year, month);
 
-        // Current month expenses
         const currentExpenses = await Expense.aggregate([
             { $match: { user: userId, date: { $gte: currentStart, $lte: currentEnd } } },
             { $group: { _id: '$category', total: { $sum: '$amount' } } }
         ]);
 
-        // Previous month
         const prevMonth = month - 1 === 0 ? 12 : month - 1;
         const prevYear = month - 1 === 0 ? year - 1 : year;
         const { start: prevStart, end: prevEnd } = getMonthDateRange(prevYear, prevMonth);
@@ -33,26 +33,21 @@ const monthlyAnalytics = async (req, res) => {
             { $group: { _id: '$category', total: { $sum: '$amount' } } }
         ]);
 
-        res.json({
-            success: true,
-            data: { currentExpenses, previousExpenses }
-        });
+        res.json({ success: true, data: { currentExpenses, previousExpenses } });
     } catch (error) {
         console.error('Monthly analytics error:', error);
         res.status(500).json({ success: false, message: 'Server error' });
     }
 };
 
-// 4.2 Detect recurring expenses
 const recurringExpenses = async (req, res) => {
     try {
         const userId = req.user._id;
 
-        // Aggregate expenses by description and count occurrences
         const recurring = await Expense.aggregate([
             { $match: { user: userId } },
             { $group: { _id: '$description', count: { $sum: 1 }, total: { $sum: '$amount' } } },
-            { $match: { count: { $gte: 2 } } }, // appeared 2+ times
+            { $match: { count: { $gte: 2 } } },
             { $sort: { count: -1 } }
         ]);
 
@@ -63,12 +58,10 @@ const recurringExpenses = async (req, res) => {
     }
 };
 
-// 4.3 High-spending category highlight
 const highSpendingCategories = async (req, res) => {
     try {
         const userId = req.user._id;
 
-        // Get last 3 months total per category
         const threeMonthsAgo = new Date();
         threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
 
@@ -78,9 +71,12 @@ const highSpendingCategories = async (req, res) => {
             { $sort: { total: -1 } }
         ]);
 
-        // Highlight categories with unusually high spending
+        if (categories.length === 0) {
+            return res.json({ success: true, data: [] });
+        }
+
         const avg = categories.reduce((sum, c) => sum + c.total, 0) / categories.length;
-        const highSpending = categories.filter(c => c.total > avg * 1.5); // 50% above average
+        const highSpending = categories.filter(c => c.total > avg * 1.5);
 
         res.json({ success: true, data: highSpending });
     } catch (error) {
@@ -89,7 +85,6 @@ const highSpendingCategories = async (req, res) => {
     }
 };
 
-// 4.4 Expense-to-income ratio
 const expenseIncomeRatio = async (req, res) => {
     try {
         const userId = req.user._id;
@@ -108,7 +103,6 @@ const expenseIncomeRatio = async (req, res) => {
 
         const totalExpense = expenses.length ? expenses[0].totalExpense : 0;
         const totalIncome = budgets.length ? budgets[0].totalIncome : 0;
-
         const ratio = totalIncome ? ((totalExpense / totalIncome) * 100).toFixed(2) : 0;
 
         res.json({ success: true, data: { totalExpense, totalIncome, expenseIncomeRatio: ratio } });
@@ -118,9 +112,4 @@ const expenseIncomeRatio = async (req, res) => {
     }
 };
 
-module.exports = {
-    monthlyAnalytics,
-    recurringExpenses,
-    highSpendingCategories,
-    expenseIncomeRatio
-};
+module.exports = { monthlyAnalytics, recurringExpenses, highSpendingCategories, expenseIncomeRatio };

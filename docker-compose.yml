@@ -1,0 +1,43 @@
+version: "3.9"
+
+services:
+  backend:
+    build: ./Backend
+    container_name: finassist-api
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      MONGO_URI: ${MONGO_URI}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRE: ${JWT_EXPIRE:-30d}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+    depends_on:
+      - mongo
+
+  frontend:
+    build: ./views
+    container_name: finassist-web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:5000/api}
+    depends_on:
+      - backend
+
+  mongo:
+    image: mongo:8
+    container_name: finassist-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: finassist
+
+volumes:
+  mongo_data:

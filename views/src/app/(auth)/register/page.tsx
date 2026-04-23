@@ -4,15 +4,10 @@ import { motion } from "framer-motion";
 import { Lock, Mail, User, ArrowRight, AlertCircle } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
-import { clsx } from "clsx";
-import { twMerge } from "tailwind-merge";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/lib/store";
-
-function cn(...inputs: (string | undefined | null | false)[]) {
-    return twMerge(clsx(inputs));
-}
+import { cn } from "@/lib/utils";
 
 export default function RegisterPage() {
     const router = useRouter();

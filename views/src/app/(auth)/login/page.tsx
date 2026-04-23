@@ -1,32 +1,29 @@
-
 "use client";
 
-import { motion } from "framer-motion";
-import { Lock, Mail, ArrowRight, AlertCircle } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Lock, Mail, ArrowRight, AlertCircle, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
-import { clsx } from "clsx";
-import { twMerge } from "tailwind-merge";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/lib/store";
-
-function cn(...inputs: (string | undefined | null | false)[]) {
-    return twMerge(clsx(inputs));
-}
+import { cn } from "@/lib/utils";
 
 export default function LoginPage() {
-    const router = useRouter();
-    const setAuth = useAuthStore((state) => state.setAuth);
+    const router  = useRouter();
+    const { setAuth, set2FAGate, tempToken } = useAuthStore((s) => ({
+        setAuth:     s.setAuth,
+        set2FAGate:  s.set2FAGate,
+        tempToken:   s.tempToken,
+    }));
 
-    const [formData, setFormData] = useState({
-        email: "",
-        password: "",
-    });
-    const [isLoading, setIsLoading] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+    const [formData, setFormData]       = useState({ email: "", password: "" });
+    const [totpCode, setTotpCode]       = useState("");
+    const [requires2FA, setRequires2FA] = useState(false);
+    const [isLoading, setIsLoading]     = useState(false);
+    const [error, setError]             = useState<string | null>(null);
 
-    const handleSubmit = async (e: React.FormEvent) => {
+    const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
         setIsLoading(true);
         setError(null);
@@ -34,29 +31,49 @@ export default function LoginPage() {
         try {
             const res = await api.post("/auth/login", formData);
 
-            // Store user and token
-            setAuth(res.data.data, res.data.data.token);
-
-            // Redirect to dashboard
-            router.push("/dashboard");
+            if (res.data.requires2FA) {
+                set2FAGate(res.data.tempToken);
+                setRequires2FA(true);
+            } else {
+                setAuth(res.data.data, res.data.data.token);
+                router.push("/dashboard");
+            }
         } catch (err: any) {
-            setError(
-                err.response?.data?.message || "Something went wrong. Please try again."
-            );
+            setError(err.response?.data?.message || "Something went wrong. Please try again.");
         } finally {
             setIsLoading(false);
         }
     };
 
+    const handle2FAVerify = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setIsLoading(true);
+        setError(null);
+
+        try {
+            const res = await api.post("/auth/2fa/verify", {
+                tempToken,
+                token: totpCode
+            });
+            setAuth(res.data.data, res.data.data.token);
+            router.push("/dashboard");
+        } catch (err: any) {
+            setError(err.response?.data?.message || "Invalid verification code.");
+            setTotpCode("");
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const setTotpCode2 = setTotpCode;
+
     return (
         <div className="relative min-h-screen w-full flex items-center justify-center bg-zinc-950 overflow-hidden text-zinc-200">
-            {/* Background Aurora Effect */}
             <div className="absolute inset-0 pointer-events-none">
                 <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] bg-purple-900/30 rounded-full blur-[100px] mix-blend-screen animate-pulse" />
                 <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] bg-violet-900/20 rounded-full blur-[120px] mix-blend-screen opacity-70" />
             </div>
 
-            {/* Floating Card */}
             <motion.div
                 initial={{ opacity: 0, y: 30 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -71,92 +88,154 @@ export default function LoginPage() {
                         className="inline-flex items-center gap-2 mb-2"
                     >
                         <div className="w-2 h-2 rounded-full bg-purple-500 shadow-[0_0_10px_#a855f7]" />
-                        <h1 className="text-2xl font-light tracking-wide text-white">
-                            FinAssist
-                        </h1>
+                        <h1 className="text-2xl font-light tracking-wide text-white">FinAssist</h1>
                     </motion.div>
-                    <p className="text-zinc-500 text-sm">Access your financial vault</p>
+                    <p className="text-zinc-500 text-sm">
+                        {requires2FA ? "Two-factor authentication" : "Access your financial vault"}
+                    </p>
                 </div>
 
                 {error && (
                     <motion.div
                         initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: 'auto' }}
+                        animate={{ opacity: 1, height: "auto" }}
                         className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm flex items-center gap-2"
                     >
-                        <AlertCircle className="w-4 h-4" />
+                        <AlertCircle className="w-4 h-4 shrink-0" />
                         {error}
                     </motion.div>
                 )}
 
-                <form onSubmit={handleSubmit} className="space-y-6">
-                    <div className="space-y-4">
-                        <div className="group">
-                            <div className="relative">
-                                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500 group-focus-within:text-purple-400 transition-colors" />
+                <AnimatePresence mode="wait">
+                    {!requires2FA ? (
+                        <motion.form
+                            key="login"
+                            initial={{ opacity: 0, x: -20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: 20 }}
+                            onSubmit={handleLogin}
+                            className="space-y-6"
+                        >
+                            <div className="space-y-4">
+                                <div className="group">
+                                    <div className="relative">
+                                        <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500 group-focus-within:text-purple-400 transition-colors" />
+                                        <input
+                                            type="email"
+                                            placeholder="Email Address"
+                                            value={formData.email}
+                                            onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                                            className="w-full bg-zinc-900/50 border-b border-zinc-800 focus:border-purple-500 text-zinc-300 placeholder:text-zinc-600 pl-10 pr-4 py-3 outline-none transition-all duration-300 rounded-t-sm"
+                                            required
+                                        />
+                                    </div>
+                                </div>
+                                <div className="group">
+                                    <div className="relative">
+                                        <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500 group-focus-within:text-purple-400 transition-colors" />
+                                        <input
+                                            type="password"
+                                            placeholder="Password"
+                                            value={formData.password}
+                                            onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                                            className="w-full bg-zinc-900/50 border-b border-zinc-800 focus:border-purple-500 text-zinc-300 placeholder:text-zinc-600 pl-10 pr-4 py-3 outline-none transition-all duration-300 rounded-t-sm"
+                                            required
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="flex items-center justify-between text-xs text-zinc-500">
+                                <label className="flex items-center gap-2 cursor-pointer hover:text-zinc-400 transition-colors">
+                                    <input type="checkbox" className="accent-purple-500 rounded border-zinc-700 bg-zinc-900" />
+                                    Remember me
+                                </label>
+                                <Link href="#" className="hover:text-purple-400 transition-colors">Forgot Password?</Link>
+                            </div>
+
+                            <motion.button
+                                whileHover={{ scale: 1.02 }}
+                                whileTap={{ scale: 0.98 }}
+                                className={cn(
+                                    "w-full flex items-center justify-center gap-2 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-medium py-3 rounded-full shadow-lg shadow-purple-900/20 transition-all duration-300",
+                                    isLoading && "opacity-80 cursor-wait"
+                                )}
+                                disabled={isLoading}
+                            >
+                                {isLoading ? (
+                                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                ) : (
+                                    <>Sign In <ArrowRight className="w-4 h-4" /></>
+                                )}
+                            </motion.button>
+                        </motion.form>
+                    ) : (
+                        <motion.form
+                            key="2fa"
+                            initial={{ opacity: 0, x: 20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: -20 }}
+                            onSubmit={handle2FAVerify}
+                            className="space-y-6"
+                        >
+                            <div className="text-center mb-2">
+                                <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-purple-500/10 border border-purple-500/20 mb-3">
+                                    <ShieldCheck className="w-6 h-6 text-purple-400" />
+                                </div>
+                                <p className="text-zinc-400 text-sm">Enter the 6-digit code from your authenticator app</p>
+                            </div>
+
+                            <div className="group">
                                 <input
-                                    type="email"
-                                    placeholder="Email Address"
-                                    value={formData.email}
-                                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                                    className="w-full bg-zinc-900/50 border-b border-zinc-800 focus:border-purple-500 text-zinc-300 placeholder:text-zinc-600 pl-10 pr-4 py-3 outline-none transition-all duration-300 rounded-t-sm"
+                                    type="text"
+                                    inputMode="numeric"
+                                    pattern="[0-9]{6}"
+                                    maxLength={6}
+                                    placeholder="000000"
+                                    value={totpCode}
+                                    onChange={(e) => setTotpCode2(e.target.value.replace(/\D/g, ""))}
+                                    className="w-full bg-zinc-900/50 border-b border-zinc-800 focus:border-purple-500 text-zinc-300 placeholder:text-zinc-600 text-center text-2xl tracking-[0.5em] py-3 outline-none transition-all duration-300 rounded-t-sm"
                                     required
+                                    autoFocus
                                 />
                             </div>
-                        </div>
 
-                        <div className="group">
-                            <div className="relative">
-                                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500 group-focus-within:text-purple-400 transition-colors" />
-                                <input
-                                    type="password"
-                                    placeholder="Password"
-                                    value={formData.password}
-                                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                                    className="w-full bg-zinc-900/50 border-b border-zinc-800 focus:border-purple-500 text-zinc-300 placeholder:text-zinc-600 pl-10 pr-4 py-3 outline-none transition-all duration-300 rounded-t-sm"
-                                    required
-                                />
-                            </div>
-                        </div>
-                    </div>
+                            <motion.button
+                                whileHover={{ scale: 1.02 }}
+                                whileTap={{ scale: 0.98 }}
+                                className={cn(
+                                    "w-full flex items-center justify-center gap-2 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-medium py-3 rounded-full shadow-lg shadow-purple-900/20 transition-all duration-300",
+                                    isLoading && "opacity-80 cursor-wait"
+                                )}
+                                disabled={isLoading || totpCode.length !== 6}
+                            >
+                                {isLoading ? (
+                                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                ) : (
+                                    <>Verify <ShieldCheck className="w-4 h-4" /></>
+                                )}
+                            </motion.button>
 
-                    <div className="flex items-center justify-between text-xs text-zinc-500">
-                        <label className="flex items-center gap-2 cursor-pointer hover:text-zinc-400 transition-colors">
-                            <input type="checkbox" className="accent-purple-500 rounded border-zinc-700 bg-zinc-900" />
-                            Remember me
-                        </label>
-                        <Link href="#" className="hover:text-purple-400 transition-colors">
-                            Forgot Password?
+                            <button
+                                type="button"
+                                onClick={() => { setRequires2FA(false); setError(null); }}
+                                className="w-full text-zinc-500 hover:text-zinc-400 text-xs transition-colors"
+                            >
+                                ← Back to login
+                            </button>
+                        </motion.form>
+                    )}
+                </AnimatePresence>
+
+                {!requires2FA && (
+                    <div className="mt-8 text-center text-xs text-zinc-500">
+                        Don&apos;t have an account?{" "}
+                        <Link href="/register" className="text-purple-400 hover:text-purple-300 transition-colors font-medium">
+                            Create Access
                         </Link>
                     </div>
-
-                    <motion.button
-                        whileHover={{ scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
-                        className={cn(
-                            "w-full flex items-center justify-center gap-2 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-medium py-3 rounded-full shadow-lg shadow-purple-900/20 transition-all duration-300",
-                            isLoading && "opacity-80 cursor-wait"
-                        )}
-                        disabled={isLoading}
-                    >
-                        {isLoading ? (
-                            <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                        ) : (
-                            <>
-                                Sign In <ArrowRight className="w-4 h-4" />
-                            </>
-                        )}
-                    </motion.button>
-                </form>
-
-                <div className="mt-8 text-center text-xs text-zinc-500">
-                    Don't have an account?{" "}
-                    <Link href="/register" className="text-purple-400 hover:text-purple-300 transition-colors font-medium">
-                        Create Access
-                    </Link>
-                </div>
+                )}
             </motion.div>
         </div>
     );
 }
-
