@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const { authenticator } = require('otplib');
+const { generateSecret, generateURI, verifySync } = require('otplib');
 const QRCode = require('qrcode');
 const User = require('../models/User');
 const { generateToken } = require('../middleware/authMiddleware');
@@ -8,8 +8,8 @@ const { masterDecrypt, encrypt, decrypt, safeDecrypt } = require('../utils/encry
 // POST /api/auth/2fa/setup — generate TOTP secret + QR code (requires auth)
 const setup2FA = async (req, res) => {
     try {
-        const secret = authenticator.generateSecret();
-        const otpauthUrl = authenticator.keyuri(req.user._email, 'FinAssist', secret);
+        const secret = generateSecret();
+        const otpauthUrl = generateURI({ type: 'totp', label: req.user._email, secret, issuer: 'FinAssist' });
         const qrDataUrl = await QRCode.toDataURL(otpauthUrl);
 
         // Store encrypted secret (NOT enabled yet — user must verify first)
@@ -42,7 +42,7 @@ const enable2FA = async (req, res) => {
         }
 
         const secret = decrypt(user.twoFactorSecret, req.dataKey);
-        if (!authenticator.verify({ token: totpToken, secret })) {
+        if (!verifySync({ token: totpToken, secret })?.valid) {
             return res.status(401).json({ success: false, message: 'Invalid verification code' });
         }
 
@@ -63,7 +63,7 @@ const disable2FA = async (req, res) => {
         const user = await User.findById(req.user._id);
 
         const secret = decrypt(user.twoFactorSecret, req.dataKey);
-        if (!authenticator.verify({ token: totpToken, secret })) {
+        if (!verifySync({ token: totpToken, secret })?.valid) {
             return res.status(401).json({ success: false, message: 'Invalid verification code' });
         }
 
@@ -104,7 +104,7 @@ const verify2FA = async (req, res) => {
         const dataKey = Buffer.from(rawKey, 'hex');
         const secret  = decrypt(user.twoFactorSecret, dataKey);
 
-        if (!authenticator.verify({ token: totpToken, secret })) {
+        if (!verifySync({ token: totpToken, secret })?.valid) {
             return res.status(401).json({ success: false, message: 'Invalid verification code' });
         }
 
