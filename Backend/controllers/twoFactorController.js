@@ -1,15 +1,39 @@
-const jwt = require('jsonwebtoken');
-const { generateSecret, generateURI, verifySync } = require('otplib');
+const { generateSecret, base32Encode, base32Decode, verifyTOTP } = require('../utils/scratch/totp');
+const { jwtVerify } = require('../utils/scratch/jwtScratch');
 const QRCode = require('qrcode');
 const User = require('../models/User');
 const { generateToken } = require('../middleware/authMiddleware');
 const { masterDecrypt, encrypt, decrypt, safeDecrypt } = require('../utils/encryption');
 
+/**
+ * Build an otpauth://totp/... URI for QR-code enrollment.
+ *
+ * RFC 6238 permits SHA-1, SHA-256, and SHA-512 as TOTP variants. Our
+ * scratch totp.js uses HMAC-SHA256 (no scratch SHA-1 in this project), so
+ * we explicitly emit `algorithm=SHA256` in the URI. Modern authenticator
+ * apps — Authy, 1Password, Bitwarden, current Google Authenticator —
+ * honor this parameter and produce SHA-256 codes accordingly. Older or
+ * minimalist apps that ignore the algorithm parameter will silently
+ * produce SHA-1 codes that don't match what our server expects; on
+ * enrollment those users will see "invalid code" until they switch to a
+ * SHA-256-aware app. Acceptable for an academic project.
+ */
+function buildOtpauthURI(label, issuer, base32Secret) {
+    const params = new URLSearchParams({
+        secret:    base32Secret,
+        issuer:    issuer,
+        algorithm: 'SHA256',
+        digits:    '6',
+        period:    '30'
+    });
+    return `otpauth://totp/${encodeURIComponent(label)}?${params.toString()}`;
+}
+
 // POST /api/auth/2fa/setup — generate TOTP secret + QR code (requires auth)
 const setup2FA = async (req, res) => {
     try {
-        const secret = generateSecret();
-        const otpauthUrl = generateURI({ type: 'totp', label: req.user._email, secret, issuer: 'FinAssist' });
+        const secret = base32Encode(generateSecret(20));
+        const otpauthUrl = buildOtpauthURI(req.user._email, 'FinAssist', secret);
         const qrDataUrl = await QRCode.toDataURL(otpauthUrl);
 
         // Store encrypted secret (NOT enabled yet — user must verify first)
@@ -42,7 +66,7 @@ const enable2FA = async (req, res) => {
         }
 
         const secret = decrypt(user.twoFactorSecret, req.dataKey);
-        if (!verifySync({ token: totpToken, secret })?.valid) {
+        if (!verifyTOTP(totpToken, base32Decode(secret))) {
             return res.status(401).json({ success: false, message: 'Invalid verification code' });
         }
 
@@ -63,7 +87,7 @@ const disable2FA = async (req, res) => {
         const user = await User.findById(req.user._id);
 
         const secret = decrypt(user.twoFactorSecret, req.dataKey);
-        if (!verifySync({ token: totpToken, secret })?.valid) {
+        if (!verifyTOTP(totpToken, base32Decode(secret))) {
             return res.status(401).json({ success: false, message: 'Invalid verification code' });
         }
 
@@ -88,7 +112,7 @@ const verify2FA = async (req, res) => {
 
         let decoded;
         try {
-            decoded = jwt.verify(tempToken, process.env.JWT_SECRET);
+            decoded = jwtVerify(tempToken, process.env.JWT_SECRET);
         } catch {
             return res.status(401).json({ success: false, message: 'Expired or invalid session. Please log in again.' });
         }
@@ -104,7 +128,7 @@ const verify2FA = async (req, res) => {
         const dataKey = Buffer.from(rawKey, 'hex');
         const secret  = decrypt(user.twoFactorSecret, dataKey);
 
-        if (!verifySync({ token: totpToken, secret })?.valid) {
+        if (!verifyTOTP(totpToken, base32Decode(secret))) {
             return res.status(401).json({ success: false, message: 'Invalid verification code' });
         }
 

@@ -1,10 +1,12 @@
 const Goal = require('../models/Goal');
 const { encrypt, safeDecrypt, generateHMAC, verifyHMAC } = require('../utils/encryption');
+const { signRecord, verifyRecord, encryptNote, decryptNote } = require('../utils/signing');
 
-function decryptGoal(goal, dataKey) {
+function decryptGoal(goal, user, dataKey) {
     const obj         = goal.toJSON ? goal.toJSON() : { ...goal };
     obj.title         = safeDecrypt(goal.title,       dataKey);
     obj.description   = safeDecrypt(goal.description, dataKey);
+    obj.note          = goal.note ? decryptNote(goal.note, user, dataKey) : null;
     return obj;
 }
 
@@ -17,9 +19,11 @@ const createGoal = async (req, res) => {
     try {
         const { title, description, targetAmount, targetDate, goalType } = req.body;
 
-        const hmac     = generateHMAC(goalHmacPayload(title, targetAmount, goalType), req.user._id);
-        const encTitle = encrypt(title, req.dataKey);
-        const encDesc  = description ? encrypt(description, req.dataKey) : undefined;
+        const hmac      = generateHMAC(goalHmacPayload(title, targetAmount, goalType), req.user._id);
+        const signature = signRecord(goalHmacPayload(title, targetAmount, goalType), req.user, req.dataKey);
+        const encTitle  = encrypt(title, req.dataKey);
+        const encDesc   = description ? encrypt(description, req.dataKey) : undefined;
+        const encNote   = req.body.note ? encryptNote(req.body.note, req.user) : undefined;
 
         const goal = await Goal.create({
             user: req.user._id,
@@ -28,10 +32,12 @@ const createGoal = async (req, res) => {
             targetAmount,
             targetDate,
             goalType,
-            hmac
+            hmac,
+            signature,
+            note: encNote
         });
 
-        res.status(201).json({ success: true, data: decryptGoal(goal, req.dataKey) });
+        res.status(201).json({ success: true, data: decryptGoal(goal, req.user, req.dataKey) });
     } catch (error) {
         console.error('Create goal error:', error);
         res.status(500).json({ success: false, message: 'Server error creating goal' });
@@ -49,7 +55,15 @@ const getGoals = async (req, res) => {
 
         const goals = await Goal.find(query).sort({ createdAt: -1 });
 
-        res.json({ success: true, data: goals.map(g => decryptGoal(g, req.dataKey)) });
+        const items = goals.map(g => {
+            const plainTitle = safeDecrypt(g.title, req.dataKey);
+            if (g.signature && !verifyRecord(goalHmacPayload(plainTitle, g.targetAmount, g.goalType), g.signature, req.user)) {
+                console.warn(`Signature integrity failure on goal ${g._id} (user ${req.user._id})`);
+            }
+            return decryptGoal(g, req.user, req.dataKey);
+        });
+
+        res.json({ success: true, data: items });
     } catch (error) {
         console.error('Get goals error:', error);
         res.status(500).json({ success: false, message: 'Server error fetching goals' });
@@ -66,8 +80,11 @@ const getGoalById = async (req, res) => {
         if (goal.hmac && !verifyHMAC(goalHmacPayload(plainTitle, goal.targetAmount, goal.goalType), goal.hmac, req.user._id)) {
             console.warn(`HMAC integrity failure on goal ${goal._id}`);
         }
+        if (goal.signature && !verifyRecord(goalHmacPayload(plainTitle, goal.targetAmount, goal.goalType), goal.signature, req.user)) {
+            console.warn(`Signature integrity failure on goal ${goal._id} (user ${req.user._id})`);
+        }
 
-        res.json({ success: true, data: decryptGoal(goal, req.dataKey) });
+        res.json({ success: true, data: decryptGoal(goal, req.user, req.dataKey) });
     } catch (error) {
         console.error('Get goal error:', error);
         res.status(500).json({ success: false, message: 'Server error fetching goal' });
@@ -82,6 +99,11 @@ const updateGoal = async (req, res) => {
 
         const updates = {};
         if (req.body.description  !== undefined) updates.description  = encrypt(req.body.description, req.dataKey);
+        if (req.body.note         !== undefined) {
+            updates.note = (req.body.note === null || req.body.note === '')
+                ? null
+                : encryptNote(req.body.note, req.user);
+        }
         if (req.body.targetAmount !== undefined) updates.targetAmount = req.body.targetAmount;
         if (req.body.targetDate   !== undefined) updates.targetDate   = req.body.targetDate;
         if (req.body.goalType     !== undefined) updates.goalType     = req.body.goalType;
@@ -101,7 +123,7 @@ const updateGoal = async (req, res) => {
             req.params.id, updates, { new: true, runValidators: true }
         );
 
-        res.json({ success: true, data: decryptGoal(updatedGoal, req.dataKey) });
+        res.json({ success: true, data: decryptGoal(updatedGoal, req.user, req.dataKey) });
     } catch (error) {
         console.error('Update goal error:', error);
         res.status(500).json({ success: false, message: 'Server error updating goal' });
@@ -137,7 +159,7 @@ const addContribution = async (req, res) => {
         goal.contributions.push({ amount, note, date: new Date() });
         await goal.save();
 
-        res.json({ success: true, data: decryptGoal(goal, req.dataKey), message: 'Contribution added successfully' });
+        res.json({ success: true, data: decryptGoal(goal, req.user, req.dataKey), message: 'Contribution added successfully' });
     } catch (error) {
         console.error('Add contribution error:', error);
         res.status(500).json({ success: false, message: 'Server error adding contribution' });
@@ -234,10 +256,10 @@ const getGoalsDashboard = async (req, res) => {
             totalTargetAmount: goals.reduce((sum, g) => sum + g.targetAmount, 0),
             totalSavedAmount:  goals.reduce((sum, g) => sum + g.currentAmount, 0),
             overallProgress:   0,
-            recentGoals:       sorted.slice(0, 5).map(g => decryptGoal(g, req.dataKey)),
+            recentGoals:       sorted.slice(0, 5).map(g => decryptGoal(g, req.user, req.dataKey)),
             urgentGoals:       goals
                 .filter(g => g.status === 'Active' && g.daysRemaining < 30 && g.daysRemaining > 0)
-                .map(g => decryptGoal(g, req.dataKey))
+                .map(g => decryptGoal(g, req.user, req.dataKey))
         };
 
         if (dashboard.totalTargetAmount > 0) {

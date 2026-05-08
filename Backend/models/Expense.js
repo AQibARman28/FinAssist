@@ -14,6 +14,12 @@ const expenseSchema = new mongoose.Schema({
 
     // HMAC-SHA256 over {amount, category, plaintext-description, date, userId}
     hmac: { type: String },
+
+    // ECDSA-P256 signature over {amount, category} — set on creation only, never regenerated on update
+    signature: { type: String },
+
+    // RSA-2048-OAEP encrypted with the user's RSA public key (optional)
+    note: { type: String },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Expense', expenseSchema);

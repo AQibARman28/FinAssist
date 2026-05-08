@@ -1,6 +1,7 @@
 const Budget = require('../models/Budget');
 const Expense = require('../models/Expense');
 const { generateHMAC, verifyHMAC } = require('../utils/encryption');
+const { signRecord, verifyRecord } = require('../utils/signing');
 
 function hmacPayload(b) {
     return { category: b.category, limit: b.limit, month: b.month, year: b.year };
@@ -30,7 +31,8 @@ const createBudget = async (req, res) => {
             await budget.save();
         } else {
             isNew = true;
-            const hmac = generateHMAC(hmacPayload({ category, limit, month, year }), req.user._id);
+            const hmac      = generateHMAC(hmacPayload({ category, limit, month, year }), req.user._id);
+            const signature = signRecord(hmacPayload({ category, limit, month, year }), req.user, req.dataKey);
             budget = await Budget.create({
                 user: req.user._id,
                 category,
@@ -39,7 +41,8 @@ const createBudget = async (req, res) => {
                 month,
                 year,
                 alertThreshold: alertThreshold || 80,
-                hmac
+                hmac,
+                signature
             });
         }
 
@@ -66,6 +69,12 @@ const getBudgets = async (req, res) => {
 
         const budgets = await Budget.find(query).sort({ category: 1 });
 
+        budgets.forEach(b => {
+            if (b.signature && !verifyRecord(hmacPayload(b), b.signature, req.user)) {
+                console.warn(`Signature integrity failure on budget ${b._id} (user ${req.user._id})`);
+            }
+        });
+
         res.json({ success: true, data: budgets });
     } catch (error) {
         console.error('Get budgets error:', error);
@@ -81,6 +90,9 @@ const getBudgetById = async (req, res) => {
 
         if (budget.hmac && !verifyHMAC(hmacPayload(budget), budget.hmac, req.user._id)) {
             console.warn(`HMAC integrity failure on budget ${budget._id}`);
+        }
+        if (budget.signature && !verifyRecord(hmacPayload(budget), budget.signature, req.user)) {
+            console.warn(`Signature integrity failure on budget ${budget._id} (user ${req.user._id})`);
         }
 
         res.json({ success: true, data: budget });
@@ -222,10 +234,9 @@ const resetBudgets = async (req, res) => {
                 user: req.user._id, category: budget.category, month: toMonth, year: toYear
             });
             if (!existing) {
-                const hmac = generateHMAC(
-                    hmacPayload({ category: budget.category, limit: budget.limit, month: toMonth, year: toYear }),
-                    req.user._id
-                );
+                const payload   = hmacPayload({ category: budget.category, limit: budget.limit, month: toMonth, year: toYear });
+                const hmac      = generateHMAC(payload, req.user._id);
+                const signature = signRecord(payload, req.user, req.dataKey);
                 const newBudget = await Budget.create({
                     user: req.user._id,
                     category: budget.category,
@@ -234,7 +245,8 @@ const resetBudgets = async (req, res) => {
                     month: toMonth,
                     year: toYear,
                     alertThreshold: budget.alertThreshold,
-                    hmac
+                    hmac,
+                    signature
                 });
                 newBudgets.push(newBudget);
             }

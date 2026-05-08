@@ -23,6 +23,12 @@ const goalSchema = new mongoose.Schema({
 
     // HMAC-SHA256 over {plaintext-title, targetAmount, userId}
     hmac: { type: String },
+
+    // ECDSA-P256 signature over {plaintext-title, targetAmount, goalType} — set on creation only
+    signature: { type: String },
+
+    // Top-level private note, RSA-2048-OAEP encrypted with the user's RSA public key (optional)
+    note: { type: String },
 }, { timestamps: true });
 
 goalSchema.pre('save', function (next) {

@@ -15,6 +15,9 @@ const budgetSchema = new mongoose.Schema({
 
     // HMAC-SHA256 over {limit, category, month, year, userId}
     hmac: { type: String },
+
+    // ECDSA-P256 signature over {category, limit, month, year} — set on creation only, never regenerated on update
+    signature: { type: String },
 }, { timestamps: true });
 
 budgetSchema.index({ user: 1, category: 1, month: 1, year: 1 }, { unique: true });

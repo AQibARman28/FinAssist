@@ -1,4 +1,4 @@
-const jwt = require('jsonwebtoken');
+const { jwtSign, jwtVerify } = require('../utils/scratch/jwtScratch');
 const User = require('../models/User');
 const { masterDecrypt, safeDecrypt } = require('../utils/encryption');
 
@@ -13,7 +13,7 @@ const protect = async (req, res, next) => {
             return res.status(401).json({ success: false, message: 'Access denied. No token provided.' });
         }
 
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const decoded = jwtVerify(token, process.env.JWT_SECRET);
 
         // Reject temp 2FA tokens from accessing protected routes
         if (decoded.type === 'temp_2fa') {
@@ -49,14 +49,14 @@ const protect = async (req, res, next) => {
 };
 
 const generateToken = (id) => {
-    return jwt.sign({ id }, process.env.JWT_SECRET, {
+    return jwtSign({ id }, process.env.JWT_SECRET, {
         expiresIn: process.env.JWT_EXPIRE || '30d'
     });
 };
 
 // Short-lived token used only to gate the 2FA verification step
 const generateTempToken = (id) => {
-    return jwt.sign({ id, type: 'temp_2fa' }, process.env.JWT_SECRET, { expiresIn: '5m' });
+    return jwtSign({ id, type: 'temp_2fa' }, process.env.JWT_SECRET, { expiresIn: '5m' });
 };
 
 module.exports = { protect, generateToken, generateTempToken };

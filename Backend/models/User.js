@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
+const { hashPassword, verifyPassword } = require('../utils/scratch/pbkdf2');
 
 const userSchema = new mongoose.Schema({
     // PII — stored AES-256-GCM encrypted with per-user dataKey
@@ -9,7 +9,7 @@ const userSchema = new mongoose.Schema({
     // SHA-256(email) — used for fast unique lookup without exposing plaintext
     emailHash: { type: String, required: true, unique: true },
 
-    // bcrypt-hashed password (salt rounds = 12)
+    // PBKDF2-SHA256 hash, 100,000 iterations (stored format: pbkdf2-sha256$<iter>$<saltHex>$<dkHex>)
     password: { type: String, required: [true, 'Password is required'], minlength: 6 },
     currency: { type: String, default: 'BDT' },
 
@@ -39,12 +39,12 @@ const userSchema = new mongoose.Schema({
 
 userSchema.pre('save', async function (next) {
     if (!this.isModified('password')) return next();
-    this.password = await bcrypt.hash(this.password, 12);
+    this.password = hashPassword(this.password);
     next();
 });
 
 userSchema.methods.comparePassword = async function (candidate) {
-    return bcrypt.compare(candidate, this.password);
+    return verifyPassword(candidate, this.password);
 };
 
 module.exports = mongoose.model('User', userSchema);
