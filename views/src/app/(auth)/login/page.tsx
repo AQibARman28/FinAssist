@@ -11,11 +11,9 @@ import { cn } from "@/lib/utils";
 
 export default function LoginPage() {
     const router  = useRouter();
-    const { setAuth, set2FAGate, tempToken } = useAuthStore((s) => ({
-        setAuth:     s.setAuth,
-        set2FAGate:  s.set2FAGate,
-        tempToken:   s.tempToken,
-    }));
+    const setAuth    = useAuthStore((s) => s.setAuth);
+    const set2FAGate = useAuthStore((s) => s.set2FAGate);
+    const tempToken  = useAuthStore((s) => s.tempToken);
 
     const [formData, setFormData]       = useState({ email: "", password: "" });
     const [totpCode, setTotpCode]       = useState("");

@@ -22,10 +22,10 @@ const autoCategories = (description) => {
     return 'Other';
 };
 
-function decryptExpense(expense, user, dataKey) {
+async function decryptExpense(expense, user, dataKey) {
     const obj = expense.toObject ? expense.toObject({ virtuals: true }) : { ...expense };
-    obj.description = safeDecrypt(expense.description, dataKey);
-    obj.note = expense.note ? decryptNote(expense.note, user, dataKey) : null;
+    obj.description = await safeDecrypt(expense.description, dataKey);
+    obj.note = expense.note ? await decryptNote(expense.note, user, dataKey) : null;
     return obj;
 }
 
@@ -42,10 +42,10 @@ const createExpense = async (req, res) => {
         }
 
         const expDate   = date ? new Date(date) : new Date();
-        const encDesc   = description ? encrypt(description, req.dataKey) : undefined;
-        const hmac      = generateHMAC({ amount, category: finalCategory }, req.user._id);
-        const signature = signRecord({ amount, category: finalCategory }, req.user, req.dataKey);
-        const encNote   = req.body.note ? encryptNote(req.body.note, req.user) : undefined;
+        const encDesc   = description ? (await encrypt(description, req.dataKey)) : undefined;
+        const hmac      = await generateHMAC({ amount, category: finalCategory }, req.user._id);
+        const signature = await signRecord({ amount, category: finalCategory }, req.user, req.dataKey);
+        const encNote   = req.body.note ? (await encryptNote(req.body.note, req.user)) : undefined;
 
         const expense = await Expense.create({
             user: req.user._id,
@@ -61,7 +61,7 @@ const createExpense = async (req, res) => {
 
         await updateBudgetSpent(req.user._id, finalCategory, expDate.getMonth() + 1, expDate.getFullYear());
 
-        res.status(201).json({ success: true, data: decryptExpense(expense, req.user, req.dataKey) });
+        res.status(201).json({ success: true, data: await decryptExpense(expense, req.user, req.dataKey) });
     } catch (error) {
         console.error('Create expense error:', error);
         res.status(500).json({ success: false, message: 'Server error creating expense' });
@@ -86,12 +86,13 @@ const getExpenses = async (req, res) => {
             .limit(limit * 1)
             .skip((page - 1) * limit);
 
-        const items = expenses.map(e => {
-            if (e.signature && !verifyRecord({ amount: e.amount, category: e.category }, e.signature, req.user)) {
+        const items = [];
+        for (const e of expenses) {
+            if (e.signature && !(await verifyRecord({ amount: e.amount, category: e.category }, e.signature, req.user))) {
                 console.warn(`Signature integrity failure on expense ${e._id} (user ${req.user._id})`);
             }
-            return decryptExpense(e, req.user, req.dataKey);
-        });
+            items.push(await decryptExpense(e, req.user, req.dataKey));
+        }
 
         const total = await Expense.countDocuments(query);
 
@@ -117,14 +118,14 @@ const getExpenseById = async (req, res) => {
         const expense = await Expense.findOne({ _id: req.params.id, user: req.user._id });
         if (!expense) return res.status(404).json({ success: false, message: 'Expense not found' });
 
-        if (expense.hmac && !verifyHMAC({ amount: expense.amount, category: expense.category }, expense.hmac, req.user._id)) {
+        if (expense.hmac && !(await verifyHMAC({ amount: expense.amount, category: expense.category }, expense.hmac, req.user._id))) {
             console.warn(`HMAC integrity failure on expense ${expense._id}`);
         }
-        if (expense.signature && !verifyRecord({ amount: expense.amount, category: expense.category }, expense.signature, req.user)) {
+        if (expense.signature && !(await verifyRecord({ amount: expense.amount, category: expense.category }, expense.signature, req.user))) {
             console.warn(`Signature integrity failure on expense ${expense._id} (user ${req.user._id})`);
         }
 
-        res.json({ success: true, data: decryptExpense(expense, req.user, req.dataKey) });
+        res.json({ success: true, data: await decryptExpense(expense, req.user, req.dataKey) });
     } catch (error) {
         console.error('Get expense error:', error);
         res.status(500).json({ success: false, message: 'Server error fetching expense' });
@@ -143,17 +144,17 @@ const updateExpense = async (req, res) => {
         const updates = {};
         if (req.body.amount      !== undefined) updates.amount      = req.body.amount;
         if (req.body.category    !== undefined) updates.category    = req.body.category;
-        if (req.body.description !== undefined) updates.description = encrypt(req.body.description, req.dataKey);
+        if (req.body.description !== undefined) updates.description = await encrypt(req.body.description, req.dataKey);
         if (req.body.date        !== undefined) updates.date        = req.body.date;
         if (req.body.note        !== undefined) {
             updates.note = (req.body.note === null || req.body.note === '')
                 ? null
-                : encryptNote(req.body.note, req.user);
+                : (await encryptNote(req.body.note, req.user));
         }
 
         const finalAmount   = updates.amount   ?? expense.amount;
         const finalCategory = updates.category ?? expense.category;
-        updates.hmac = generateHMAC({ amount: finalAmount, category: finalCategory }, req.user._id);
+        updates.hmac = await generateHMAC({ amount: finalAmount, category: finalCategory }, req.user._id);
 
         const updatedExpense = await Expense.findByIdAndUpdate(
             req.params.id, updates, { new: true, runValidators: true }
@@ -163,7 +164,7 @@ const updateExpense = async (req, res) => {
         await updateBudgetSpent(req.user._id, oldCategory,             oldDate.getMonth() + 1, oldDate.getFullYear());
         await updateBudgetSpent(req.user._id, updatedExpense.category, newDate.getMonth() + 1, newDate.getFullYear());
 
-        res.json({ success: true, data: decryptExpense(updatedExpense, req.user, req.dataKey) });
+        res.json({ success: true, data: await decryptExpense(updatedExpense, req.user, req.dataKey) });
     } catch (error) {
         console.error('Update expense error:', error);
         res.status(500).json({ success: false, message: 'Server error updating expense' });

@@ -1,6 +1,5 @@
 const { encrypt, decrypt } = require('./encryption');
-const scratchRSA   = require('./scratch/rsa');
-const scratchECDSA = require('./scratch/ecdsaP256');
+const { callPython } = require('./pyCrypto');
 
 
 // ── Helpers (private) ────────────────────────────────────────────────────────
@@ -65,52 +64,57 @@ function normalizeKey(key) {
 
 // ── RSA-2048 (key wrapping, payload encryption) ───────────────────────────────
 
-function generateRSAKeyPair() {
-    const { n, e, d, p, q } = scratchRSA.generateRSAKeyPair(2048);
-    const publicKey  = JSON.stringify({ n: bigIntToHex(n), e: bigIntToHex(e) });
-    const privateKey = JSON.stringify({
-        n: bigIntToHex(n), e: bigIntToHex(e),
-        d: bigIntToHex(d), p: bigIntToHex(p), q: bigIntToHex(q)
+async function generateRSAKeyPair() {
+    const { public_json, private_json } = await callPython('rsa_generate_keypair', {});
+    return { publicKey: public_json, privateKey: private_json };
+}
+
+async function rsaEncrypt(plaintext, publicKey) {
+    const publicJson = (typeof publicKey === 'string') ? publicKey : JSON.stringify(publicKey);
+    const result = await callPython('rsa_oaep_encrypt', {
+        public_json: publicJson,
+        plaintext_b64: Buffer.from(plaintext, 'utf8').toString('base64')
     });
-    return { publicKey, privateKey };
+    return result.ciphertext_b64;
 }
 
-function rsaEncrypt(plaintext, publicKey) {
-    const { n, e } = normalizeKey(publicKey);
-    const ctBuf = scratchRSA.rsaEncryptOAEP(plaintext, { n, e });
-    return ctBuf.toString('base64');
-}
-
-function rsaDecrypt(ciphertext, privateKey) {
-    const { n, d } = normalizeKey(privateKey);
-    const ctBuf = Buffer.from(ciphertext, 'base64');
-    const ptBuf = scratchRSA.rsaDecryptOAEP(ctBuf, { n, d });
-    return ptBuf.toString('utf8');
+async function rsaDecrypt(ciphertext, privateKey) {
+    const privateJson = (typeof privateKey === 'string') ? privateKey : JSON.stringify(privateKey);
+    const result = await callPython('rsa_oaep_decrypt', {
+        private_json: privateJson,
+        ciphertext_b64: ciphertext
+    });
+    return Buffer.from(result.plaintext_b64, 'base64').toString('utf8');
 }
 
 
 // ── ECC P-256 (digital signatures for data integrity) ────────────────────────
 
-function generateECCKeyPair() {
-    const { d, Q } = scratchECDSA.generateECCKeyPair();
-    const publicKey  = JSON.stringify({ x: bigIntToHex(Q.x), y: bigIntToHex(Q.y) });
-    const privateKey = JSON.stringify({ d: bigIntToHex(d) });
-    return { publicKey, privateKey };
+async function generateECCKeyPair() {
+    const { public_json, private_json } = await callPython('ecdsa_generate_keypair', {});
+    return { publicKey: public_json, privateKey: private_json };
 }
 
-function eccSign(data, privateKey) {
-    const { d } = normalizeKey(privateKey);
+async function eccSign(data, privateKey) {
+    const privateJson = (typeof privateKey === 'string') ? privateKey : JSON.stringify(privateKey);
     const message = typeof data === 'string' ? data : JSON.stringify(data);
-    const sigBuf = scratchECDSA.signECDSADER(message, d);
-    return sigBuf.toString('base64');
+    const result = await callPython('ecdsa_sign', {
+        private_json: privateJson,
+        message_b64: Buffer.from(message, 'utf8').toString('base64')
+    });
+    return result.signature_b64;
 }
 
-function eccVerify(data, signature, publicKey) {
+async function eccVerify(data, signature, publicKey) {
     try {
-        const { x, y } = normalizeKey(publicKey);
+        const publicJson = (typeof publicKey === 'string') ? publicKey : JSON.stringify(publicKey);
         const message = typeof data === 'string' ? data : JSON.stringify(data);
-        const sigBuf  = Buffer.from(signature, 'base64');
-        return scratchECDSA.verifyECDSADER(message, sigBuf, { x, y });
+        const result = await callPython('ecdsa_verify', {
+            public_json: publicJson,
+            message_b64: Buffer.from(message, 'utf8').toString('base64'),
+            signature_b64: signature
+        });
+        return result.ok;
     } catch {
         return false;
     }
@@ -119,28 +123,28 @@ function eccVerify(data, signature, publicKey) {
 
 // ── Key bundle generation (called at registration) ────────────────────────────
 
-function generateUserKeyBundle(dataKey) {
-    const rsa = generateRSAKeyPair();
-    const ecc = generateECCKeyPair();
+async function generateUserKeyBundle(dataKey) {
+    const rsa = await generateRSAKeyPair();
+    const ecc = await generateECCKeyPair();
     return {
         rsaPublicKey:           rsa.publicKey,
-        encryptedRsaPrivateKey: encrypt(rsa.privateKey, dataKey),
+        encryptedRsaPrivateKey: await encrypt(rsa.privateKey, dataKey),
         eccPublicKey:           ecc.publicKey,
-        encryptedEccPrivateKey: encrypt(ecc.privateKey, dataKey)
+        encryptedEccPrivateKey: await encrypt(ecc.privateKey, dataKey)
     };
 }
 
 // Decrypt private keys from stored ciphertext.
 //
-// Return shape: each value is now a PARSED OBJECT with BigInt fields, not
-// a PEM string as in the pre-swap implementation. Callers (currently just
-// signing.js) hand these objects to the rsaDecrypt / eccSign / etc.
-// entry points, which accept either an object or a JSON string via
-// normalizeKey — so call sites need no changes.
-function getUserPrivateKeys(user, dataKey) {
+// Return shape: each value is the raw decrypted JSON storage string
+// ({"n":"<hex>",...} for RSA, {"d":"<hex>"} for ECDSA). Callers (currently
+// just signing.js) hand these strings straight to rsaDecrypt / eccSign,
+// which forward them to the Python dispatcher's *_json args without
+// further parsing.
+async function getUserPrivateKeys(user, dataKey) {
     return {
-        rsaPrivateKey: normalizeKey(decrypt(user.encryptedRsaPrivateKey, dataKey)),
-        eccPrivateKey: normalizeKey(decrypt(user.encryptedEccPrivateKey, dataKey))
+        rsaPrivateKey: await decrypt(user.encryptedRsaPrivateKey, dataKey),
+        eccPrivateKey: await decrypt(user.encryptedEccPrivateKey, dataKey)
     };
 }
 
@@ -148,10 +152,10 @@ function getUserPrivateKeys(user, dataKey) {
 // ── Key rotation ──────────────────────────────────────────────────────────────
 // Re-encrypts the user's dataKey with the new master key.
 // (Call after rotating MASTER_ENCRYPTION_KEY.)
-function rotateUserDataKey(user, oldMasterDecrypt, newMasterEncrypt) {
-    const rawKey = oldMasterDecrypt(user.encryptedDataKey);
+async function rotateUserDataKey(user, oldMasterDecrypt, newMasterEncrypt) {
+    const rawKey = await oldMasterDecrypt(user.encryptedDataKey);
     return {
-        encryptedDataKey: newMasterEncrypt(rawKey),
+        encryptedDataKey: await newMasterEncrypt(rawKey),
         keyVersion: (user.keyVersion || 1) + 1
     };
 }

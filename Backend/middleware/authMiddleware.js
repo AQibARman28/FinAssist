@@ -1,4 +1,4 @@
-const { jwtSign, jwtVerify } = require('../utils/scratch/jwtScratch');
+const { callPython } = require('../utils/pyCrypto');
 const User = require('../models/User');
 const { masterDecrypt, safeDecrypt } = require('../utils/encryption');
 
@@ -13,7 +13,7 @@ const protect = async (req, res, next) => {
             return res.status(401).json({ success: false, message: 'Access denied. No token provided.' });
         }
 
-        const decoded = jwtVerify(token, process.env.JWT_SECRET);
+        const decoded = (await callPython('jwt_verify', { token, secret: process.env.JWT_SECRET })).payload;
 
         // Reject temp 2FA tokens from accessing protected routes
         if (decoded.type === 'temp_2fa') {
@@ -27,12 +27,12 @@ const protect = async (req, res, next) => {
 
         // Decrypt user's data key and attach to request for use in controllers
         if (user.encryptedDataKey) {
-            const rawKey = masterDecrypt(user.encryptedDataKey);
+            const rawKey = await masterDecrypt(user.encryptedDataKey);
             req.dataKey = Buffer.from(rawKey, 'hex');
             // Attach decrypted PII for convenience
             req.user = user;
-            req.user._name  = safeDecrypt(user.name, req.dataKey);
-            req.user._email = safeDecrypt(user.email, req.dataKey);
+            req.user._name  = await safeDecrypt(user.name, req.dataKey);
+            req.user._email = await safeDecrypt(user.email, req.dataKey);
         } else {
             // Legacy user without encryption
             req.dataKey = null;
@@ -48,15 +48,21 @@ const protect = async (req, res, next) => {
     }
 };
 
-const generateToken = (id) => {
-    return jwtSign({ id }, process.env.JWT_SECRET, {
-        expiresIn: process.env.JWT_EXPIRE || '30d'
-    });
+const generateToken = async (id) => {
+    return (await callPython('jwt_sign', {
+        payload: { id },
+        secret: process.env.JWT_SECRET,
+        expires_in: process.env.JWT_EXPIRE || '30d'
+    })).token;
 };
 
 // Short-lived token used only to gate the 2FA verification step
-const generateTempToken = (id) => {
-    return jwtSign({ id, type: 'temp_2fa' }, process.env.JWT_SECRET, { expiresIn: '5m' });
+const generateTempToken = async (id) => {
+    return (await callPython('jwt_sign', {
+        payload: { id, type: 'temp_2fa' },
+        secret: process.env.JWT_SECRET,
+        expires_in: '5m'
+    })).token;
 };
 
 module.exports = { protect, generateToken, generateTempToken };

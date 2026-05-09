@@ -24,22 +24,22 @@ const registerUser = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
         }
 
-        const emailHash = hashEmail(email);
+        const emailHash = await hashEmail(email);
         if (await User.findOne({ emailHash })) {
             return res.status(400).json({ success: false, message: 'Email already registered' });
         }
 
         // Generate per-user AES data key, encrypt it with the system master key
         const rawDataKey = generateDataKey();
-        const encryptedDataKey = masterEncrypt(rawDataKey);
+        const encryptedDataKey = await masterEncrypt(rawDataKey);
         const dataKeyBuf = Buffer.from(rawDataKey, 'hex');
 
         // Encrypt PII
-        const encName  = encrypt(name, dataKeyBuf);
-        const encEmail = encrypt(email, dataKeyBuf);
+        const encName  = await encrypt(name, dataKeyBuf);
+        const encEmail = await encrypt(email, dataKeyBuf);
 
         // Generate RSA-2048 + ECC P-256 key pairs; store private keys encrypted
-        const keyBundle = generateUserKeyBundle(dataKeyBuf);
+        const keyBundle = await generateUserKeyBundle(dataKeyBuf);
 
         const user = await User.create({
             name: encName,
@@ -55,7 +55,7 @@ const registerUser = async (req, res) => {
             success: true,
             data: {
                 ...buildPublicUser(user, name, email),
-                token: generateToken(user._id)
+                token: (await generateToken(user._id))
             }
         });
     } catch (error) {
@@ -76,7 +76,7 @@ const loginUser = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Email and password are required' });
         }
 
-        const emailHash = hashEmail(email);
+        const emailHash = await hashEmail(email);
         const user = await User.findOne({ emailHash });
 
         if (!user || !(await user.comparePassword(password))) {
@@ -88,19 +88,19 @@ const loginUser = async (req, res) => {
             return res.json({
                 success: true,
                 requires2FA: true,
-                tempToken: generateTempToken(user._id)
+                tempToken: (await generateTempToken(user._id))
             });
         }
 
         // Decrypt PII for the response
-        const rawKey = masterDecrypt(user.encryptedDataKey);
+        const rawKey = await masterDecrypt(user.encryptedDataKey);
         const dataKey = Buffer.from(rawKey, 'hex');
 
         res.json({
             success: true,
             data: {
-                ...buildPublicUser(user, safeDecrypt(user.name, dataKey), safeDecrypt(user.email, dataKey)),
-                token: generateToken(user._id)
+                ...buildPublicUser(user, (await safeDecrypt(user.name, dataKey)), (await safeDecrypt(user.email, dataKey))),
+                token: (await generateToken(user._id))
             }
         });
     } catch (error) {
@@ -135,18 +135,18 @@ const updateUserProfile = async (req, res) => {
 
         const dataKey = req.dataKey;
 
-        if (req.body.name)     user.name  = encrypt(req.body.name, dataKey);
+        if (req.body.name)     user.name  = await encrypt(req.body.name, dataKey);
         if (req.body.currency) user.currency = req.body.currency;
 
         // Email change requires updating emailHash too
         if (req.body.email) {
             const newEmail = req.body.email.toLowerCase().trim();
-            const newHash  = hashEmail(newEmail);
+            const newHash  = await hashEmail(newEmail);
             const existing = await User.findOne({ emailHash: newHash });
             if (existing && existing._id.toString() !== user._id.toString()) {
                 return res.status(400).json({ success: false, message: 'Email already in use' });
             }
-            user.email     = encrypt(newEmail, dataKey);
+            user.email     = await encrypt(newEmail, dataKey);
             user.emailHash = newHash;
         }
 
@@ -161,7 +161,7 @@ const updateUserProfile = async (req, res) => {
             success: true,
             data: {
                 ...buildPublicUser(user, plainName, plainEmail),
-                token: generateToken(user._id)
+                token: (await generateToken(user._id))
             }
         });
     } catch (error) {
