@@ -3,6 +3,19 @@ const { encrypt, safeDecrypt } = require('../utils/encryption');
 const { signRecord, verifyRecord, encryptNote, decryptNote } = require('../utils/signing');
 const { assertCategoryOwnedAndTyped } = require('../utils/categoryGuard');
 const { logAudit } = require('../utils/audit');
+const { materializeRecurring } = require('../utils/recurring');
+
+// Default materialization window when the client doesn't pass a date filter:
+// the start through end of the current calendar month in UTC.
+function _defaultWindow() {
+    const now = new Date();
+    const y   = now.getUTCFullYear();
+    const m   = now.getUTCMonth();
+    return {
+        from: new Date(Date.UTC(y, m, 1, 0, 0, 0, 0)),
+        to:   new Date(Date.UTC(y, m + 1, 0, 23, 59, 59, 999)),
+    };
+}
 
 // Payload that goes into the ECDSA serverAttestation. Stricter than
 // Expense's signed payload — date, user, and createdAt are all bound,
@@ -74,6 +87,18 @@ const createIncome = async (req, res) => {
 const getIncomes = async (req, res) => {
     try {
         const { page = 1, limit = 10, category, startDate, endDate } = req.query;
+
+        // Materialize recurring instances inside the requested window
+        // before we list. Best-effort: a materialization failure shouldn't
+        // hide the user's existing rows.
+        const fallback = _defaultWindow();
+        const matFrom = startDate ? new Date(startDate) : fallback.from;
+        const matTo   = endDate   ? new Date(endDate)   : fallback.to;
+        try {
+            await materializeRecurring(Income, req.user._id, matFrom, matTo);
+        } catch (matErr) {
+            console.error('materializeRecurring (income) failed:', matErr.message);
+        }
 
         const query = { user: req.user._id };
         if (category) query.category = category;

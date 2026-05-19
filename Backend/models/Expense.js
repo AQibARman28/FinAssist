@@ -23,6 +23,12 @@ const expenseSchema = new mongoose.Schema({
 
     // RSA-2048-OAEP encrypted with the user's RSA public key (optional).
     note: { type: String },
+
+    // Part 6: present so utils/recurring.materializeRecurring can mark
+    // generated instances. Existing one-off rows leave this null. A future
+    // part may add isRecurring/recurringFrequency to Expense — declaring
+    // this now avoids a second schema change at that point.
+    parentRecurringId: { type: mongoose.Schema.Types.ObjectId, ref: 'Expense', default: null },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Expense', expenseSchema);

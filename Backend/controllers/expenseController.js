@@ -3,6 +3,18 @@ const Budget = require('../models/Budget');
 const { encrypt, safeDecrypt } = require('../utils/encryption');
 const { signRecord, verifyRecord, encryptNote, decryptNote } = require('../utils/signing');
 const { assertCategoryOwnedAndTyped } = require('../utils/categoryGuard');
+const { materializeRecurring } = require('../utils/recurring');
+
+// Default materialization window when the client doesn't pass a date filter.
+function _defaultWindow() {
+    const now = new Date();
+    const y   = now.getUTCFullYear();
+    const m   = now.getUTCMonth();
+    return {
+        from: new Date(Date.UTC(y, m, 1, 0, 0, 0, 0)),
+        to:   new Date(Date.UTC(y, m + 1, 0, 23, 59, 59, 999)),
+    };
+}
 
 // Part 3 removed the auto-categorization keyword dictionary and the
 // `isAutoCategories` Expense field. Categorization is now an explicit user
@@ -55,6 +67,20 @@ const createExpense = async (req, res) => {
 const getExpenses = async (req, res) => {
     try {
         const { page = 1, limit = 10, category, startDate, endDate } = req.query;
+
+        // Materialize recurring instances for the requested window. Today
+        // Expense has no isRecurring flag so this is a no-op for that
+        // model; the call site is in place for the day a future part
+        // brings recurring expenses online (Part 6 declared
+        // parentRecurringId on the schema for exactly this reason).
+        const fallback = _defaultWindow();
+        const matFrom = startDate ? new Date(startDate) : fallback.from;
+        const matTo   = endDate   ? new Date(endDate)   : fallback.to;
+        try {
+            await materializeRecurring(Expense, req.user._id, matFrom, matTo);
+        } catch (matErr) {
+            console.error('materializeRecurring (expense) failed:', matErr.message);
+        }
 
         const query = { user: req.user._id };
         if (category) query.category = category;
