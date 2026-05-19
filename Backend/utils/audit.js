@@ -34,6 +34,10 @@ const KNOWN_EVENTS = new Set([
     'refresh.rotate',
     'refresh.revoke',
     'email.verify',
+    'category.create',
+    'category.update',
+    'category.archive',
+    'category.delete',
 ]);
 
 function logAudit(req, event, userId = null, metadata = null) {

@@ -152,6 +152,7 @@ app.use('/api/auth', authLimiter, require('./routes/authRoutes'));
 app.use('/api/expenses', require('./routes/expenseRoutes'));
 app.use('/api/budgets', require('./routes/budgetRoutes'));
 app.use('/api/goals', require('./routes/goalsRoutes'));
+app.use('/api/categories', require('./routes/categoryRoutes'));
 app.use('/api/analytics', require('./routes/analyticsRoutes'));
 app.use('/api/ai', require('./routes/aiRoutes'));
 
