@@ -2,25 +2,13 @@ const Expense = require('../models/Expense');
 const Budget = require('../models/Budget');
 const { encrypt, safeDecrypt } = require('../utils/encryption');
 const { signRecord, verifyRecord, encryptNote, decryptNote } = require('../utils/signing');
+const { assertCategoryOwnedAndTyped } = require('../utils/categoryGuard');
 
-const categoryKeywords = {
-    'Transport':     ['uber', 'taxi', 'bus', 'train', 'metro', 'rickshaw', 'fuel', 'petrol', 'gas'],
-    'Food':          ['restaurant', 'food', 'meal', 'lunch', 'dinner', 'breakfast', 'cafe', 'pizza', 'burger'],
-    'Entertainment': ['movie', 'cinema', 'game', 'concert', 'party', 'club', 'netflix', 'spotify'],
-    'Shopping':      ['shop', 'store', 'mall', 'amazon', 'flipkart', 'clothes', 'shoes'],
-    'Bills':         ['electricity', 'water', 'gas', 'internet', 'phone', 'rent', 'utility'],
-    'Healthcare':    ['doctor', 'hospital', 'medicine', 'pharmacy', 'clinic', 'health'],
-    'Education':     ['school', 'college', 'university', 'course', 'book', 'tuition']
-};
-
-const autoCategories = (description) => {
-    if (!description) return 'Other';
-    const lowerDesc = description.toLowerCase();
-    for (const [category, keywords] of Object.entries(categoryKeywords)) {
-        if (keywords.some(kw => lowerDesc.includes(kw))) return category;
-    }
-    return 'Other';
-};
+// Part 3 removed the auto-categorization keyword dictionary and the
+// `isAutoCategories` Expense field. Categorization is now an explicit user
+// choice — the client picks a Category by id, and categoryGuard verifies
+// the row exists, belongs to the user, isn't archived, and has type
+// 'expense' or 'both' before insert.
 
 async function decryptExpense(expense, user, dataKey) {
     const obj = expense.toObject ? expense.toObject({ virtuals: true }) : { ...expense };
@@ -34,30 +22,27 @@ const createExpense = async (req, res) => {
     try {
         const { amount, category, description, date } = req.body;
 
-        let finalCategory = category;
-        let isAutoCategories = false;
-        if (!category) {
-            finalCategory = autoCategories(description);
-            isAutoCategories = true;
+        const guard = await assertCategoryOwnedAndTyped(req.user._id, category, 'expense');
+        if (!guard.ok) {
+            return res.status(guard.status).json({ success: false, message: guard.message });
         }
 
         const expDate           = date ? new Date(date) : new Date();
         const encDesc           = description ? (await encrypt(description, req.dataKey)) : undefined;
-        const serverAttestation = await signRecord({ amount, category: finalCategory }, req.user, req.dataKey);
+        const serverAttestation = await signRecord({ amount, category }, req.user, req.dataKey);
         const encNote           = req.body.note ? (await encryptNote(req.body.note, req.user)) : undefined;
 
         const expense = await Expense.create({
-            user: req.user._id,
+            user:        req.user._id,
             amount,
-            category: finalCategory,
+            category,
             description: encDesc,
-            date: expDate,
-            isAutoCategories,
+            date:        expDate,
             serverAttestation,
-            note: encNote
+            note:        encNote,
         });
 
-        await updateBudgetSpent(req.user._id, finalCategory, expDate.getMonth() + 1, expDate.getFullYear());
+        await updateBudgetSpent(req.user._id, category, expDate.getMonth() + 1, expDate.getFullYear());
 
         res.status(201).json({ success: true, data: await decryptExpense(expense, req.user, req.dataKey) });
     } catch (error) {
@@ -130,8 +115,16 @@ const getExpenseById = async (req, res) => {
 // PUT /api/expenses/:id
 const updateExpense = async (req, res) => {
     try {
-        // Build the update doc before the DB call so we can refuse a no-op
-        // request loudly rather than silently round-tripping.
+        // If the caller wants to change the category, re-run the guard for
+        // the NEW category before touching the DB. Owner / archive / type
+        // semantics are identical to create.
+        if (req.body.category !== undefined) {
+            const guard = await assertCategoryOwnedAndTyped(req.user._id, req.body.category, 'expense');
+            if (!guard.ok) {
+                return res.status(guard.status).json({ success: false, message: guard.message });
+            }
+        }
+
         const updates = {};
         if (req.body.amount      !== undefined) updates.amount      = req.body.amount;
         if (req.body.category    !== undefined) updates.category    = req.body.category;
@@ -146,10 +139,7 @@ const updateExpense = async (req, res) => {
         // serverAttestation is set on creation and NOT regenerated on update —
         // see docs/decisions/SEC-1-ecdsa.md.
 
-        // Compound filter prevents IDOR — the mutation only matches the row
-        // when both _id and user line up. Null result means either the row
-        // doesn't exist OR it belongs to someone else; both surface as 404 so
-        // the existence of someone else's id can't be probed.
+        // Compound filter prevents IDOR.
         const before = await Expense.findOneAndUpdate(
             { _id: req.params.id, user: req.user._id },
             updates,
@@ -174,8 +164,6 @@ const updateExpense = async (req, res) => {
 // DELETE /api/expenses/:id
 const deleteExpense = async (req, res) => {
     try {
-        // findOneAndDelete with the compound filter enforces ownership at the
-        // mutation site — no separate read-then-delete TOCTOU window.
         const deleted = await Expense.findOneAndDelete({ _id: req.params.id, user: req.user._id });
         if (!deleted) return res.status(404).json({ success: false, message: 'Expense not found' });
 
@@ -226,6 +214,16 @@ const getMonthlySummary = async (req, res) => {
     }
 };
 
+// updateBudgetSpent — recompute the Budget row's `spent` field for the
+// affected month/category after an expense write.
+//
+// PART 3 NOTE — this path is a temporary no-op for newly-created expenses.
+// Expense.category is now an ObjectId (this commit); Budget.category is
+// still a String enum (Part 4 changes it). Mongoose schema-casts the
+// ObjectId filter to a hex string against Budget.category — no budget
+// matches — so spent stops being recalculated until Part 4 lands the
+// matching Budget refactor. The function is kept in place so Part 4 only
+// has to touch the Budget side, not re-wire the call sites.
 const updateBudgetSpent = async (userId, category, month, year) => {
     try {
         const startDate = new Date(year, month - 1, 1);

@@ -44,6 +44,10 @@ beforeAll(async () => {
     Expense    = require('../models/Expense');
     controller = require('../controllers/categoryController');
     validator  = require('../validators/category');
+    // Force the compound unique index to build before any test runs.
+    // Without this the index is built lazily on first insert and can
+    // race against the second insert in the duplicate test.
+    await Category.init();
 }, 60_000);
 
 afterAll(async () => {
@@ -344,21 +348,24 @@ describe('deleteCategory', () => {
     });
 
     test('force=true WITH expense references → 409, row preserved', async () => {
-        // Part 1's reference check counts via Expense.countDocuments. Today
-        // Expense.category is a String enum (Part 2 makes it an ObjectId
-        // ref), so Mongoose's schema casting on the filter prevents
-        // raw-insert tricks from matching. The cleanest way to exercise the
-        // 409 branch is to stub the count for this test only.
+        // Part 3 made Expense.category an ObjectId ref, so a real insert
+        // is the right way to exercise this — no more spyOn workaround.
         const user = fakeUser();
         const cat  = await Category.create({ user: user._id, ...SAMPLE });
 
-        const spy = jest.spyOn(Expense, 'countDocuments').mockResolvedValueOnce(1);
+        await Expense.create({
+            user:        user._id,
+            amount:      42,
+            category:    cat._id,
+            description: 'real-insert',
+            date:        new Date(),
+        });
+
         const res = mockRes();
         await controller.deleteCategory(
             mockReq({ user, params: { id: cat._id.toString() }, query: { force: 'true' } }),
             res,
         );
-        spy.mockRestore();
 
         expect(lastStatus(res)).toBe(409);
         expect(lastJson(res).refs.expenses).toBe(1);
