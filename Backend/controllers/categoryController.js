@@ -1,5 +1,6 @@
 const Category = require('../models/Category');
 const Expense = require('../models/Expense');
+const Income = require('../models/Income');
 const { logAudit } = require('../utils/audit');
 
 // POST /api/categories
@@ -121,24 +122,16 @@ const deleteCategory = async (req, res) => {
         }
 
         // Force-delete: only allowed when nothing references the category.
-        //
-        // NOTE: today's Expense.category is still a String enum (Part 2 will
-        // change it to an ObjectId ref to Category). The count below will
-        // return 0 for any current expense, so the branch effectively says
-        // "allow hard delete" for the existing data. Once Part 2 lands, this
-        // check starts catching real references — no controller change needed.
-        //
-        // TODO(part-5): also check Income.countDocuments({user, category: id})
-        // once the Income model is introduced.
-        const expenseRefs = await Expense.countDocuments({
-            user:     req.user._id,
-            category: cat._id,
-        });
-        if (expenseRefs > 0) {
+        // Both ref counts run in parallel since they're independent reads.
+        const [expenseRefs, incomeRefs] = await Promise.all([
+            Expense.countDocuments({ user: req.user._id, category: cat._id }),
+            Income.countDocuments({ user: req.user._id, category: cat._id }),
+        ]);
+        if (expenseRefs > 0 || incomeRefs > 0) {
             return res.status(409).json({
                 success: false,
                 message: 'Cannot hard-delete: category is referenced by existing records. Archive instead, or detach references first.',
-                refs:    { expenses: expenseRefs },
+                refs:    { expenses: expenseRefs, incomes: incomeRefs },
             });
         }
 

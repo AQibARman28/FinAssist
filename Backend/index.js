@@ -153,6 +153,7 @@ app.use('/api/expenses', require('./routes/expenseRoutes'));
 app.use('/api/budgets', require('./routes/budgetRoutes'));
 app.use('/api/goals', require('./routes/goalsRoutes'));
 app.use('/api/categories', require('./routes/categoryRoutes'));
+app.use('/api/incomes', require('./routes/incomeRoutes'));
 app.use('/api/analytics', require('./routes/analyticsRoutes'));
 app.use('/api/ai', require('./routes/aiRoutes'));
 

@@ -38,6 +38,9 @@ const KNOWN_EVENTS = new Set([
     'category.update',
     'category.archive',
     'category.delete',
+    'income.create',
+    'income.update',
+    'income.delete',
 ]);
 
 function logAudit(req, event, userId = null, metadata = null) {
