@@ -15,6 +15,7 @@ const {
 } = require('../utils/sessions');
 const { sendVerificationEmail } = require('../utils/mailer');
 const { logAudit } = require('../utils/audit');
+const { seedDefaultCategoriesForUser } = require('../utils/defaultCategories');
 
 // Lockout policy (SEC-1 Phase 4)
 const LOGIN_WINDOW_MS    = 15 * 60 * 1000;   // 15 min
@@ -109,6 +110,17 @@ const registerUser = async (req, res) => {
         });
         const verificationToken = await _issueVerificationToken(user);
         await user.save();
+
+        // Best-effort default-category seed. A rare unique-index hit (e.g.
+        // a partial earlier migration left some rows behind for this same
+        // userId) should not fail registration — the user can create the
+        // remaining categories manually. Same fail-open posture as the
+        // verification email below.
+        try {
+            await seedDefaultCategoriesForUser(user._id);
+        } catch (seedErr) {
+            console.error('register: default-category seed failed:', seedErr.message);
+        }
 
         // Best-effort email. Don't fail the registration on a mail outage —
         // the user can request a re-send (Phase 5+) or the operator can pull
