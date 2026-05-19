@@ -102,9 +102,6 @@ const getBudgetById = async (req, res) => {
 // PUT /api/budgets/:id
 const updateBudget = async (req, res) => {
     try {
-        const budget = await Budget.findOne({ _id: req.params.id, user: req.user._id });
-        if (!budget) return res.status(404).json({ success: false, message: 'Budget not found' });
-
         const updates = {};
         if (req.body.limit          !== undefined) updates.limit          = req.body.limit;
         if (req.body.alertThreshold !== undefined) updates.alertThreshold = req.body.alertThreshold;
@@ -113,9 +110,13 @@ const updateBudget = async (req, res) => {
         // serverAttestation is set on creation and NOT regenerated on update —
         // see docs/decisions/SEC-1-ecdsa.md.
 
-        const updatedBudget = await Budget.findByIdAndUpdate(
-            req.params.id, updates, { new: true, runValidators: true }
+        // Compound filter on the mutation prevents IDOR.
+        const updatedBudget = await Budget.findOneAndUpdate(
+            { _id: req.params.id, user: req.user._id },
+            updates,
+            { new: true, runValidators: true }
         );
+        if (!updatedBudget) return res.status(404).json({ success: false, message: 'Budget not found' });
 
         res.json({ success: true, data: updatedBudget });
     } catch (error) {
@@ -127,10 +128,9 @@ const updateBudget = async (req, res) => {
 // DELETE /api/budgets/:id
 const deleteBudget = async (req, res) => {
     try {
-        const budget = await Budget.findOne({ _id: req.params.id, user: req.user._id });
-        if (!budget) return res.status(404).json({ success: false, message: 'Budget not found' });
+        const deleted = await Budget.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+        if (!deleted) return res.status(404).json({ success: false, message: 'Budget not found' });
 
-        await Budget.findByIdAndDelete(req.params.id);
         res.json({ success: true, message: 'Budget deleted successfully' });
     } catch (error) {
         console.error('Delete budget error:', error);

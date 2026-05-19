@@ -130,12 +130,8 @@ const getExpenseById = async (req, res) => {
 // PUT /api/expenses/:id
 const updateExpense = async (req, res) => {
     try {
-        const expense = await Expense.findOne({ _id: req.params.id, user: req.user._id });
-        if (!expense) return res.status(404).json({ success: false, message: 'Expense not found' });
-
-        const oldCategory = expense.category;
-        const oldDate     = new Date(expense.date);
-
+        // Build the update doc before the DB call so we can refuse a no-op
+        // request loudly rather than silently round-tripping.
         const updates = {};
         if (req.body.amount      !== undefined) updates.amount      = req.body.amount;
         if (req.body.category    !== undefined) updates.category    = req.body.category;
@@ -148,18 +144,27 @@ const updateExpense = async (req, res) => {
         }
 
         // serverAttestation is set on creation and NOT regenerated on update —
-        // see docs/decisions/SEC-1-ecdsa.md. Verification on read will fail
-        // for amount/category changes (warn, non-blocking).
+        // see docs/decisions/SEC-1-ecdsa.md.
 
-        const updatedExpense = await Expense.findByIdAndUpdate(
-            req.params.id, updates, { new: true, runValidators: true }
+        // Compound filter prevents IDOR — the mutation only matches the row
+        // when both _id and user line up. Null result means either the row
+        // doesn't exist OR it belongs to someone else; both surface as 404 so
+        // the existence of someone else's id can't be probed.
+        const before = await Expense.findOneAndUpdate(
+            { _id: req.params.id, user: req.user._id },
+            updates,
+            { runValidators: true }   // returns the pre-update document
         );
+        if (!before) return res.status(404).json({ success: false, message: 'Expense not found' });
 
-        const newDate = new Date(updatedExpense.date);
-        await updateBudgetSpent(req.user._id, oldCategory,             oldDate.getMonth() + 1, oldDate.getFullYear());
-        await updateBudgetSpent(req.user._id, updatedExpense.category, newDate.getMonth() + 1, newDate.getFullYear());
+        const updated = await Expense.findOne({ _id: req.params.id, user: req.user._id });
 
-        res.json({ success: true, data: await decryptExpense(updatedExpense, req.user, req.dataKey) });
+        const oldDate = new Date(before.date);
+        const newDate = new Date(updated.date);
+        await updateBudgetSpent(req.user._id, before.category,  oldDate.getMonth() + 1, oldDate.getFullYear());
+        await updateBudgetSpent(req.user._id, updated.category, newDate.getMonth() + 1, newDate.getFullYear());
+
+        res.json({ success: true, data: await decryptExpense(updated, req.user, req.dataKey) });
     } catch (error) {
         console.error('Update expense error:', error);
         res.status(500).json({ success: false, message: 'Server error updating expense' });
@@ -169,12 +174,13 @@ const updateExpense = async (req, res) => {
 // DELETE /api/expenses/:id
 const deleteExpense = async (req, res) => {
     try {
-        const expense = await Expense.findOne({ _id: req.params.id, user: req.user._id });
-        if (!expense) return res.status(404).json({ success: false, message: 'Expense not found' });
+        // findOneAndDelete with the compound filter enforces ownership at the
+        // mutation site — no separate read-then-delete TOCTOU window.
+        const deleted = await Expense.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+        if (!deleted) return res.status(404).json({ success: false, message: 'Expense not found' });
 
-        const expenseDate = new Date(expense.date);
-        await Expense.findByIdAndDelete(req.params.id);
-        await updateBudgetSpent(req.user._id, expense.category, expenseDate.getMonth() + 1, expenseDate.getFullYear());
+        const d = new Date(deleted.date);
+        await updateBudgetSpent(req.user._id, deleted.category, d.getMonth() + 1, d.getFullYear());
 
         res.json({ success: true, message: 'Expense deleted successfully' });
     } catch (error) {

@@ -1,9 +1,10 @@
 const native = require('../utils/nativeCrypto');
 const QRCode = require('qrcode');
 const User = require('../models/User');
-const { masterDecrypt, encrypt, decrypt, safeDecrypt } = require('../utils/encryption');
+const { masterDecrypt, encrypt, safeDecrypt } = require('../utils/encryption');
 const { hasLegacyKeyBundle, regenerateUserKeyBundle } = require('../utils/keyManagement');
 const { COOKIE_TEMP, establishSession, clearTempCookie } = require('../utils/sessions');
+const { checkAndRecordTotp } = require('../utils/totpGuard');
 
 // POST /api/auth/2fa/setup — generate TOTP secret + QR code (requires auth)
 const setup2FA = async (req, res) => {
@@ -17,13 +18,7 @@ const setup2FA = async (req, res) => {
         user.twoFactorSecret = await encrypt(secret, req.dataKey);
         await user.save();
 
-        res.json({
-            success: true,
-            data: {
-                qrCode: qrDataUrl,
-                manualKey: secret
-            }
-        });
+        res.json({ success: true, data: { qrCode: qrDataUrl, manualKey: secret } });
     } catch (error) {
         console.error('2FA setup error:', error);
         res.status(500).json({ success: false, message: 'Failed to set up 2FA' });
@@ -34,21 +29,26 @@ const setup2FA = async (req, res) => {
 const enable2FA = async (req, res) => {
     try {
         const { token: totpToken } = req.body;
-        if (!totpToken) return res.status(400).json({ success: false, message: 'Verification code required' });
 
         const user = await User.findById(req.user._id);
         if (!user.twoFactorSecret) {
             return res.status(400).json({ success: false, message: 'Run 2FA setup first' });
         }
 
-        const secret = await decrypt(user.twoFactorSecret, req.dataKey);
-        if (!native.verifyTotp(secret, totpToken)) {
-            return res.status(401).json({ success: false, message: 'Invalid verification code' });
+        const result = await checkAndRecordTotp(user, req.dataKey, totpToken);
+        if (!result.ok) {
+            return res.status(result.status).json({
+                success: false,
+                message: result.status === 423
+                    ? 'Too many failed 2FA attempts. Try again in a few minutes.'
+                    : result.replay
+                        ? 'Code already used. Wait for the next 30-second window.'
+                        : 'Invalid verification code',
+            });
         }
 
         user.twoFactorEnabled = true;
         await user.save();
-
         res.json({ success: true, message: 'Two-factor authentication enabled' });
     } catch (error) {
         console.error('2FA enable error:', error);
@@ -62,15 +62,21 @@ const disable2FA = async (req, res) => {
         const { token: totpToken } = req.body;
         const user = await User.findById(req.user._id);
 
-        const secret = await decrypt(user.twoFactorSecret, req.dataKey);
-        if (!native.verifyTotp(secret, totpToken)) {
-            return res.status(401).json({ success: false, message: 'Invalid verification code' });
+        const result = await checkAndRecordTotp(user, req.dataKey, totpToken);
+        if (!result.ok) {
+            return res.status(result.status).json({
+                success: false,
+                message: result.status === 423
+                    ? 'Too many failed 2FA attempts. Try again in a few minutes.'
+                    : result.replay
+                        ? 'Code already used. Wait for the next 30-second window.'
+                        : 'Invalid verification code',
+            });
         }
 
         user.twoFactorEnabled = false;
         user.twoFactorSecret  = undefined;
         await user.save();
-
         res.json({ success: true, message: 'Two-factor authentication disabled' });
     } catch (error) {
         console.error('2FA disable error:', error);
@@ -83,7 +89,7 @@ const verify2FA = async (req, res) => {
     try {
         const { token: totpToken } = req.body;
         const tempToken = req.cookies?.[COOKIE_TEMP];
-        if (!tempToken || !totpToken) {
+        if (!tempToken) {
             return res.status(400).json({ success: false, message: '2FA gate missing or expired' });
         }
 
@@ -105,10 +111,17 @@ const verify2FA = async (req, res) => {
 
         const rawKey  = await masterDecrypt(user.encryptedDataKey);
         const dataKey = Buffer.from(rawKey, 'hex');
-        const secret  = await decrypt(user.twoFactorSecret, dataKey);
 
-        if (!native.verifyTotp(secret, totpToken)) {
-            return res.status(401).json({ success: false, message: 'Invalid verification code' });
+        const result = await checkAndRecordTotp(user, dataKey, totpToken);
+        if (!result.ok) {
+            return res.status(result.status).json({
+                success: false,
+                message: result.status === 423
+                    ? 'Too many failed 2FA attempts. Try again in a few minutes.'
+                    : result.replay
+                        ? 'Code already used. Wait for the next 30-second window.'
+                        : 'Invalid verification code',
+            });
         }
 
         // JIT migration: rotate legacy hex-JSON key bundle to PEM

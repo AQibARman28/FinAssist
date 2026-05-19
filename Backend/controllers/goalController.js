@@ -90,9 +90,6 @@ const getGoalById = async (req, res) => {
 // PUT /api/goals/:id
 const updateGoal = async (req, res) => {
     try {
-        const goal = await Goal.findOne({ _id: req.params.id, user: req.user._id });
-        if (!goal) return res.status(404).json({ success: false, message: 'Goal not found' });
-
         const updates = {};
         if (req.body.description  !== undefined) updates.description  = await encrypt(req.body.description, req.dataKey);
         if (req.body.note         !== undefined) {
@@ -104,17 +101,18 @@ const updateGoal = async (req, res) => {
         if (req.body.targetDate   !== undefined) updates.targetDate   = req.body.targetDate;
         if (req.body.goalType     !== undefined) updates.goalType     = req.body.goalType;
         if (req.body.status       !== undefined) updates.status       = req.body.status;
-
-        if (req.body.title !== undefined) {
-            updates.title = await encrypt(req.body.title, req.dataKey);
-        }
+        if (req.body.title        !== undefined) updates.title        = await encrypt(req.body.title, req.dataKey);
 
         // serverAttestation is set on creation and NOT regenerated on update —
         // see docs/decisions/SEC-1-ecdsa.md.
 
-        const updatedGoal = await Goal.findByIdAndUpdate(
-            req.params.id, updates, { new: true, runValidators: true }
+        // Compound filter on the mutation prevents IDOR.
+        const updatedGoal = await Goal.findOneAndUpdate(
+            { _id: req.params.id, user: req.user._id },
+            updates,
+            { new: true, runValidators: true }
         );
+        if (!updatedGoal) return res.status(404).json({ success: false, message: 'Goal not found' });
 
         res.json({ success: true, data: await decryptGoal(updatedGoal, req.user, req.dataKey) });
     } catch (error) {
@@ -126,10 +124,9 @@ const updateGoal = async (req, res) => {
 // DELETE /api/goals/:id
 const deleteGoal = async (req, res) => {
     try {
-        const goal = await Goal.findOne({ _id: req.params.id, user: req.user._id });
-        if (!goal) return res.status(404).json({ success: false, message: 'Goal not found' });
+        const deleted = await Goal.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+        if (!deleted) return res.status(404).json({ success: false, message: 'Goal not found' });
 
-        await Goal.findByIdAndDelete(req.params.id);
         res.json({ success: true, message: 'Goal deleted successfully' });
     } catch (error) {
         console.error('Delete goal error:', error);

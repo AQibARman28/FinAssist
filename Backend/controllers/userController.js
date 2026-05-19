@@ -1,3 +1,4 @@
+const crypto = require('node:crypto');
 const User = require('../models/User');
 const { masterEncrypt, masterDecrypt, encrypt, safeDecrypt, hashEmail, generateDataKey } = require('../utils/encryption');
 const { generateUserKeyBundle, hasLegacyKeyBundle, regenerateUserKeyBundle } = require('../utils/keyManagement');
@@ -12,6 +13,13 @@ const {
     setTempCookie,
     clearSessionCookies,
 } = require('../utils/sessions');
+const { sendVerificationEmail } = require('../utils/mailer');
+
+// Lockout policy (SEC-1 Phase 4)
+const LOGIN_WINDOW_MS    = 15 * 60 * 1000;   // 15 min
+const LOGIN_FAIL_LIMIT   = 5;
+const LOGIN_LOCKOUT_MS   = 15 * 60 * 1000;   // 15 min base, *2^lockoutCount
+const EMAIL_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
 const buildPublicUser = (user, plainName, plainEmail) => ({
     _id: user._id,
@@ -22,17 +30,58 @@ const buildPublicUser = (user, plainName, plainEmail) => ({
     twoFactorEnabled: user.twoFactorEnabled
 });
 
+// ── Email-verification helpers ───────────────────────────────────────────────
+
+function _hashVerificationToken(plaintext) {
+    return crypto.createHash('sha256').update(plaintext).digest('hex');
+}
+
+async function _issueVerificationToken(user) {
+    const plaintext = crypto.randomBytes(32).toString('base64url');
+    user.emailVerificationToken     = _hashVerificationToken(plaintext);
+    user.emailVerificationExpiresAt = new Date(Date.now() + EMAIL_TOKEN_TTL_MS);
+    return plaintext;
+}
+
+// ── Lockout helpers ──────────────────────────────────────────────────────────
+
+function _isLocked(user) {
+    return user.lockedUntil && user.lockedUntil.getTime() > Date.now();
+}
+
+async function _recordLoginFailure(user) {
+    const now = new Date();
+    if (!user.firstFailedLoginAt || (now - user.firstFailedLoginAt) > LOGIN_WINDOW_MS) {
+        user.firstFailedLoginAt = now;
+        user.failedLoginAttempts = 1;
+    } else {
+        user.failedLoginAttempts += 1;
+    }
+    if (user.failedLoginAttempts >= LOGIN_FAIL_LIMIT) {
+        const factor = Math.pow(2, user.lockoutCount || 0);
+        user.lockedUntil = new Date(now.getTime() + LOGIN_LOCKOUT_MS * factor);
+        user.lockoutCount = (user.lockoutCount || 0) + 1;
+        user.failedLoginAttempts = 0;
+        user.firstFailedLoginAt  = null;
+    }
+    await user.save();
+}
+
+async function _clearLockout(user) {
+    if (user.failedLoginAttempts || user.firstFailedLoginAt || user.lockedUntil || user.lockoutCount) {
+        user.failedLoginAttempts = 0;
+        user.firstFailedLoginAt  = null;
+        user.lockedUntil         = null;
+        user.lockoutCount        = 0;
+    }
+}
+
+// ── Handlers ─────────────────────────────────────────────────────────────────
+
 // POST /api/auth/register
 const registerUser = async (req, res) => {
     try {
         const { name, email, password, currency } = req.body;
-
-        if (!name || !email || !password) {
-            return res.status(400).json({ success: false, message: 'Name, email and password are required' });
-        }
-        if (password.length < 6) {
-            return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
-        }
 
         const emailHash = await hashEmail(email);
         if (await User.findOne({ emailHash })) {
@@ -44,28 +93,37 @@ const registerUser = async (req, res) => {
         const encryptedDataKey = await masterEncrypt(rawDataKey);
         const dataKeyBuf = Buffer.from(rawDataKey, 'hex');
 
-        // Encrypt PII
         const encName  = await encrypt(name, dataKeyBuf);
         const encEmail = await encrypt(email, dataKeyBuf);
-
-        // Generate RSA-2048 + ECC P-256 key pairs; store private keys encrypted
         const keyBundle = await generateUserKeyBundle(dataKeyBuf);
 
-        const user = await User.create({
+        const user = new User({
             name: encName,
             email: encEmail,
             emailHash,
             password,
             currency: currency || 'BDT',
             encryptedDataKey,
-            ...keyBundle
+            ...keyBundle,
         });
+        const verificationToken = await _issueVerificationToken(user);
+        await user.save();
 
-        await establishSession(res, user._id);
+        // Best-effort email. Don't fail the registration on a mail outage —
+        // the user can request a re-send (Phase 5+) or the operator can pull
+        // the URL from logs.
+        try {
+            await sendVerificationEmail(email, verificationToken);
+        } catch (mailErr) {
+            console.error('register: verification email failed:', mailErr.message);
+        }
 
+        // Do NOT establish a session — the user has to verify their email
+        // before they can log in.
         res.status(201).json({
             success: true,
             data: buildPublicUser(user, name, email),
+            message: 'Account created. Check your email for a verification link.',
         });
     } catch (error) {
         console.error('Register error:', error);
@@ -77,28 +135,82 @@ const registerUser = async (req, res) => {
     }
 };
 
+// GET /api/auth/verify-email?token=...
+// Public route — opened directly from the email. Redirects to the frontend
+// login page with ?verified=1 (or ?verified=0 on failure).
+const verifyEmail = async (req, res) => {
+    const frontend = (process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
+    try {
+        const token = req.query?.token;
+        if (typeof token !== 'string' || token.length === 0) {
+            return res.redirect(`${frontend}/login?verified=0&reason=missing`);
+        }
+        const hash = _hashVerificationToken(token);
+        const user = await User.findOne({ emailVerificationToken: hash });
+        if (!user) {
+            return res.redirect(`${frontend}/login?verified=0&reason=invalid`);
+        }
+        if (!user.emailVerificationExpiresAt || user.emailVerificationExpiresAt.getTime() < Date.now()) {
+            return res.redirect(`${frontend}/login?verified=0&reason=expired`);
+        }
+        user.emailVerified              = true;
+        user.emailVerificationToken     = null;
+        user.emailVerificationExpiresAt = null;
+        await user.save();
+        return res.redirect(`${frontend}/login?verified=1`);
+    } catch (error) {
+        console.error('Verify-email error:', error);
+        return res.redirect(`${frontend}/login?verified=0&reason=error`);
+    }
+};
+
 // POST /api/auth/login
 const loginUser = async (req, res) => {
     try {
         const { email, password } = req.body;
-        if (!email || !password) {
-            return res.status(400).json({ success: false, message: 'Email and password are required' });
-        }
 
         const emailHash = await hashEmail(email);
         const user = await User.findOne({ emailHash });
 
-        if (!user || !(await user.comparePassword(password))) {
+        // Unified "invalid email or password" for the no-user case is
+        // applied below alongside the wrong-password case. But: lockout
+        // check has to happen even when the password is wrong, so we still
+        // need to identify which user we're checking. We do the lockout
+        // check inside the user-exists branch.
+        if (!user) {
             return res.status(401).json({ success: false, message: 'Invalid email or password' });
         }
 
+        if (_isLocked(user)) {
+            return res.status(423).json({
+                success: false,
+                message: 'Account temporarily locked due to repeated failed sign-ins. Try again later.',
+                lockedUntil: user.lockedUntil,
+            });
+        }
+
+        if (!(await user.comparePassword(password))) {
+            await _recordLoginFailure(user);
+            return res.status(401).json({ success: false, message: 'Invalid email or password' });
+        }
+
+        // Password OK — but block unverified accounts before establishing a
+        // session.
+        if (user.emailVerified === false) {
+            return res.status(403).json({
+                success: false,
+                message: 'Please verify your email address before signing in. Check your inbox for the verification link.',
+            });
+        }
+
+        _clearLockout(user);
+
         // Lazy password rehash: legacy PBKDF2 hashes get upgraded to argon2id
-        // on first successful login. Save happens regardless of 2FA path so the
-        // migration completes even for 2FA users (whose response returns early).
+        // on first successful login.
         if (user.passwordHashScheme !== 'argon2id') {
             user.password = password;      // pre('save') hook re-hashes with argon2id
-            await user.save();
         }
+        await user.save();
 
         // 2FA — issue a short-lived temp token in a cookie and wait for TOTP verification
         if (user.twoFactorEnabled) {
@@ -133,7 +245,6 @@ const loginUser = async (req, res) => {
 };
 
 // POST /api/auth/refresh — rotate refresh token and reissue access cookie.
-// Public route (no `protect`) because the access cookie may already be expired.
 const refreshSession = async (req, res) => {
     try {
         const rotated = await rotateRefreshToken(req.cookies?.[COOKIE_REFRESH]);
@@ -152,15 +263,12 @@ const refreshSession = async (req, res) => {
 };
 
 // POST /api/auth/logout — revoke the current refresh token, clear cookies.
-// Public route — callable when the access token is already expired so the
-// client can still clean up the server-side refresh row.
 const logout = async (req, res) => {
     try {
         await revokeRefreshToken(req.cookies?.[COOKIE_REFRESH]);
         clearSessionCookies(res);
         res.json({ success: true });
     } catch (error) {
-        // Even on failure, blow away the cookies so the client lands logged out.
         clearSessionCookies(res);
         console.error('Logout error:', error);
         res.json({ success: true });
@@ -196,7 +304,6 @@ const updateUserProfile = async (req, res) => {
         if (req.body.name)     user.name  = await encrypt(req.body.name, dataKey);
         if (req.body.currency) user.currency = req.body.currency;
 
-        // Email change requires updating emailHash too
         if (req.body.email) {
             const newEmail = req.body.email.toLowerCase().trim();
             const newHash  = await hashEmail(newEmail);
@@ -215,9 +322,6 @@ const updateUserProfile = async (req, res) => {
         const plainName  = req.body.name  || req.user._name;
         const plainEmail = req.body.email || req.user._email;
 
-        // Session cookies stay valid — the access JWT carries only {id}, which
-        // is unchanged. No token rotation needed on profile change.
-
         res.json({ success: true, data: buildPublicUser(user, plainName, plainEmail) });
     } catch (error) {
         console.error('Update profile error:', error);
@@ -225,4 +329,8 @@ const updateUserProfile = async (req, res) => {
     }
 };
 
-module.exports = { registerUser, loginUser, refreshSession, logout, getUserProfile, updateUserProfile };
+module.exports = {
+    registerUser, loginUser, verifyEmail,
+    refreshSession, logout,
+    getUserProfile, updateUserProfile,
+};
