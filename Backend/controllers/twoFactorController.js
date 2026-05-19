@@ -1,14 +1,15 @@
-const { callPython } = require('../utils/pyCrypto');
+const native = require('../utils/nativeCrypto');
 const QRCode = require('qrcode');
 const User = require('../models/User');
 const { generateToken } = require('../middleware/authMiddleware');
 const { masterDecrypt, encrypt, decrypt, safeDecrypt } = require('../utils/encryption');
+const { hasLegacyKeyBundle, regenerateUserKeyBundle } = require('../utils/keyManagement');
 
 // POST /api/auth/2fa/setup — generate TOTP secret + QR code (requires auth)
 const setup2FA = async (req, res) => {
     try {
-        const { secret_b32: secret } = await callPython('totp_generate_secret', {});
-        const { uri: otpauthUrl } = await callPython('totp_otpauth_uri', { label: req.user._email, issuer: 'FinAssist', secret_b32: secret });
+        const secret = native.generateTotpSecret();
+        const otpauthUrl = native.totpOtpauthUri(req.user._email, 'FinAssist', secret);
         const qrDataUrl = await QRCode.toDataURL(otpauthUrl);
 
         // Store encrypted secret (NOT enabled yet — user must verify first)
@@ -41,8 +42,7 @@ const enable2FA = async (req, res) => {
         }
 
         const secret = await decrypt(user.twoFactorSecret, req.dataKey);
-        const { ok } = await callPython('totp_verify', { token: totpToken, secret_b32: secret });
-        if (!ok) {
+        if (!native.verifyTotp(secret, totpToken)) {
             return res.status(401).json({ success: false, message: 'Invalid verification code' });
         }
 
@@ -63,8 +63,7 @@ const disable2FA = async (req, res) => {
         const user = await User.findById(req.user._id);
 
         const secret = await decrypt(user.twoFactorSecret, req.dataKey);
-        const { ok } = await callPython('totp_verify', { token: totpToken, secret_b32: secret });
-        if (!ok) {
+        if (!native.verifyTotp(secret, totpToken)) {
             return res.status(401).json({ success: false, message: 'Invalid verification code' });
         }
 
@@ -89,7 +88,7 @@ const verify2FA = async (req, res) => {
 
         let decoded;
         try {
-            decoded = (await callPython('jwt_verify', { token: tempToken, secret: process.env.JWT_SECRET })).payload;
+            decoded = native.verifyJwt(tempToken, process.env.JWT_SECRET);
         } catch {
             return res.status(401).json({ success: false, message: 'Expired or invalid session. Please log in again.' });
         }
@@ -105,9 +104,14 @@ const verify2FA = async (req, res) => {
         const dataKey = Buffer.from(rawKey, 'hex');
         const secret  = await decrypt(user.twoFactorSecret, dataKey);
 
-        const { ok } = await callPython('totp_verify', { token: totpToken, secret_b32: secret });
-        if (!ok) {
+        if (!native.verifyTotp(secret, totpToken)) {
             return res.status(401).json({ success: false, message: 'Invalid verification code' });
+        }
+
+        // JIT migration: rotate legacy hex-JSON key bundle to PEM
+        if (hasLegacyKeyBundle(user)) {
+            await regenerateUserKeyBundle(user, dataKey);
+            await user.save();
         }
 
         res.json({

@@ -1,6 +1,7 @@
 const { rsaEncrypt, rsaDecrypt, eccSign, eccVerify, getUserPrivateKeys } = require('./keyManagement');
 
-// Sort top-level keys so signRecord and verifyRecord agree regardless of payload construction order
+// Sort top-level keys so signRecord and verifyRecord agree regardless of
+// payload construction order.
 function canonicalJSON(payload) {
     if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
         return JSON.stringify(payload);
@@ -27,10 +28,20 @@ async function encryptNote(plaintext, user) {
     return await rsaEncrypt(plaintext, user.rsaPublicKey);
 }
 
+// Graceful: old notes (encrypted with a pre-migration RSA key) cannot decrypt
+// against the new PEM private key. Catch and return null with a warning so
+// listing a record with a legacy note doesn't surface a 500 to the user.
+// Bounded surface: only applies to notes encrypted before the key migration
+// at login.
 async function decryptNote(ciphertext, user, dataKey) {
     if (!ciphertext || !user?.encryptedRsaPrivateKey || !dataKey) return null;
-    const { rsaPrivateKey } = await getUserPrivateKeys(user, dataKey);
-    return await rsaDecrypt(ciphertext, rsaPrivateKey);
+    try {
+        const { rsaPrivateKey } = await getUserPrivateKeys(user, dataKey);
+        return await rsaDecrypt(ciphertext, rsaPrivateKey);
+    } catch (err) {
+        console.warn(`decryptNote: legacy or corrupt note for user ${user?._id} — ${err.message}`);
+        return null;
+    }
 }
 
 module.exports = { signRecord, verifyRecord, encryptNote, decryptNote };

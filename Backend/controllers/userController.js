@@ -1,7 +1,7 @@
 const User = require('../models/User');
 const { generateToken, generateTempToken } = require('../middleware/authMiddleware');
 const { masterEncrypt, masterDecrypt, encrypt, safeDecrypt, hashEmail, generateDataKey } = require('../utils/encryption');
-const { generateUserKeyBundle } = require('../utils/keyManagement');
+const { generateUserKeyBundle, hasLegacyKeyBundle, regenerateUserKeyBundle } = require('../utils/keyManagement');
 
 const buildPublicUser = (user, plainName, plainEmail) => ({
     _id: user._id,
@@ -83,6 +83,14 @@ const loginUser = async (req, res) => {
             return res.status(401).json({ success: false, message: 'Invalid email or password' });
         }
 
+        // Lazy password rehash: legacy PBKDF2 hashes get upgraded to argon2id
+        // on first successful login. Save happens regardless of 2FA path so the
+        // migration completes even for 2FA users (whose response returns early).
+        if (user.passwordHashScheme !== 'argon2id') {
+            user.password = password;      // pre('save') hook re-hashes with argon2id
+            await user.save();
+        }
+
         // 2FA — issue a short-lived temp token and wait for TOTP verification
         if (user.twoFactorEnabled) {
             return res.json({
@@ -95,6 +103,12 @@ const loginUser = async (req, res) => {
         // Decrypt PII for the response
         const rawKey = await masterDecrypt(user.encryptedDataKey);
         const dataKey = Buffer.from(rawKey, 'hex');
+
+        // JIT migration: rotate legacy hex-JSON key bundle to PEM
+        if (hasLegacyKeyBundle(user)) {
+            await regenerateUserKeyBundle(user, dataKey);
+            await user.save();
+        }
 
         res.json({
             success: true,

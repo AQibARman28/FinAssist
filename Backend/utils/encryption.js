@@ -1,53 +1,59 @@
-const crypto = require('crypto');
-const { callPython } = require('./pyCrypto');
+/**
+ * encryption.js — high-level encryption / integrity helpers used by the
+ * request-path code. Internals call `nativeCrypto` (Node) — the legacy
+ * Python subprocess bridge is gone.
+ *
+ * Public API (unchanged signatures so callers don't move):
+ *   masterEncrypt / masterDecrypt   — wrap user dataKeys with MASTER_ENCRYPTION_KEY
+ *   encrypt / decrypt / safeDecrypt — per-user AES-256-GCM
+ *   generateHMAC / verifyHMAC       — record integrity (HMAC-SHA256 over canonical JSON)
+ *   hashEmail                       — SHA-256 lookup hash (Phase 2 migrates to keyed HMAC)
+ *   generateDataKey                 — 32 random bytes, hex string
+ *
+ * Wire format for encrypted blobs is unchanged: base64(IV || tag || ciphertext)
+ * with IV_LEN=12 and TAG_LEN=16. Existing DB records decrypt as before.
+ */
 
-const IV_LEN  = 12;   // GCM standard 12-byte IV (scratch aes256gcm requires this length)
+const crypto = require('node:crypto');
+const native = require('./nativeCrypto');
+
+const IV_LEN  = 12;   // GCM standard 12-byte IV
 const TAG_LEN = 16;
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-// Each helper is a thin Node-side adapter: encode buffers to base64, hand off
-// to the Python dispatcher, decode the response. Entropy (random IVs, data
-// keys) stays in Node — only the math goes through Python.
+// ── AES helpers (wire format: base64(iv || tag || ciphertext)) ───────────────
 
-function _b64(buf) { return buf.toString('base64'); }
-function _bytes(b64) { return Buffer.from(b64, 'base64'); }
-
-async function _aesEncryptBuf(keyBuf, plaintextStr) {
-    const iv = crypto.randomBytes(IV_LEN);
-    const result = await callPython('aes_encrypt', {
-        key_b64: _b64(keyBuf),
-        iv_b64:  _b64(iv),
-        plaintext_b64: _b64(Buffer.from(plaintextStr, 'utf8')),
-    });
-    const tag = _bytes(result.tag_b64);
-    const ct  = _bytes(result.ciphertext_b64);
-    return Buffer.concat([iv, tag, ct]).toString('base64');
+function _aesEncryptStored(keyBuf, plaintextStr) {
+    const { ciphertext, iv, tag } = native.aesGcmEncrypt(plaintextStr, keyBuf);
+    return Buffer.concat([iv, tag, ciphertext]).toString('base64');
 }
 
-async function _aesDecryptBuf(keyBuf, storedB64) {
+function _aesDecryptStored(keyBuf, storedB64) {
     const buf = Buffer.from(storedB64, 'base64');
+    if (buf.length < IV_LEN + TAG_LEN) {
+        throw new Error('encryption._aesDecryptStored: ciphertext blob too short');
+    }
     const iv  = buf.subarray(0, IV_LEN);
     const tag = buf.subarray(IV_LEN, IV_LEN + TAG_LEN);
-    const enc = buf.subarray(IV_LEN + TAG_LEN);
-    const result = await callPython('aes_decrypt', {
-        key_b64: _b64(keyBuf),
-        iv_b64:  _b64(iv),
-        ciphertext_b64: _b64(enc),
-        tag_b64: _b64(tag),
-    });
-    return _bytes(result.plaintext_b64).toString('utf8');
+    const ct  = buf.subarray(IV_LEN + TAG_LEN);
+    return native.aesGcmDecrypt(ct, keyBuf, iv, tag).toString('utf8');
 }
 
-// ── Master-key operations (encrypts/decrypts user data keys) ──────────────────
+// ── Master-key operations (encrypts/decrypts user dataKeys) ──────────────────
+
+function _masterKey() {
+    const hex = process.env.MASTER_ENCRYPTION_KEY;
+    if (typeof hex !== 'string' || hex.length !== 64) {
+        throw new Error('encryption: MASTER_ENCRYPTION_KEY must be 64 hex chars');
+    }
+    return Buffer.from(hex, 'hex');
+}
 
 async function masterEncrypt(plaintext) {
-    const key = Buffer.from(process.env.MASTER_ENCRYPTION_KEY, 'hex');
-    return _aesEncryptBuf(key, String(plaintext));
+    return _aesEncryptStored(_masterKey(), String(plaintext));
 }
 
 async function masterDecrypt(ciphertext) {
-    const key = Buffer.from(process.env.MASTER_ENCRYPTION_KEY, 'hex');
-    return _aesDecryptBuf(key, ciphertext);
+    return _aesDecryptStored(_masterKey(), ciphertext);
 }
 
 // ── Per-user AES-256-GCM operations ──────────────────────────────────────────
@@ -55,19 +61,20 @@ async function masterDecrypt(ciphertext) {
 async function encrypt(plaintext, dataKey) {
     if (plaintext === null || plaintext === undefined) return null;
     const key = Buffer.isBuffer(dataKey) ? dataKey : Buffer.from(dataKey, 'hex');
-    return _aesEncryptBuf(key, String(plaintext));
+    return _aesEncryptStored(key, String(plaintext));
 }
 
 async function decrypt(ciphertext, dataKey) {
     if (!ciphertext) return null;
     const key = Buffer.isBuffer(dataKey) ? dataKey : Buffer.from(dataKey, 'hex');
-    return _aesDecryptBuf(key, ciphertext);
+    return _aesDecryptStored(key, ciphertext);
 }
 
-// Graceful decrypt — falls back to plaintext for legacy unencrypted data.
-// Preserves the pre-swap behavior: on ANY decrypt failure (Python error,
-// tag mismatch, malformed wire format) return the input ciphertext string
-// unchanged rather than throwing.
+// Graceful decrypt — preserves the existing fallback contract for legacy data
+// stored before encryption rolled out. Decrypt failure (malformed blob, tag
+// mismatch) returns the input string unchanged. Not a silent swallow: the
+// surface area is bounded to "user PII fields written before encryption was
+// added", and the caller still has the original value rather than null.
 async function safeDecrypt(ciphertext, dataKey) {
     if (!ciphertext) return null;
     try {
@@ -77,46 +84,43 @@ async function safeDecrypt(ciphertext, dataKey) {
     }
 }
 
-// ── HMAC-SHA256 integrity ─────────────────────────────────────────────────────
+// ── HMAC-SHA256 record integrity ─────────────────────────────────────────────
+// Phase 2 drops these from records (GCM tag covers it). Kept for Phase 1 to
+// preserve the on-disk record format until Phase 2 lands.
+
+function _hmacSecret() {
+    const hex = process.env.HMAC_SECRET;
+    if (typeof hex !== 'string' || hex.length !== 64) {
+        throw new Error('encryption: HMAC_SECRET must be 64 hex chars');
+    }
+    return Buffer.from(hex, 'hex');
+}
 
 async function generateHMAC(payload, userId) {
-    const key  = Buffer.from(process.env.HMAC_SECRET, 'hex');
     const data = JSON.stringify({ ...payload, _uid: userId.toString() });
-    const result = await callPython('hmac_sha256_hex', {
-        key_b64: _b64(key),
-        message_b64: _b64(Buffer.from(data, 'utf8')),
-    });
-    return result.hex;
+    return native.hmacSha256(data, _hmacSecret());
 }
 
 async function verifyHMAC(payload, mac, userId) {
     try {
         const expected = await generateHMAC(payload, userId);
         if (typeof mac !== 'string' || mac.length !== expected.length) return false;
-        // Constant-time hex-string comparison stays in Node — no point
-        // round-tripping a fixed-length compare to Python.
-        let diff = 0;
-        for (let i = 0; i < expected.length; i++) {
-            diff |= expected.charCodeAt(i) ^ mac.charCodeAt(i);
-        }
-        return diff === 0;
+        return crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(mac, 'hex'));
     } catch {
         return false;
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 async function hashEmail(email) {
+    if (typeof email !== 'string') {
+        throw new TypeError('hashEmail: email must be a string');
+    }
     const normalized = email.toLowerCase().trim();
-    const result = await callPython('sha256_hex', {
-        message_b64: _b64(Buffer.from(normalized, 'utf8')),
-    });
-    return result.hex;
+    return native.sha256(normalized);
 }
 
-// Pure entropy — stays sync. Per the integration plan, randomness stays in
-// Node (crypto.randomBytes is OS-CSPRNG-backed and explicitly permitted).
 function generateDataKey() {
     return crypto.randomBytes(32).toString('hex');
 }
@@ -125,5 +129,5 @@ module.exports = {
     masterEncrypt, masterDecrypt,
     encrypt, decrypt, safeDecrypt,
     generateHMAC, verifyHMAC,
-    hashEmail, generateDataKey
+    hashEmail, generateDataKey,
 };
