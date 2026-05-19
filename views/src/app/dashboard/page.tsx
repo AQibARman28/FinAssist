@@ -8,48 +8,79 @@ import { Wallet, CreditCard, TrendingUp, Bell, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/lib/store";
 
+interface DashboardStats {
+    totalSaved:         number;
+    monthlyIncome:      number;
+    monthlySpend:       number;
+    recentTransactions: any[];
+    chartData:          { name: string; amount: number }[];
+}
+
+function currencyFormatter(code = "USD"): Intl.NumberFormat {
+    return new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: code,
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 0,
+    });
+}
+
 export default function DashboardPage() {
     const { user } = useAuthStore();
+    const fmt = currencyFormatter(user?.currency || "USD");
+
     const [loading, setLoading] = useState(true);
-    const [stats, setStats] = useState({
-        totalSaved: 0,
-        monthlySpend: 0,
+    const [stats, setStats] = useState<DashboardStats>({
+        totalSaved:         0,
+        monthlyIncome:      0,
+        monthlySpend:       0,
         recentTransactions: [],
-        chartData: [] as { name: string, amount: number }[]
+        chartData:          [],
     });
 
     useEffect(() => {
         const fetchDashboardData = async () => {
             try {
                 const now = new Date();
-                const year = now.getFullYear();
-                const month = now.getMonth() + 1;
+                const year  = now.getUTCFullYear();
+                const month = now.getUTCMonth();
+                const monthStart = new Date(Date.UTC(year, month,     1, 0, 0, 0, 0));
+                const monthEnd   = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59, 999));
 
-                // 1. Fetch Monthly Expense Summary
-                const expenseRes = await api.get(`/expenses/summary/${year}/${month}`);
-                const monthlySpend = expenseRes.data.data.totalSpent || 0;
+                // Run in parallel; one failure doesn't break the others.
+                const [expenseSummaryRes, txRes, goalsRes, incomeListRes] = await Promise.allSettled([
+                    api.get(`/expenses/summary/${year}/${month + 1}`),
+                    api.get("/expenses"),
+                    api.get("/goals/dashboard"),
+                    api.get("/incomes", {
+                        params: { startDate: monthStart.toISOString(), endDate: monthEnd.toISOString(), limit: 100 },
+                    }),
+                ]);
 
-                // Process chart data (summary by category as a proxy for trend, or dummy daily data if backend doesn't provide daily breakdown yet)
-                // For now, let's map categories to chart for visualization
-                const chartData = expenseRes.data.data.summary.map((item: any) => ({
-                    name: item.category,
-                    amount: item.amount
-                }));
+                const monthlySpend = expenseSummaryRes.status === "fulfilled"
+                    ? (expenseSummaryRes.value.data?.data?.totalSpent ?? 0)
+                    : 0;
+                const chartData = expenseSummaryRes.status === "fulfilled"
+                    ? (expenseSummaryRes.value.data?.data?.summary ?? []).map((it: any) => ({
+                        name: it.category, amount: it.amount,
+                    }))
+                    : [];
 
-                // 2. Fetch Recent Transactions
-                const txRes = await api.get("/expenses"); // Assumes this returns list sorted by date desc
-                const recentTransactions = txRes.data.data.slice(0, 5);
+                const recentTransactions = txRes.status === "fulfilled"
+                    ? (txRes.value.data?.data ?? []).slice(0, 5)
+                    : [];
 
-                // 3. Fetch Goals for "Total Saved" (Total Assets)
-                const goalsRes = await api.get("/goals/dashboard");
-                const totalSaved = goalsRes.data.data.totalSavedAmount || 0;
+                const totalSaved = goalsRes.status === "fulfilled"
+                    ? (goalsRes.value.data?.data?.totalSavedAmount ?? 0)
+                    : 0;
 
-                setStats({
-                    totalSaved,
-                    monthlySpend,
-                    recentTransactions,
-                    chartData
-                });
+                const monthlyIncome = incomeListRes.status === "fulfilled"
+                    ? (incomeListRes.value.data?.data ?? []).reduce(
+                        (sum: number, inc: { amount: number }) => sum + (inc.amount || 0), 0,
+                    )
+                    : 0;
+
+                setStats({ totalSaved, monthlyIncome, monthlySpend, recentTransactions, chartData });
             } catch (err) {
                 console.error("Failed to load dashboard data", err);
             } finally {
@@ -66,7 +97,6 @@ export default function DashboardPage() {
 
     return (
         <div className="p-6 space-y-6 max-w-7xl mx-auto">
-            {/* Header */}
             <div className="flex justify-between items-center mb-8">
                 <div>
                     <h1 className="text-2xl font-bold text-white">Hello, {user?.name || "User"}</h1>
@@ -77,20 +107,28 @@ export default function DashboardPage() {
                 </button>
             </div>
 
-            {/* Stats Bento Grid - Top Row */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {/* Top row reads left-to-right: assets → income → spend → activity */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
                 <StatCard
                     title="Total Assets"
-                    value={`$${stats.totalSaved.toLocaleString()}`}
+                    value={fmt.format(stats.totalSaved)}
                     trend="In Vaults"
                     trendUp={true}
                     icon={Wallet}
                     gradient={true}
-                    className="col-span-1 md:col-span-1 bg-gradient-to-br from-yellow-900/20 to-black border-yellow-500/20"
+                    className="bg-gradient-to-br from-yellow-900/20 to-black border-yellow-500/20"
+                />
+                <StatCard
+                    title="Income this Month"
+                    value={fmt.format(stats.monthlyIncome)}
+                    trend="This Month"
+                    trendUp={true}
+                    icon={TrendingUp}
+                    className="bg-gradient-to-br from-emerald-900/15 to-black border-emerald-500/15"
                 />
                 <StatCard
                     title="Monthly Spend"
-                    value={`$${stats.monthlySpend.toLocaleString()}`}
+                    value={fmt.format(stats.monthlySpend)}
                     trend="This Month"
                     trendUp={false}
                     icon={CreditCard}
@@ -103,10 +141,7 @@ export default function DashboardPage() {
                 />
             </div>
 
-            {/* Main Content Grid */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
-
-                {/* Chart Section - Takes 2 cols */}
                 <div className="lg:col-span-2 p-6 rounded-3xl bg-zinc-900/50 border border-white/5 min-h-[400px]">
                     <div className="flex justify-between items-center mb-6">
                         <h2 className="text-lg font-semibold text-white">Spending by Category</h2>
@@ -114,14 +149,12 @@ export default function DashboardPage() {
                     <SpendingChart data={stats.chartData} />
                 </div>
 
-                {/* Transactions Section - Takes 1 col */}
                 <div className="lg:col-span-1 p-6 rounded-3xl bg-zinc-900/50 border border-white/5">
                     <div className="flex justify-between items-center mb-6">
                         <h2 className="text-lg font-semibold text-white">Recent Transactions</h2>
                     </div>
                     <RecentTransactions transactions={stats.recentTransactions} />
                 </div>
-
             </div>
         </div>
     );

@@ -1,11 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { motion } from "framer-motion";
-import { Plus, Loader2 } from "lucide-react";
+import { Plus, Loader2, AlertCircle } from "lucide-react";
 import { api } from "@/lib/api";
-
-const CATEGORIES = ["Food", "Transport", "Entertainment", "Shopping", "Bills", "Healthcare", "Education", "Other"];
+import { CategoryPicker } from "@/components/CategoryPicker";
 
 interface ExpenseFormProps {
     onAdd: () => void;
@@ -13,32 +11,46 @@ interface ExpenseFormProps {
 
 export function ExpenseForm({ onAdd }: ExpenseFormProps) {
     const [isLoading, setIsLoading] = useState(false);
+    const [serverError, setServerError] = useState<string | null>(null);
+    const [categoryError, setCategoryError] = useState<string | null>(null);
     const [formData, setFormData] = useState({
-        title: "", // Mapped to description in backend
+        title: "",                                  // backend field: description
         amount: "",
-        category: "",
-        date: new Date().toISOString().split('T')[0],
-        note: ""
+        category: "" as string,                     // backend field: category (ObjectId)
+        date: new Date().toISOString().split("T")[0],
+        note: "",
     });
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!formData.title || !formData.amount || !formData.category) return;
+        setServerError(null);
+        setCategoryError(null);
+
+        if (!formData.title || !formData.amount) return;
+        if (!formData.category) {
+            setCategoryError("Pick a category");
+            return;
+        }
 
         setIsLoading(true);
         try {
             await api.post("/expenses", {
                 description: formData.title,
-                amount: parseFloat(formData.amount),
-                category: formData.category,
-                date: formData.date,
-                note: formData.note
+                amount:      parseFloat(formData.amount),
+                category:    formData.category,
+                date:        formData.date,
+                ...(formData.note ? { note: formData.note } : {}),
             });
-
             setFormData({ ...formData, title: "", amount: "", note: "" });
-            onAdd(); // Refresh list
-        } catch (err) {
-            console.error(err);
+            onAdd();
+        } catch (err: any) {
+            const errs = err.response?.data?.errors;
+            if (errs?.category) setCategoryError(errs.category);
+            setServerError(
+                err.response?.data?.message
+                || (errs && Object.values(errs).join(", "))
+                || "Failed to add expense"
+            );
         } finally {
             setIsLoading(false);
         }
@@ -48,9 +60,8 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
         <div className="p-6 rounded-3xl bg-zinc-900/50 border border-white/5 mb-6">
             <h3 className="text-white font-medium mb-4">Add New Expense</h3>
             <form onSubmit={handleSubmit} className="space-y-4">
-                <div className="flex flex-col md:flex-row gap-4 items-end">
+                <div className="flex flex-col md:flex-row gap-4 md:items-end">
 
-                    {/* Title Input */}
                     <div className="w-full md:w-1/3 space-y-2">
                         <label className="text-xs text-zinc-500">What was it for?</label>
                         <input
@@ -63,34 +74,29 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
                         />
                     </div>
 
-                    {/* Amount Input */}
                     <div className="w-full md:w-1/4 space-y-2">
                         <label className="text-xs text-zinc-500">Amount</label>
                         <input
                             type="number"
+                            step="0.01"
                             placeholder="0.00"
                             value={formData.amount}
                             onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
-                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/50 transition-colors"
+                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/50 transition-colors tabular-nums"
                             required
                         />
                     </div>
 
-                    {/* Category Select */}
                     <div className="w-full md:w-1/4 space-y-2">
                         <label className="text-xs text-zinc-500">Category</label>
-                        <select
+                        <CategoryPicker
+                            type="expense"
                             value={formData.category}
-                            onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-zinc-300 focus:outline-none focus:border-purple-500/50 transition-colors appearance-none cursor-pointer"
-                            required
-                        >
-                            <option value="" disabled>Select Category</option>
-                            {CATEGORIES.map(cat => <option key={cat} value={cat}>{cat}</option>)}
-                        </select>
+                            onChange={(id) => { setFormData({ ...formData, category: id }); setCategoryError(null); }}
+                            error={categoryError ?? undefined}
+                        />
                     </div>
 
-                    {/* Submit Button */}
                     <button
                         type="submit"
                         disabled={isLoading}
@@ -101,7 +107,6 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
                     </button>
                 </div>
 
-                {/* Private Note Textarea */}
                 <div className="space-y-2">
                     <label className="text-xs text-zinc-500">Private note (optional)</label>
                     <textarea
@@ -112,6 +117,13 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
                         className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/50 transition-colors resize-y"
                     />
                 </div>
+
+                {serverError && !categoryError && (
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
+                        <AlertCircle className="w-4 h-4 shrink-0" />
+                        <span>{serverError}</span>
+                    </div>
+                )}
             </form>
         </div>
     );

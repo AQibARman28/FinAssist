@@ -2,17 +2,25 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, Wallet, CreditCard, Target, Settings, LogOut, PieChart } from "lucide-react";
+import {
+    LayoutDashboard, Wallet, CreditCard, Target, Settings, LogOut,
+    PieChart, TrendingUp, Tag,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/lib/store";
 
+// Ordered so the financial flow reads top-to-bottom:
+//   overview → analytics → planning (budgets) → in (income) → out (expenses)
+//   → savings (goals) → taxonomy (categories) → account (settings)
 const menuItems = [
-    { icon: LayoutDashboard, label: "Dashboard", href: "/dashboard" },
-    { icon: PieChart, label: "Analytics", href: "/dashboard/analytics" },
-    { icon: Wallet, label: "Budgets", href: "/dashboard/budgets" },
-    { icon: CreditCard, label: "Expenses", href: "/dashboard/expenses" },
-    { icon: Target, label: "Goals", href: "/dashboard/goals" },
-    { icon: Settings, label: "Settings", href: "/dashboard/settings" },
+    { icon: LayoutDashboard, label: "Dashboard",  href: "/dashboard" },
+    { icon: PieChart,        label: "Analytics",  href: "/dashboard/analytics" },
+    { icon: Wallet,          label: "Budgets",    href: "/dashboard/budgets" },
+    { icon: TrendingUp,      label: "Income",     href: "/dashboard/income" },
+    { icon: CreditCard,      label: "Expenses",   href: "/dashboard/expenses" },
+    { icon: Target,          label: "Goals",      href: "/dashboard/goals" },
+    { icon: Tag,             label: "Categories", href: "/dashboard/categories" },
+    { icon: Settings,        label: "Settings",   href: "/dashboard/settings" },
 ];
 
 export function Sidebar() {
@@ -34,9 +42,10 @@ export function Sidebar() {
                 </h1>
             </div>
 
-            <nav className="flex-1 px-4 space-y-2">
+            <nav className="flex-1 px-4 space-y-1.5 overflow-y-auto">
                 {menuItems.map((item) => {
-                    const isActive = pathname === item.href;
+                    const isActive = pathname === item.href
+                        || (item.href !== "/dashboard" && pathname?.startsWith(item.href + "/"));
                     return (
                         <Link
                             key={item.href}
