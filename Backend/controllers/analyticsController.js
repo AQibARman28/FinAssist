@@ -1,9 +1,16 @@
 const Expense = require('../models/Expense');
 const Budget = require('../models/Budget');
+const { expenseTotalForPeriod, incomeTotalForPeriod } = require('../utils/finance');
 
+// UTC bounds. recurring.js's date arithmetic uses UTC throughout, and Mongo
+// stores Dates as UTC milliseconds — using local time here was producing a
+// half-day skew on either edge (a local-time anchor at month-start landed
+// in the previous UTC month for any TZ east of UTC), which let
+// computeRecurringDates project two occurrences into one local month for
+// monthly templates anchored at local midnight.
 const getMonthDateRange = (year, month) => {
-    const start = new Date(year, month - 1, 1);
-    const end = new Date(year, month, 0, 23, 59, 59);
+    const start = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
+    const end   = new Date(Date.UTC(year, month,     0, 23, 59, 59, 999));
     return { start, end };
 };
 
@@ -85,27 +92,30 @@ const highSpendingCategories = async (req, res) => {
     }
 };
 
+// GET /api/analytics/expense-income-ratio
+//
+// Part 7 rewrite: sources totals from the real Income and Expense
+// collections for the current calendar month. Earlier versions used
+// Budget.limit as "income" — that's the budget envelope, not the user's
+// actual income, and produced a 100% ratio for anyone who set a budget
+// without recording income. The new shape is { totalIncome, totalExpense,
+// ratio } per the Part-7 brief; ratio is `null` (not 0, not Infinity)
+// when totalIncome is 0 so the frontend can render "no income on file"
+// without doing math on undefined.
 const expenseIncomeRatio = async (req, res) => {
     try {
         const userId = req.user._id;
+        const now = new Date();
+        const { start, end } = getMonthDateRange(now.getUTCFullYear(), now.getUTCMonth() + 1);
 
-        const { start, end } = getMonthDateRange(new Date().getFullYear(), new Date().getMonth() + 1);
-
-        const expenses = await Expense.aggregate([
-            { $match: { user: userId, date: { $gte: start, $lte: end } } },
-            { $group: { _id: null, totalExpense: { $sum: '$amount' } } }
+        const [totalIncome, totalExpense] = await Promise.all([
+            incomeTotalForPeriod(userId, start, end),
+            expenseTotalForPeriod(userId, start, end),
         ]);
 
-        const budgets = await Budget.aggregate([
-            { $match: { user: userId, month: start.getMonth() + 1, year: start.getFullYear() } },
-            { $group: { _id: null, totalIncome: { $sum: '$limit' } } }
-        ]);
+        const ratio = totalIncome === 0 ? null : totalExpense / totalIncome;
 
-        const totalExpense = expenses.length ? expenses[0].totalExpense : 0;
-        const totalIncome = budgets.length ? budgets[0].totalIncome : 0;
-        const ratio = totalIncome ? ((totalExpense / totalIncome) * 100).toFixed(2) : 0;
-
-        res.json({ success: true, data: { totalExpense, totalIncome, expenseIncomeRatio: ratio } });
+        res.json({ success: true, data: { totalIncome, totalExpense, ratio } });
     } catch (error) {
         console.error('Expense-to-income ratio error:', error);
         res.status(500).json({ success: false, message: 'Server error' });
