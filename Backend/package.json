@@ -7,7 +7,10 @@
         "start": "node index.js",
         "dev": "nodemon index.js",
         "test": "jest",
-        "seed": "node scripts/seed.js"
+        "seed": "node scripts/seed.js",
+        "security:audit": "npm audit --audit-level=high",
+        "migrate:email-hash": "node scripts/migrate-email-hash.js",
+        "migrate:existing-users": "node scripts/migrate-existing-users.js"
     },
     "keywords": [
         "fintech",

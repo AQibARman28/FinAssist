@@ -14,6 +14,7 @@ const {
     clearSessionCookies,
 } = require('../utils/sessions');
 const { sendVerificationEmail } = require('../utils/mailer');
+const { logAudit } = require('../utils/audit');
 
 // Lockout policy (SEC-1 Phase 4)
 const LOGIN_WINDOW_MS    = 15 * 60 * 1000;   // 15 min
@@ -118,6 +119,8 @@ const registerUser = async (req, res) => {
             console.error('register: verification email failed:', mailErr.message);
         }
 
+        logAudit(req, 'register', user._id);
+
         // Do NOT establish a session — the user has to verify their email
         // before they can log in.
         res.status(201).json({
@@ -157,6 +160,7 @@ const verifyEmail = async (req, res) => {
         user.emailVerificationToken     = null;
         user.emailVerificationExpiresAt = null;
         await user.save();
+        logAudit(req, 'email.verify', user._id);
         return res.redirect(`${frontend}/login?verified=1`);
     } catch (error) {
         console.error('Verify-email error:', error);
@@ -178,10 +182,12 @@ const loginUser = async (req, res) => {
         // need to identify which user we're checking. We do the lockout
         // check inside the user-exists branch.
         if (!user) {
+            logAudit(req, 'login.failure', null, { reason: 'unknown_email' });
             return res.status(401).json({ success: false, message: 'Invalid email or password' });
         }
 
         if (_isLocked(user)) {
+            logAudit(req, 'login.failure', user._id, { reason: 'locked' });
             return res.status(423).json({
                 success: false,
                 message: 'Account temporarily locked due to repeated failed sign-ins. Try again later.',
@@ -191,12 +197,14 @@ const loginUser = async (req, res) => {
 
         if (!(await user.comparePassword(password))) {
             await _recordLoginFailure(user);
+            logAudit(req, 'login.failure', user._id, { reason: 'wrong_password' });
             return res.status(401).json({ success: false, message: 'Invalid email or password' });
         }
 
         // Password OK — but block unverified accounts before establishing a
         // session.
         if (user.emailVerified === false) {
+            logAudit(req, 'login.failure', user._id, { reason: 'email_unverified' });
             return res.status(403).json({
                 success: false,
                 message: 'Please verify your email address before signing in. Check your inbox for the verification link.',
@@ -215,6 +223,7 @@ const loginUser = async (req, res) => {
         // 2FA — issue a short-lived temp token in a cookie and wait for TOTP verification
         if (user.twoFactorEnabled) {
             setTempCookie(res, mintTempToken(user._id));
+            logAudit(req, 'login.success', user._id, { pending2FA: true });
             return res.json({ success: true, requires2FA: true });
         }
 
@@ -229,6 +238,7 @@ const loginUser = async (req, res) => {
         }
 
         await establishSession(res, user._id);
+        logAudit(req, 'login.success', user._id);
 
         res.json({
             success: true,
@@ -255,6 +265,7 @@ const refreshSession = async (req, res) => {
 
         setAccessCookie(res, rotated.accessToken);
         setRefreshCookie(res, rotated.refreshToken, rotated.refreshExpiresAt);
+        logAudit(req, 'refresh.rotate', rotated.userId);
         res.json({ success: true });
     } catch (error) {
         console.error('Refresh error:', error);
@@ -267,6 +278,11 @@ const logout = async (req, res) => {
     try {
         await revokeRefreshToken(req.cookies?.[COOKIE_REFRESH]);
         clearSessionCookies(res);
+        // We don't know which user owned the cookie without decoding the
+        // access JWT; log the event with userId=null and no metadata to
+        // avoid leaking the token hash. The refresh row's revokedAt
+        // timestamp in the RefreshToken collection still ties it back.
+        logAudit(req, 'logout', null);
         res.json({ success: true });
     } catch (error) {
         clearSessionCookies(res);
@@ -315,9 +331,14 @@ const updateUserProfile = async (req, res) => {
             user.emailHash = newHash;
         }
 
+        const passwordChanged = Boolean(req.body.password);
+        const emailChanged    = Boolean(req.body.email);
         if (req.body.password) user.password = req.body.password;
 
         await user.save();
+
+        if (passwordChanged) logAudit(req, 'password.change',     user._id);
+        if (emailChanged)    logAudit(req, 'profile.email_change', user._id);
 
         const plainName  = req.body.name  || req.user._name;
         const plainEmail = req.body.email || req.user._email;

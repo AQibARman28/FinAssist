@@ -5,6 +5,7 @@ const { masterDecrypt, encrypt, safeDecrypt } = require('../utils/encryption');
 const { hasLegacyKeyBundle, regenerateUserKeyBundle } = require('../utils/keyManagement');
 const { COOKIE_TEMP, establishSession, clearTempCookie } = require('../utils/sessions');
 const { checkAndRecordTotp } = require('../utils/totpGuard');
+const { logAudit } = require('../utils/audit');
 
 // POST /api/auth/2fa/setup — generate TOTP secret + QR code (requires auth)
 const setup2FA = async (req, res) => {
@@ -49,6 +50,7 @@ const enable2FA = async (req, res) => {
 
         user.twoFactorEnabled = true;
         await user.save();
+        logAudit(req, '2fa.enable', user._id);
         res.json({ success: true, message: 'Two-factor authentication enabled' });
     } catch (error) {
         console.error('2FA enable error:', error);
@@ -77,6 +79,7 @@ const disable2FA = async (req, res) => {
         user.twoFactorEnabled = false;
         user.twoFactorSecret  = undefined;
         await user.save();
+        logAudit(req, '2fa.disable', user._id);
         res.json({ success: true, message: 'Two-factor authentication disabled' });
     } catch (error) {
         console.error('2FA disable error:', error);
@@ -132,6 +135,7 @@ const verify2FA = async (req, res) => {
 
         clearTempCookie(res);
         await establishSession(res, user._id);
+        logAudit(req, 'login.success', user._id, { via2FA: true });
 
         res.json({
             success: true,
