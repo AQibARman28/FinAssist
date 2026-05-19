@@ -10,7 +10,8 @@
         "seed": "node scripts/seed.js",
         "security:audit": "npm audit --audit-level=high",
         "migrate:email-hash": "node scripts/migrate-email-hash.js",
-        "migrate:existing-users": "node scripts/migrate-existing-users.js"
+        "migrate:existing-users": "node scripts/migrate-existing-users.js",
+        "migrate:expense-categories": "node scripts/migrate-expense-categories.js"
     },
     "keywords": [
         "fintech",
