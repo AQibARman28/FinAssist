@@ -1,17 +1,21 @@
 /**
  * encryption.js — high-level encryption / integrity helpers used by the
- * request-path code. Internals call `nativeCrypto` (Node) — the legacy
- * Python subprocess bridge is gone.
+ * request-path code. Internals call `nativeCrypto` (Node).
  *
- * Public API (unchanged signatures so callers don't move):
+ * Public API:
  *   masterEncrypt / masterDecrypt   — wrap user dataKeys with MASTER_ENCRYPTION_KEY
  *   encrypt / decrypt / safeDecrypt — per-user AES-256-GCM
- *   generateHMAC / verifyHMAC       — record integrity (HMAC-SHA256 over canonical JSON)
- *   hashEmail                       — SHA-256 lookup hash (Phase 2 migrates to keyed HMAC)
+ *   hashEmail                       — keyed HMAC-SHA256 (Phase 2; was SHA-256)
  *   generateDataKey                 — 32 random bytes, hex string
  *
- * Wire format for encrypted blobs is unchanged: base64(IV || tag || ciphertext)
- * with IV_LEN=12 and TAG_LEN=16. Existing DB records decrypt as before.
+ * Wire format for encrypted blobs: base64(IV || tag || ciphertext)
+ * with IV_LEN=12 and TAG_LEN=16. The IV is sourced exclusively from
+ * crypto.randomBytes(12) inside nativeCrypto.aesGcmEncrypt — there is no
+ * code path here or in nativeCrypto that accepts an externally-supplied IV.
+ *
+ * Phase 2 dropped the record-integrity HMAC layer (generateHMAC / verifyHMAC)
+ * — the AES-GCM auth tag already covers integrity for encrypted fields, and
+ * the ECDSA server-attestation covers integrity for plaintext fields.
  */
 
 const crypto = require('node:crypto');
@@ -84,41 +88,32 @@ async function safeDecrypt(ciphertext, dataKey) {
     }
 }
 
-// ── HMAC-SHA256 record integrity ─────────────────────────────────────────────
-// Phase 2 drops these from records (GCM tag covers it). Kept for Phase 1 to
-// preserve the on-disk record format until Phase 2 lands.
+// ── Email lookup hash (keyed HMAC) ───────────────────────────────────────────
+// Phase 2 migrated from sha256(email) to hmac_sha256(email, EMAIL_HASH_SECRET).
+// Rationale:
+//   - SHA-256 is a public hash. An attacker who exfiltrates the User collection
+//     can confirm whether arbitrary candidate emails are in the user base by
+//     hashing them and looking up emailHash. The keyed HMAC makes that
+//     impossible without also exfiltrating EMAIL_HASH_SECRET.
+//   - Confidentiality of the email collection is the threat model; uniqueness
+//     and equality lookup behavior are unchanged.
+// Migration of pre-Phase-2 users is handled by
+// Backend/scripts/migrate-email-hash.js (one-shot, idempotent).
 
-function _hmacSecret() {
-    const hex = process.env.HMAC_SECRET;
+function _emailHashKey() {
+    const hex = process.env.EMAIL_HASH_SECRET;
     if (typeof hex !== 'string' || hex.length !== 64) {
-        throw new Error('encryption: HMAC_SECRET must be 64 hex chars');
+        throw new Error('encryption: EMAIL_HASH_SECRET must be 64 hex chars');
     }
     return Buffer.from(hex, 'hex');
 }
-
-async function generateHMAC(payload, userId) {
-    const data = JSON.stringify({ ...payload, _uid: userId.toString() });
-    return native.hmacSha256(data, _hmacSecret());
-}
-
-async function verifyHMAC(payload, mac, userId) {
-    try {
-        const expected = await generateHMAC(payload, userId);
-        if (typeof mac !== 'string' || mac.length !== expected.length) return false;
-        return crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(mac, 'hex'));
-    } catch {
-        return false;
-    }
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
 
 async function hashEmail(email) {
     if (typeof email !== 'string') {
         throw new TypeError('hashEmail: email must be a string');
     }
     const normalized = email.toLowerCase().trim();
-    return native.sha256(normalized);
+    return native.hmacSha256(normalized, _emailHashKey());
 }
 
 function generateDataKey() {
@@ -128,6 +123,5 @@ function generateDataKey() {
 module.exports = {
     masterEncrypt, masterDecrypt,
     encrypt, decrypt, safeDecrypt,
-    generateHMAC, verifyHMAC,
     hashEmail, generateDataKey,
 };

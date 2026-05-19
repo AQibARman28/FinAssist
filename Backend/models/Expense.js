@@ -12,11 +12,11 @@ const expenseSchema = new mongoose.Schema({
     date:         { type: Date, required: true, default: Date.now },
     isAutoCategories: { type: Boolean, default: false },
 
-    // HMAC-SHA256 over {amount, category, plaintext-description, date, userId}
-    hmac: { type: String },
-
-    // ECDSA-P256 signature over {amount, category} — set on creation only, never regenerated on update
-    signature: { type: String },
+    // ECDSA-P256 signature over canonical {amount, category}, base64-DER.
+    // Set on creation; NOT regenerated on update — see docs/decisions/SEC-1-ecdsa.md.
+    // This is server-attestation (server holds the private key), not user
+    // non-repudiation. Phase 2 renamed from `signature` to make that honest.
+    serverAttestation: { type: String },
 
     // RSA-2048-OAEP encrypted with the user's RSA public key (optional)
     note: { type: String },
