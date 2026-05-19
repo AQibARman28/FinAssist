@@ -20,8 +20,8 @@ export function Sidebar() {
     const router = useRouter();
     const logout = useAuthStore((state) => state.logout);
 
-    const handleLogout = () => {
-        logout();
+    const handleLogout = async () => {
+        await logout();
         router.push("/login");
     };
 

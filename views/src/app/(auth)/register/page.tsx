@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 
 export default function RegisterPage() {
     const router = useRouter();
-    const setAuth = useAuthStore((state) => state.setAuth);
+    const setUser = useAuthStore((state) => state.setUser);
 
     const [formData, setFormData] = useState({
         name: "",
@@ -41,8 +41,8 @@ export default function RegisterPage() {
                 password: formData.password
             });
 
-            // Store user and token (Auto-login)
-            setAuth(res.data.data, res.data.data.token);
+            // Server set the session cookies; store the user profile locally.
+            setUser(res.data.data);
 
             // Redirect to dashboard
             router.push("/dashboard");

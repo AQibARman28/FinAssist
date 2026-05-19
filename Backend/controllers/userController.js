@@ -1,7 +1,17 @@
 const User = require('../models/User');
-const { generateToken, generateTempToken } = require('../middleware/authMiddleware');
 const { masterEncrypt, masterDecrypt, encrypt, safeDecrypt, hashEmail, generateDataKey } = require('../utils/encryption');
 const { generateUserKeyBundle, hasLegacyKeyBundle, regenerateUserKeyBundle } = require('../utils/keyManagement');
+const {
+    COOKIE_REFRESH,
+    mintTempToken,
+    establishSession,
+    rotateRefreshToken,
+    revokeRefreshToken,
+    setAccessCookie,
+    setRefreshCookie,
+    setTempCookie,
+    clearSessionCookies,
+} = require('../utils/sessions');
 
 const buildPublicUser = (user, plainName, plainEmail) => ({
     _id: user._id,
@@ -51,12 +61,11 @@ const registerUser = async (req, res) => {
             ...keyBundle
         });
 
+        await establishSession(res, user._id);
+
         res.status(201).json({
             success: true,
-            data: {
-                ...buildPublicUser(user, name, email),
-                token: (await generateToken(user._id))
-            }
+            data: buildPublicUser(user, name, email),
         });
     } catch (error) {
         console.error('Register error:', error);
@@ -91,13 +100,10 @@ const loginUser = async (req, res) => {
             await user.save();
         }
 
-        // 2FA — issue a short-lived temp token and wait for TOTP verification
+        // 2FA — issue a short-lived temp token in a cookie and wait for TOTP verification
         if (user.twoFactorEnabled) {
-            return res.json({
-                success: true,
-                requires2FA: true,
-                tempToken: (await generateTempToken(user._id))
-            });
+            setTempCookie(res, mintTempToken(user._id));
+            return res.json({ success: true, requires2FA: true });
         }
 
         // Decrypt PII for the response
@@ -110,16 +116,54 @@ const loginUser = async (req, res) => {
             await user.save();
         }
 
+        await establishSession(res, user._id);
+
         res.json({
             success: true,
-            data: {
-                ...buildPublicUser(user, (await safeDecrypt(user.name, dataKey)), (await safeDecrypt(user.email, dataKey))),
-                token: (await generateToken(user._id))
-            }
+            data: buildPublicUser(
+                user,
+                (await safeDecrypt(user.name, dataKey)),
+                (await safeDecrypt(user.email, dataKey)),
+            ),
         });
     } catch (error) {
         console.error('Login error:', error);
         res.status(500).json({ success: false, message: 'Server error during login' });
+    }
+};
+
+// POST /api/auth/refresh — rotate refresh token and reissue access cookie.
+// Public route (no `protect`) because the access cookie may already be expired.
+const refreshSession = async (req, res) => {
+    try {
+        const rotated = await rotateRefreshToken(req.cookies?.[COOKIE_REFRESH]);
+        if (!rotated) {
+            clearSessionCookies(res);
+            return res.status(401).json({ success: false, message: 'Refresh token invalid or expired' });
+        }
+
+        setAccessCookie(res, rotated.accessToken);
+        setRefreshCookie(res, rotated.refreshToken, rotated.refreshExpiresAt);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Refresh error:', error);
+        res.status(500).json({ success: false, message: 'Server error refreshing session' });
+    }
+};
+
+// POST /api/auth/logout — revoke the current refresh token, clear cookies.
+// Public route — callable when the access token is already expired so the
+// client can still clean up the server-side refresh row.
+const logout = async (req, res) => {
+    try {
+        await revokeRefreshToken(req.cookies?.[COOKIE_REFRESH]);
+        clearSessionCookies(res);
+        res.json({ success: true });
+    } catch (error) {
+        // Even on failure, blow away the cookies so the client lands logged out.
+        clearSessionCookies(res);
+        console.error('Logout error:', error);
+        res.json({ success: true });
     }
 };
 
@@ -171,17 +215,14 @@ const updateUserProfile = async (req, res) => {
         const plainName  = req.body.name  || req.user._name;
         const plainEmail = req.body.email || req.user._email;
 
-        res.json({
-            success: true,
-            data: {
-                ...buildPublicUser(user, plainName, plainEmail),
-                token: (await generateToken(user._id))
-            }
-        });
+        // Session cookies stay valid — the access JWT carries only {id}, which
+        // is unchanged. No token rotation needed on profile change.
+
+        res.json({ success: true, data: buildPublicUser(user, plainName, plainEmail) });
     } catch (error) {
         console.error('Update profile error:', error);
         res.status(500).json({ success: false, message: 'Server error updating profile' });
     }
 };
 
-module.exports = { registerUser, loginUser, getUserProfile, updateUserProfile };
+module.exports = { registerUser, loginUser, refreshSession, logout, getUserProfile, updateUserProfile };

@@ -2,6 +2,8 @@ const express = require('express');
 const {
     registerUser,
     loginUser,
+    refreshSession,
+    logout,
     getUserProfile,
     updateUserProfile
 } = require('../controllers/userController');
@@ -14,7 +16,11 @@ const router = express.Router();
 router.post('/register', registerUser);
 router.post('/login',    loginUser);
 
-// 2FA verification (uses temp token — not a protected route)
+// Session management (public — callable without a valid access token)
+router.post('/refresh',  refreshSession);
+router.post('/logout',   logout);
+
+// 2FA verification (uses fa_temp cookie set by /login — not a protected route)
 router.post('/2fa/verify', verify2FA);
 
 // Protected routes

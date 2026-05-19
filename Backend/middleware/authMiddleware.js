@@ -1,24 +1,27 @@
+/**
+ * authMiddleware.protect — reads the access token from the fa_access cookie
+ * (SEC-1 Phase 3). The previous Bearer-token flow is gone: tokens never live
+ * in JS-readable storage anymore. Token minting helpers live in utils/sessions.js.
+ */
+
 const native = require('../utils/nativeCrypto');
 const User = require('../models/User');
 const { masterDecrypt, safeDecrypt } = require('../utils/encryption');
 const { hasLegacyKeyBundle, regenerateUserKeyBundle } = require('../utils/keyManagement');
+const { COOKIE_ACCESS } = require('../utils/sessions');
 
 const protect = async (req, res, next) => {
     try {
-        let token;
-        if (req.headers.authorization?.startsWith('Bearer')) {
-            token = req.headers.authorization.split(' ')[1];
-        }
-
+        const token = req.cookies?.[COOKIE_ACCESS];
         if (!token) {
-            return res.status(401).json({ success: false, message: 'Access denied. No token provided.' });
+            return res.status(401).json({ success: false, message: 'Access denied. No session.' });
         }
 
         let decoded;
         try {
             decoded = native.verifyJwt(token, process.env.JWT_SECRET);
         } catch {
-            return res.status(401).json({ success: false, message: 'Token is not valid.' });
+            return res.status(401).json({ success: false, message: 'Session expired or invalid.' });
         }
 
         // Reject temp 2FA tokens from accessing protected routes
@@ -63,13 +66,4 @@ const protect = async (req, res, next) => {
     }
 };
 
-const generateToken = async (id) => {
-    return native.signJwt({ id }, process.env.JWT_SECRET, process.env.JWT_EXPIRE || '30d');
-};
-
-// Short-lived token used only to gate the 2FA verification step
-const generateTempToken = async (id) => {
-    return native.signJwt({ id, type: 'temp_2fa' }, process.env.JWT_SECRET, '5m');
-};
-
-module.exports = { protect, generateToken, generateTempToken };
+module.exports = { protect };

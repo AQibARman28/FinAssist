@@ -2,9 +2,11 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const dotenv = require('dotenv');
 const connectDB = require('./config/db');
+const { csrfGuard } = require('./middleware/csrf');
 
 dotenv.config();
 
@@ -21,6 +23,9 @@ app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 // Body parser
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// Cookie parser — populates req.cookies for the access/refresh/temp session cookies
+app.use(cookieParser());
 
 // CORS — allow any localhost in dev, restrict to FRONTEND_URL in production
 const corsOrigin = process.env.NODE_ENV === 'production'
@@ -54,6 +59,10 @@ const authLimiter = rateLimit({
 });
 
 app.use('/api', globalLimiter);
+
+// CSRF guard — requires X-Requested-With: FinAssist on every state-changing
+// (non-safe-method) /api request. Safe methods (GET/HEAD/OPTIONS) pass through.
+app.use('/api', csrfGuard);
 
 // Routes
 app.use('/api/auth', authLimiter, require('./routes/authRoutes'));
