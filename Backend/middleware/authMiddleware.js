@@ -1,19 +1,28 @@
-const { callPython } = require('../utils/pyCrypto');
+/**
+ * authMiddleware.protect — reads the access token from the fa_access cookie
+ * (SEC-1 Phase 3). The previous Bearer-token flow is gone: tokens never live
+ * in JS-readable storage anymore. Token minting helpers live in utils/sessions.js.
+ */
+
+const native = require('../utils/nativeCrypto');
 const User = require('../models/User');
 const { masterDecrypt, safeDecrypt } = require('../utils/encryption');
+const { hasLegacyKeyBundle, regenerateUserKeyBundle } = require('../utils/keyManagement');
+const { COOKIE_ACCESS } = require('../utils/sessions');
 
 const protect = async (req, res, next) => {
     try {
-        let token;
-        if (req.headers.authorization?.startsWith('Bearer')) {
-            token = req.headers.authorization.split(' ')[1];
-        }
-
+        const token = req.cookies?.[COOKIE_ACCESS];
         if (!token) {
-            return res.status(401).json({ success: false, message: 'Access denied. No token provided.' });
+            return res.status(401).json({ success: false, message: 'Access denied. No session.' });
         }
 
-        const decoded = (await callPython('jwt_verify', { token, secret: process.env.JWT_SECRET })).payload;
+        let decoded;
+        try {
+            decoded = native.verifyJwt(token, process.env.JWT_SECRET);
+        } catch {
+            return res.status(401).json({ success: false, message: 'Session expired or invalid.' });
+        }
 
         // Reject temp 2FA tokens from accessing protected routes
         if (decoded.type === 'temp_2fa') {
@@ -29,12 +38,21 @@ const protect = async (req, res, next) => {
         if (user.encryptedDataKey) {
             const rawKey = await masterDecrypt(user.encryptedDataKey);
             req.dataKey = Buffer.from(rawKey, 'hex');
-            // Attach decrypted PII for convenience
+
+            // JIT migration: if the user still carries hex-JSON keypairs from
+            // the Python era, rotate them to PEM now. One-time cost per legacy
+            // user. After this, signRecord / encryptNote / getUserPrivateKeys
+            // all see PEM and don't need to branch.
+            if (hasLegacyKeyBundle(user)) {
+                await regenerateUserKeyBundle(user, req.dataKey);
+                await user.save();
+            }
+
             req.user = user;
             req.user._name  = await safeDecrypt(user.name, req.dataKey);
             req.user._email = await safeDecrypt(user.email, req.dataKey);
         } else {
-            // Legacy user without encryption
+            // Legacy user without encryption at all
             req.dataKey = null;
             req.user = user;
             req.user._name  = user.name;
@@ -48,21 +66,4 @@ const protect = async (req, res, next) => {
     }
 };
 
-const generateToken = async (id) => {
-    return (await callPython('jwt_sign', {
-        payload: { id },
-        secret: process.env.JWT_SECRET,
-        expires_in: process.env.JWT_EXPIRE || '30d'
-    })).token;
-};
-
-// Short-lived token used only to gate the 2FA verification step
-const generateTempToken = async (id) => {
-    return (await callPython('jwt_sign', {
-        payload: { id, type: 'temp_2fa' },
-        secret: process.env.JWT_SECRET,
-        expires_in: '5m'
-    })).token;
-};
-
-module.exports = { protect, generateToken, generateTempToken };
+module.exports = { protect };

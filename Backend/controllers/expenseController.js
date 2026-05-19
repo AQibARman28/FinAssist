@@ -1,6 +1,6 @@
 const Expense = require('../models/Expense');
 const Budget = require('../models/Budget');
-const { encrypt, safeDecrypt, generateHMAC, verifyHMAC } = require('../utils/encryption');
+const { encrypt, safeDecrypt } = require('../utils/encryption');
 const { signRecord, verifyRecord, encryptNote, decryptNote } = require('../utils/signing');
 
 const categoryKeywords = {
@@ -41,11 +41,10 @@ const createExpense = async (req, res) => {
             isAutoCategories = true;
         }
 
-        const expDate   = date ? new Date(date) : new Date();
-        const encDesc   = description ? (await encrypt(description, req.dataKey)) : undefined;
-        const hmac      = await generateHMAC({ amount, category: finalCategory }, req.user._id);
-        const signature = await signRecord({ amount, category: finalCategory }, req.user, req.dataKey);
-        const encNote   = req.body.note ? (await encryptNote(req.body.note, req.user)) : undefined;
+        const expDate           = date ? new Date(date) : new Date();
+        const encDesc           = description ? (await encrypt(description, req.dataKey)) : undefined;
+        const serverAttestation = await signRecord({ amount, category: finalCategory }, req.user, req.dataKey);
+        const encNote           = req.body.note ? (await encryptNote(req.body.note, req.user)) : undefined;
 
         const expense = await Expense.create({
             user: req.user._id,
@@ -54,8 +53,7 @@ const createExpense = async (req, res) => {
             description: encDesc,
             date: expDate,
             isAutoCategories,
-            hmac,
-            signature,
+            serverAttestation,
             note: encNote
         });
 
@@ -88,8 +86,8 @@ const getExpenses = async (req, res) => {
 
         const items = [];
         for (const e of expenses) {
-            if (e.signature && !(await verifyRecord({ amount: e.amount, category: e.category }, e.signature, req.user))) {
-                console.warn(`Signature integrity failure on expense ${e._id} (user ${req.user._id})`);
+            if (e.serverAttestation && !(await verifyRecord({ amount: e.amount, category: e.category }, e.serverAttestation, req.user))) {
+                console.warn(`serverAttestation failed verification on expense ${e._id} (user ${req.user._id})`);
             }
             items.push(await decryptExpense(e, req.user, req.dataKey));
         }
@@ -118,11 +116,8 @@ const getExpenseById = async (req, res) => {
         const expense = await Expense.findOne({ _id: req.params.id, user: req.user._id });
         if (!expense) return res.status(404).json({ success: false, message: 'Expense not found' });
 
-        if (expense.hmac && !(await verifyHMAC({ amount: expense.amount, category: expense.category }, expense.hmac, req.user._id))) {
-            console.warn(`HMAC integrity failure on expense ${expense._id}`);
-        }
-        if (expense.signature && !(await verifyRecord({ amount: expense.amount, category: expense.category }, expense.signature, req.user))) {
-            console.warn(`Signature integrity failure on expense ${expense._id} (user ${req.user._id})`);
+        if (expense.serverAttestation && !(await verifyRecord({ amount: expense.amount, category: expense.category }, expense.serverAttestation, req.user))) {
+            console.warn(`serverAttestation failed verification on expense ${expense._id} (user ${req.user._id})`);
         }
 
         res.json({ success: true, data: await decryptExpense(expense, req.user, req.dataKey) });
@@ -135,12 +130,8 @@ const getExpenseById = async (req, res) => {
 // PUT /api/expenses/:id
 const updateExpense = async (req, res) => {
     try {
-        const expense = await Expense.findOne({ _id: req.params.id, user: req.user._id });
-        if (!expense) return res.status(404).json({ success: false, message: 'Expense not found' });
-
-        const oldCategory = expense.category;
-        const oldDate     = new Date(expense.date);
-
+        // Build the update doc before the DB call so we can refuse a no-op
+        // request loudly rather than silently round-tripping.
         const updates = {};
         if (req.body.amount      !== undefined) updates.amount      = req.body.amount;
         if (req.body.category    !== undefined) updates.category    = req.body.category;
@@ -152,19 +143,28 @@ const updateExpense = async (req, res) => {
                 : (await encryptNote(req.body.note, req.user));
         }
 
-        const finalAmount   = updates.amount   ?? expense.amount;
-        const finalCategory = updates.category ?? expense.category;
-        updates.hmac = await generateHMAC({ amount: finalAmount, category: finalCategory }, req.user._id);
+        // serverAttestation is set on creation and NOT regenerated on update —
+        // see docs/decisions/SEC-1-ecdsa.md.
 
-        const updatedExpense = await Expense.findByIdAndUpdate(
-            req.params.id, updates, { new: true, runValidators: true }
+        // Compound filter prevents IDOR — the mutation only matches the row
+        // when both _id and user line up. Null result means either the row
+        // doesn't exist OR it belongs to someone else; both surface as 404 so
+        // the existence of someone else's id can't be probed.
+        const before = await Expense.findOneAndUpdate(
+            { _id: req.params.id, user: req.user._id },
+            updates,
+            { runValidators: true }   // returns the pre-update document
         );
+        if (!before) return res.status(404).json({ success: false, message: 'Expense not found' });
 
-        const newDate = new Date(updatedExpense.date);
-        await updateBudgetSpent(req.user._id, oldCategory,             oldDate.getMonth() + 1, oldDate.getFullYear());
-        await updateBudgetSpent(req.user._id, updatedExpense.category, newDate.getMonth() + 1, newDate.getFullYear());
+        const updated = await Expense.findOne({ _id: req.params.id, user: req.user._id });
 
-        res.json({ success: true, data: await decryptExpense(updatedExpense, req.user, req.dataKey) });
+        const oldDate = new Date(before.date);
+        const newDate = new Date(updated.date);
+        await updateBudgetSpent(req.user._id, before.category,  oldDate.getMonth() + 1, oldDate.getFullYear());
+        await updateBudgetSpent(req.user._id, updated.category, newDate.getMonth() + 1, newDate.getFullYear());
+
+        res.json({ success: true, data: await decryptExpense(updated, req.user, req.dataKey) });
     } catch (error) {
         console.error('Update expense error:', error);
         res.status(500).json({ success: false, message: 'Server error updating expense' });
@@ -174,12 +174,13 @@ const updateExpense = async (req, res) => {
 // DELETE /api/expenses/:id
 const deleteExpense = async (req, res) => {
     try {
-        const expense = await Expense.findOne({ _id: req.params.id, user: req.user._id });
-        if (!expense) return res.status(404).json({ success: false, message: 'Expense not found' });
+        // findOneAndDelete with the compound filter enforces ownership at the
+        // mutation site — no separate read-then-delete TOCTOU window.
+        const deleted = await Expense.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+        if (!deleted) return res.status(404).json({ success: false, message: 'Expense not found' });
 
-        const expenseDate = new Date(expense.date);
-        await Expense.findByIdAndDelete(req.params.id);
-        await updateBudgetSpent(req.user._id, expense.category, expenseDate.getMonth() + 1, expenseDate.getFullYear());
+        const d = new Date(deleted.date);
+        await updateBudgetSpent(req.user._id, deleted.category, d.getMonth() + 1, d.getFullYear());
 
         res.json({ success: true, message: 'Expense deleted successfully' });
     } catch (error) {

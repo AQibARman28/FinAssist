@@ -1,3 +1,8 @@
 node_modules/
 .env
 *.log
+
+# Python bytecode (only appears under legacy_crypto/scratch_python/ — the
+# academic artifacts kept for history; the request path is pure Node)
+__pycache__/
+*.pyc

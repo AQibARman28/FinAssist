@@ -11,9 +11,7 @@ import { cn } from "@/lib/utils";
 
 export default function LoginPage() {
     const router  = useRouter();
-    const setAuth    = useAuthStore((s) => s.setAuth);
-    const set2FAGate = useAuthStore((s) => s.set2FAGate);
-    const tempToken  = useAuthStore((s) => s.tempToken);
+    const setUser = useAuthStore((s) => s.setUser);
 
     const [formData, setFormData]       = useState({ email: "", password: "" });
     const [totpCode, setTotpCode]       = useState("");
@@ -30,10 +28,11 @@ export default function LoginPage() {
             const res = await api.post("/auth/login", formData);
 
             if (res.data.requires2FA) {
-                set2FAGate(res.data.tempToken);
+                // The fa_temp cookie is now set server-side; we just flip the
+                // form. No tempToken state needed on the client anymore.
                 setRequires2FA(true);
             } else {
-                setAuth(res.data.data, res.data.data.token);
+                setUser(res.data.data);
                 router.push("/dashboard");
             }
         } catch (err: any) {
@@ -49,11 +48,8 @@ export default function LoginPage() {
         setError(null);
 
         try {
-            const res = await api.post("/auth/2fa/verify", {
-                tempToken,
-                token: totpCode
-            });
-            setAuth(res.data.data, res.data.data.token);
+            const res = await api.post("/auth/2fa/verify", { token: totpCode });
+            setUser(res.data.data);
             router.push("/dashboard");
         } catch (err: any) {
             setError(err.response?.data?.message || "Invalid verification code.");

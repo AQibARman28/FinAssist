@@ -1,5 +1,5 @@
 const Goal = require('../models/Goal');
-const { encrypt, safeDecrypt, generateHMAC, verifyHMAC } = require('../utils/encryption');
+const { encrypt, safeDecrypt } = require('../utils/encryption');
 const { signRecord, verifyRecord, encryptNote, decryptNote } = require('../utils/signing');
 
 async function decryptGoal(goal, user, dataKey) {
@@ -10,7 +10,7 @@ async function decryptGoal(goal, user, dataKey) {
     return obj;
 }
 
-function goalHmacPayload(title, targetAmount, goalType) {
+function goalAttestationPayload(title, targetAmount, goalType) {
     return { title, targetAmount, goalType };
 }
 
@@ -19,11 +19,10 @@ const createGoal = async (req, res) => {
     try {
         const { title, description, targetAmount, targetDate, goalType } = req.body;
 
-        const hmac      = await generateHMAC(goalHmacPayload(title, targetAmount, goalType), req.user._id);
-        const signature = await signRecord(goalHmacPayload(title, targetAmount, goalType), req.user, req.dataKey);
-        const encTitle  = await encrypt(title, req.dataKey);
-        const encDesc   = description ? (await encrypt(description, req.dataKey)) : undefined;
-        const encNote   = req.body.note ? (await encryptNote(req.body.note, req.user)) : undefined;
+        const serverAttestation = await signRecord(goalAttestationPayload(title, targetAmount, goalType), req.user, req.dataKey);
+        const encTitle          = await encrypt(title, req.dataKey);
+        const encDesc           = description ? (await encrypt(description, req.dataKey)) : undefined;
+        const encNote           = req.body.note ? (await encryptNote(req.body.note, req.user)) : undefined;
 
         const goal = await Goal.create({
             user: req.user._id,
@@ -32,8 +31,7 @@ const createGoal = async (req, res) => {
             targetAmount,
             targetDate,
             goalType,
-            hmac,
-            signature,
+            serverAttestation,
             note: encNote
         });
 
@@ -58,8 +56,8 @@ const getGoals = async (req, res) => {
         const items = [];
         for (const g of goals) {
             const plainTitle = await safeDecrypt(g.title, req.dataKey);
-            if (g.signature && !(await verifyRecord(goalHmacPayload(plainTitle, g.targetAmount, g.goalType), g.signature, req.user))) {
-                console.warn(`Signature integrity failure on goal ${g._id} (user ${req.user._id})`);
+            if (g.serverAttestation && !(await verifyRecord(goalAttestationPayload(plainTitle, g.targetAmount, g.goalType), g.serverAttestation, req.user))) {
+                console.warn(`serverAttestation failed verification on goal ${g._id} (user ${req.user._id})`);
             }
             items.push(await decryptGoal(g, req.user, req.dataKey));
         }
@@ -78,11 +76,8 @@ const getGoalById = async (req, res) => {
         if (!goal) return res.status(404).json({ success: false, message: 'Goal not found' });
 
         const plainTitle = await safeDecrypt(goal.title, req.dataKey);
-        if (goal.hmac && !(await verifyHMAC(goalHmacPayload(plainTitle, goal.targetAmount, goal.goalType), goal.hmac, req.user._id))) {
-            console.warn(`HMAC integrity failure on goal ${goal._id}`);
-        }
-        if (goal.signature && !(await verifyRecord(goalHmacPayload(plainTitle, goal.targetAmount, goal.goalType), goal.signature, req.user))) {
-            console.warn(`Signature integrity failure on goal ${goal._id} (user ${req.user._id})`);
+        if (goal.serverAttestation && !(await verifyRecord(goalAttestationPayload(plainTitle, goal.targetAmount, goal.goalType), goal.serverAttestation, req.user))) {
+            console.warn(`serverAttestation failed verification on goal ${goal._id} (user ${req.user._id})`);
         }
 
         res.json({ success: true, data: await decryptGoal(goal, req.user, req.dataKey) });
@@ -95,9 +90,6 @@ const getGoalById = async (req, res) => {
 // PUT /api/goals/:id
 const updateGoal = async (req, res) => {
     try {
-        const goal = await Goal.findOne({ _id: req.params.id, user: req.user._id });
-        if (!goal) return res.status(404).json({ success: false, message: 'Goal not found' });
-
         const updates = {};
         if (req.body.description  !== undefined) updates.description  = await encrypt(req.body.description, req.dataKey);
         if (req.body.note         !== undefined) {
@@ -109,20 +101,18 @@ const updateGoal = async (req, res) => {
         if (req.body.targetDate   !== undefined) updates.targetDate   = req.body.targetDate;
         if (req.body.goalType     !== undefined) updates.goalType     = req.body.goalType;
         if (req.body.status       !== undefined) updates.status       = req.body.status;
+        if (req.body.title        !== undefined) updates.title        = await encrypt(req.body.title, req.dataKey);
 
-        let finalTitle = await safeDecrypt(goal.title, req.dataKey);
-        if (req.body.title !== undefined) {
-            finalTitle       = req.body.title;
-            updates.title    = await encrypt(req.body.title, req.dataKey);
-        }
+        // serverAttestation is set on creation and NOT regenerated on update —
+        // see docs/decisions/SEC-1-ecdsa.md.
 
-        const finalTargetAmount = updates.targetAmount ?? goal.targetAmount;
-        const finalGoalType     = updates.goalType     ?? goal.goalType;
-        updates.hmac = await generateHMAC(goalHmacPayload(finalTitle, finalTargetAmount, finalGoalType), req.user._id);
-
-        const updatedGoal = await Goal.findByIdAndUpdate(
-            req.params.id, updates, { new: true, runValidators: true }
+        // Compound filter on the mutation prevents IDOR.
+        const updatedGoal = await Goal.findOneAndUpdate(
+            { _id: req.params.id, user: req.user._id },
+            updates,
+            { new: true, runValidators: true }
         );
+        if (!updatedGoal) return res.status(404).json({ success: false, message: 'Goal not found' });
 
         res.json({ success: true, data: await decryptGoal(updatedGoal, req.user, req.dataKey) });
     } catch (error) {
@@ -134,10 +124,9 @@ const updateGoal = async (req, res) => {
 // DELETE /api/goals/:id
 const deleteGoal = async (req, res) => {
     try {
-        const goal = await Goal.findOne({ _id: req.params.id, user: req.user._id });
-        if (!goal) return res.status(404).json({ success: false, message: 'Goal not found' });
+        const deleted = await Goal.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+        if (!deleted) return res.status(404).json({ success: false, message: 'Goal not found' });
 
-        await Goal.findByIdAndDelete(req.params.id);
         res.json({ success: true, message: 'Goal deleted successfully' });
     } catch (error) {
         console.error('Delete goal error:', error);

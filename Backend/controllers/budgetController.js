@@ -1,9 +1,8 @@
 const Budget = require('../models/Budget');
 const Expense = require('../models/Expense');
-const { generateHMAC, verifyHMAC } = require('../utils/encryption');
 const { signRecord, verifyRecord } = require('../utils/signing');
 
-function hmacPayload(b) {
+function attestationPayload(b) {
     return { category: b.category, limit: b.limit, month: b.month, year: b.year };
 }
 
@@ -27,12 +26,14 @@ const createBudget = async (req, res) => {
             budget.limit = limit;
             budget.spent = spent;
             if (alertThreshold) budget.alertThreshold = alertThreshold;
-            budget.hmac = await generateHMAC(hmacPayload({ category, limit, month, year }), req.user._id);
+            // serverAttestation is not regenerated on update — see
+            // docs/decisions/SEC-1-ecdsa.md
             await budget.save();
         } else {
             isNew = true;
-            const hmac      = await generateHMAC(hmacPayload({ category, limit, month, year }), req.user._id);
-            const signature = await signRecord(hmacPayload({ category, limit, month, year }), req.user, req.dataKey);
+            const serverAttestation = await signRecord(
+                attestationPayload({ category, limit, month, year }), req.user, req.dataKey
+            );
             budget = await Budget.create({
                 user: req.user._id,
                 category,
@@ -41,8 +42,7 @@ const createBudget = async (req, res) => {
                 month,
                 year,
                 alertThreshold: alertThreshold || 80,
-                hmac,
-                signature
+                serverAttestation
             });
         }
 
@@ -70,8 +70,8 @@ const getBudgets = async (req, res) => {
         const budgets = await Budget.find(query).sort({ category: 1 });
 
         for (const b of budgets) {
-            if (b.signature && !(await verifyRecord(hmacPayload(b), b.signature, req.user))) {
-                console.warn(`Signature integrity failure on budget ${b._id} (user ${req.user._id})`);
+            if (b.serverAttestation && !(await verifyRecord(attestationPayload(b), b.serverAttestation, req.user))) {
+                console.warn(`serverAttestation failed verification on budget ${b._id} (user ${req.user._id})`);
             }
         }
 
@@ -88,11 +88,8 @@ const getBudgetById = async (req, res) => {
         const budget = await Budget.findOne({ _id: req.params.id, user: req.user._id });
         if (!budget) return res.status(404).json({ success: false, message: 'Budget not found' });
 
-        if (budget.hmac && !(await verifyHMAC(hmacPayload(budget), budget.hmac, req.user._id))) {
-            console.warn(`HMAC integrity failure on budget ${budget._id}`);
-        }
-        if (budget.signature && !(await verifyRecord(hmacPayload(budget), budget.signature, req.user))) {
-            console.warn(`Signature integrity failure on budget ${budget._id} (user ${req.user._id})`);
+        if (budget.serverAttestation && !(await verifyRecord(attestationPayload(budget), budget.serverAttestation, req.user))) {
+            console.warn(`serverAttestation failed verification on budget ${budget._id} (user ${req.user._id})`);
         }
 
         res.json({ success: true, data: budget });
@@ -105,23 +102,21 @@ const getBudgetById = async (req, res) => {
 // PUT /api/budgets/:id
 const updateBudget = async (req, res) => {
     try {
-        const budget = await Budget.findOne({ _id: req.params.id, user: req.user._id });
-        if (!budget) return res.status(404).json({ success: false, message: 'Budget not found' });
-
         const updates = {};
         if (req.body.limit          !== undefined) updates.limit          = req.body.limit;
         if (req.body.alertThreshold !== undefined) updates.alertThreshold = req.body.alertThreshold;
         if (req.body.isActive       !== undefined) updates.isActive       = req.body.isActive;
 
-        const finalLimit = updates.limit ?? budget.limit;
-        updates.hmac = await generateHMAC(
-            hmacPayload({ category: budget.category, limit: finalLimit, month: budget.month, year: budget.year }),
-            req.user._id
-        );
+        // serverAttestation is set on creation and NOT regenerated on update —
+        // see docs/decisions/SEC-1-ecdsa.md.
 
-        const updatedBudget = await Budget.findByIdAndUpdate(
-            req.params.id, updates, { new: true, runValidators: true }
+        // Compound filter on the mutation prevents IDOR.
+        const updatedBudget = await Budget.findOneAndUpdate(
+            { _id: req.params.id, user: req.user._id },
+            updates,
+            { new: true, runValidators: true }
         );
+        if (!updatedBudget) return res.status(404).json({ success: false, message: 'Budget not found' });
 
         res.json({ success: true, data: updatedBudget });
     } catch (error) {
@@ -133,10 +128,9 @@ const updateBudget = async (req, res) => {
 // DELETE /api/budgets/:id
 const deleteBudget = async (req, res) => {
     try {
-        const budget = await Budget.findOne({ _id: req.params.id, user: req.user._id });
-        if (!budget) return res.status(404).json({ success: false, message: 'Budget not found' });
+        const deleted = await Budget.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+        if (!deleted) return res.status(404).json({ success: false, message: 'Budget not found' });
 
-        await Budget.findByIdAndDelete(req.params.id);
         res.json({ success: true, message: 'Budget deleted successfully' });
     } catch (error) {
         console.error('Delete budget error:', error);
@@ -234,9 +228,8 @@ const resetBudgets = async (req, res) => {
                 user: req.user._id, category: budget.category, month: toMonth, year: toYear
             });
             if (!existing) {
-                const payload   = hmacPayload({ category: budget.category, limit: budget.limit, month: toMonth, year: toYear });
-                const hmac      = await generateHMAC(payload, req.user._id);
-                const signature = await signRecord(payload, req.user, req.dataKey);
+                const payload           = attestationPayload({ category: budget.category, limit: budget.limit, month: toMonth, year: toYear });
+                const serverAttestation = await signRecord(payload, req.user, req.dataKey);
                 const newBudget = await Budget.create({
                     user: req.user._id,
                     category: budget.category,
@@ -245,8 +238,7 @@ const resetBudgets = async (req, res) => {
                     month: toMonth,
                     year: toYear,
                     alertThreshold: budget.alertThreshold,
-                    hmac,
-                    signature
+                    serverAttestation
                 });
                 newBudgets.push(newBudget);
             }

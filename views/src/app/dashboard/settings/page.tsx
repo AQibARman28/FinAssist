@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 const CURRENCIES = ["BDT", "USD", "EUR", "GBP", "INR", "CAD", "AUD", "SGD", "AED"];
 
 export default function SettingsPage() {
-    const { user, setAuth, token } = useAuthStore();
+    const { user, setUser } = useAuthStore();
     const [form, setForm] = useState({ name: "", email: "", currency: "BDT", password: "", confirmPassword: "" });
     const [isLoading, setIsLoading]   = useState(false);
     const [success, setSuccess]       = useState(false);
@@ -49,7 +49,7 @@ export default function SettingsPage() {
             if (form.password) payload.password = form.password;
 
             const res = await api.put("/auth/profile", payload);
-            setAuth(res.data.data, res.data.data.token ?? token ?? "");
+            setUser(res.data.data);
             setSuccess(true);
             setForm((f) => ({ ...f, password: "", confirmPassword: "" }));
         } catch (err: any) {
@@ -82,7 +82,7 @@ export default function SettingsPage() {
         try {
             await api.post("/auth/2fa/enable", { token: tfaCode });
             // Patch local user state so the toggle reflects immediately
-            if (user) setAuth({ ...user, twoFactorEnabled: true }, token ?? "");
+            if (user) setUser({ ...user, twoFactorEnabled: true });
             setTfaSuccess("Two-factor authentication enabled.");
             setTfaStep("idle");
             setTfaCode("");
@@ -101,7 +101,7 @@ export default function SettingsPage() {
         setTfaLoading(true);
         try {
             await api.post("/auth/2fa/disable", { token: tfaCode });
-            if (user) setAuth({ ...user, twoFactorEnabled: false }, token ?? "");
+            if (user) setUser({ ...user, twoFactorEnabled: false });
             setTfaSuccess("Two-factor authentication disabled.");
             setTfaStep("idle");
             setTfaCode("");

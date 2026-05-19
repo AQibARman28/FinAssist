@@ -13,11 +13,10 @@ const budgetSchema = new mongoose.Schema({
     alertThreshold: { type: Number, default: 80, min: 0, max: 100 },
     isActive: { type: Boolean, default: true },
 
-    // HMAC-SHA256 over {limit, category, month, year, userId}
-    hmac: { type: String },
-
-    // ECDSA-P256 signature over {category, limit, month, year} — set on creation only, never regenerated on update
-    signature: { type: String },
+    // ECDSA-P256 server-attestation over canonical {category, limit, month, year},
+    // base64-DER. Set on creation; NOT regenerated on update.
+    // See docs/decisions/SEC-1-ecdsa.md.
+    serverAttestation: { type: String },
 }, { timestamps: true });
 
 budgetSchema.index({ user: 1, category: 1, month: 1, year: 1 }, { unique: true });

@@ -6,12 +6,10 @@ import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
-import { useAuthStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export default function RegisterPage() {
     const router = useRouter();
-    const setAuth = useAuthStore((state) => state.setAuth);
 
     const [formData, setFormData] = useState({
         name: "",
@@ -35,17 +33,15 @@ export default function RegisterPage() {
 
         try {
             // The backend register endpoint expects: name, email, password
-            const res = await api.post("/auth/register", {
+            await api.post("/auth/register", {
                 name: formData.name,
                 email: formData.email,
                 password: formData.password
             });
 
-            // Store user and token (Auto-login)
-            setAuth(res.data.data, res.data.data.token);
-
-            // Redirect to dashboard
-            router.push("/dashboard");
+            // SEC-1 Phase 4: registration does NOT auto-login anymore. The user
+            // must click the verification link in their email before signing in.
+            router.push("/login?registered=1");
         } catch (err: any) {
             setError(
                 err.response?.data?.message || "Registration failed. Please try again."

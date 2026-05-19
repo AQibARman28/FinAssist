@@ -21,11 +21,10 @@ const goalSchema = new mongoose.Schema({
         note:   { type: String, trim: true }
     }],
 
-    // HMAC-SHA256 over {plaintext-title, targetAmount, userId}
-    hmac: { type: String },
-
-    // ECDSA-P256 signature over {plaintext-title, targetAmount, goalType} — set on creation only
-    signature: { type: String },
+    // ECDSA-P256 server-attestation over canonical
+    // {goalType, targetAmount, title-plaintext}, base64-DER. Set on creation;
+    // NOT regenerated on update. See docs/decisions/SEC-1-ecdsa.md.
+    serverAttestation: { type: String },
 
     // Top-level private note, RSA-2048-OAEP encrypted with the user's RSA public key (optional)
     note: { type: String },
