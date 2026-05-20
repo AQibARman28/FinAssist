@@ -127,7 +127,7 @@ export function CategoryPicker({
             )}
 
             {open && (
-                <div className="absolute top-full left-0 right-0 mt-2 z-50 bg-zinc-900 border border-white/10 rounded-xl shadow-2xl shadow-black/50 max-h-80 overflow-hidden flex flex-col">
+                <div className="absolute top-full left-0 mt-2 z-50 w-full min-w-[18rem] bg-zinc-900 border border-white/10 rounded-xl shadow-2xl shadow-black/50 max-h-[28rem] overflow-y-auto flex flex-col">
                     {loading ? (
                         <div className="flex items-center justify-center py-8 text-zinc-500">
                             <Loader2 className="w-4 h-4 animate-spin" />
@@ -204,8 +204,11 @@ function InlineCreateForm({ type, onCancel, onCreated }: InlineCreateFormProps) 
     const [submitting, setSubmitting] = useState(false);
     const [error, setError]   = useState<string | null>(null);
 
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
+    // Not a <form> — this lives inside CategoryPicker, which is itself
+    // commonly rendered inside another <form> (IncomeForm, ExpenseForm).
+    // HTML doesn't allow nested forms; React surfaces this as a hydration
+    // error. Submit is driven by the button + Enter key on the name input.
+    const handleSubmit = async () => {
         if (!name.trim()) return;
         setSubmitting(true);
         setError(null);
@@ -223,13 +226,22 @@ function InlineCreateForm({ type, onCancel, onCreated }: InlineCreateFormProps) 
     };
 
     return (
-        <form onSubmit={handleSubmit} className="p-4 space-y-3">
+        <div className="p-4 space-y-3">
             <input
                 autoFocus
                 type="text"
                 placeholder="Category name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                        e.preventDefault();         // don't bubble up to any outer form
+                        handleSubmit();
+                    } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        onCancel();
+                    }
+                }}
                 maxLength={60}
                 className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/50"
             />
@@ -288,7 +300,8 @@ function InlineCreateForm({ type, onCancel, onCreated }: InlineCreateFormProps) 
 
             <div className="flex gap-2 pt-1">
                 <button
-                    type="submit"
+                    type="button"
+                    onClick={handleSubmit}
                     disabled={submitting || !name.trim()}
                     className="flex-1 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-sm font-medium px-3 py-2 rounded-lg transition-colors flex items-center justify-center gap-1.5"
                 >
@@ -303,6 +316,6 @@ function InlineCreateForm({ type, onCancel, onCreated }: InlineCreateFormProps) 
                     Cancel
                 </button>
             </div>
-        </form>
+        </div>
     );
 }

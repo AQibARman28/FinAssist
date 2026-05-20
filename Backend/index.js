@@ -122,20 +122,30 @@ const corsOrigin = process.env.NODE_ENV === 'production'
 
 app.use(cors({ origin: corsOrigin, credentials: true }));
 
-// Global rate limiter — 100 requests per 15 minutes per IP
+// Rate limits. The production posture is strict (100/15min global,
+// 10/15min on /auth) per SEC-1 Phase 5. In dev mode the same caps are
+// too tight for normal iteration (every page mount fires several
+// requests and the Next hot-reload re-fetches on each change), so we
+// default to much looser caps when NODE_ENV !== 'production'. Both are
+// env-overridable via RATE_LIMIT_GLOBAL_MAX / RATE_LIMIT_AUTH_MAX for
+// either side of the line.
+const _isProd = process.env.NODE_ENV === 'production';
+const _globalMax = parseInt(process.env.RATE_LIMIT_GLOBAL_MAX || (_isProd ? '100' : '10000'), 10);
+const _authMax   = parseInt(process.env.RATE_LIMIT_AUTH_MAX   || (_isProd ? '10'  : '1000'),  10);
+
 const globalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 100,
+    max: _globalMax,
     standardHeaders: true,
     legacyHeaders: false,
     message: { success: false, message: 'Too many requests, please try again later.' }
 });
 
-// Stricter limiter for auth endpoints — 10/15min per IP. Per-account lockout
-// (Phase 4) handles the per-user dimension; this is the per-IP layer.
+// Stricter limiter for auth endpoints. Per-account lockout (Phase 4) handles
+// the per-user dimension; this is the per-IP layer.
 const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 10,
+    max: _authMax,
     standardHeaders: true,
     legacyHeaders: false,
     message: { success: false, message: 'Too many auth attempts from this IP, please try again later.' }

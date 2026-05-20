@@ -108,7 +108,19 @@ const registerUser = async (req, res) => {
             encryptedDataKey,
             ...keyBundle,
         });
-        const verificationToken = await _issueVerificationToken(user);
+
+        // Dev-mode bypass: when SMTP isn't configured the operator (who is
+        // also the user) can't receive the verification email, so insisting
+        // on the verification gate just blocks them from their own dashboard.
+        // Auto-verify, skip the token, establish a session. Production with
+        // SMTP_HOST set still runs the full verify-by-email flow.
+        const smtpConfigured = Boolean(process.env.SMTP_HOST);
+        let verificationToken = null;
+        if (smtpConfigured) {
+            verificationToken = await _issueVerificationToken(user);
+        } else {
+            user.emailVerified = true;
+        }
         await user.save();
 
         // Best-effort default-category seed. A rare unique-index hit (e.g.
@@ -122,23 +134,35 @@ const registerUser = async (req, res) => {
             console.error('register: default-category seed failed:', seedErr.message);
         }
 
-        // Best-effort email. Don't fail the registration on a mail outage —
-        // the user can request a re-send (Phase 5+) or the operator can pull
-        // the URL from logs.
-        try {
-            await sendVerificationEmail(email, verificationToken);
-        } catch (mailErr) {
-            console.error('register: verification email failed:', mailErr.message);
+        if (smtpConfigured) {
+            // Best-effort email. Don't fail the registration on a mail outage —
+            // the user can request a re-send (Phase 5+) or the operator can
+            // pull the URL from logs.
+            try {
+                await sendVerificationEmail(email, verificationToken);
+            } catch (mailErr) {
+                console.error('register: verification email failed:', mailErr.message);
+            }
         }
 
         logAudit(req, 'register', user._id);
 
-        // Do NOT establish a session — the user has to verify their email
-        // before they can log in.
-        res.status(201).json({
+        if (smtpConfigured) {
+            // Production posture: no session until they click the link.
+            return res.status(201).json({
+                success: true,
+                data: buildPublicUser(user, name, email),
+                requiresEmailVerification: true,
+                message: 'Account created. Check your email for a verification link.',
+            });
+        }
+
+        // Dev posture: drop them straight onto the dashboard.
+        await establishSession(res, user._id);
+        return res.status(201).json({
             success: true,
             data: buildPublicUser(user, name, email),
-            message: 'Account created. Check your email for a verification link.',
+            requiresEmailVerification: false,
         });
     } catch (error) {
         console.error('Register error:', error);

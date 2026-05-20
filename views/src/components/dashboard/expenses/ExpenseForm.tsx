@@ -62,7 +62,7 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
             <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="flex flex-col md:flex-row gap-4 md:items-end">
 
-                    <div className="w-full md:w-1/3 space-y-2">
+                    <div className="w-full md:flex-1 space-y-2 min-w-0">
                         <label className="text-xs text-zinc-500">What was it for?</label>
                         <input
                             type="text"
@@ -74,7 +74,7 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
                         />
                     </div>
 
-                    <div className="w-full md:w-1/4 space-y-2">
+                    <div className="w-full md:w-32 space-y-2">
                         <label className="text-xs text-zinc-500">Amount</label>
                         <input
                             type="number"
@@ -87,7 +87,18 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
                         />
                     </div>
 
-                    <div className="w-full md:w-1/4 space-y-2">
+                    <div className="w-full md:w-44 space-y-2">
+                        <label className="text-xs text-zinc-500">Date</label>
+                        <input
+                            type="date"
+                            value={formData.date}
+                            onChange={(e) => setFormData({ ...formData, date: e.target.value })}
+                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-purple-500/50 transition-colors tabular-nums"
+                            required
+                        />
+                    </div>
+
+                    <div className="w-full md:w-48 space-y-2">
                         <label className="text-xs text-zinc-500">Category</label>
                         <CategoryPicker
                             type="expense"
