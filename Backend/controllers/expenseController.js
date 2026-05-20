@@ -204,6 +204,12 @@ const deleteExpense = async (req, res) => {
 };
 
 // GET /api/expenses/summary/:year/:month
+//
+// Returns one row per category for the month with the category NAME (via
+// $lookup) — earlier versions returned the raw Category ObjectId in the
+// `category` field, which made every dashboard chart label render as a
+// 24-hex hash. Now also includes the category's display color + icon so
+// dashboard widgets can match the rest of the UI without a second fetch.
 const getMonthlySummary = async (req, res) => {
     try {
         const year  = parseInt(req.params.year);
@@ -211,13 +217,23 @@ const getMonthlySummary = async (req, res) => {
         const startDate = new Date(year, month - 1, 1);
         const endDate   = new Date(year, month, 0, 23, 59, 59);
 
-        const summary = await Expense.aggregate([
-            { $match: { user: req.user._id, date: { $gte: startDate, $lte: endDate } } },
-            { $group: { _id: '$category', totalAmount: { $sum: '$amount' }, count: { $sum: 1 } } },
-            { $sort: { totalAmount: -1 } }
+        const rows = await Expense.aggregate([
+            { $match:  { user: req.user._id, date: { $gte: startDate, $lte: endDate } } },
+            { $group:  { _id: '$category', totalAmount: { $sum: '$amount' }, count: { $sum: 1 } } },
+            { $lookup: { from: 'categories', localField: '_id', foreignField: '_id', as: 'cat' } },
+            { $unwind: { path: '$cat', preserveNullAndEmptyArrays: true } },
+            { $project: {
+                _id:           1,
+                totalAmount:   1,
+                count:         1,
+                categoryName:  { $ifNull: ['$cat.name',  'Unknown'] },
+                categoryColor: { $ifNull: ['$cat.color', '#6B7280']  },
+                categoryIcon:  { $ifNull: ['$cat.icon',  'more']     },
+            } },
+            { $sort: { totalAmount: -1 } },
         ]);
 
-        const totalSpent = summary.reduce((sum, item) => sum + item.totalAmount, 0);
+        const totalSpent = rows.reduce((sum, item) => sum + item.totalAmount, 0);
 
         res.json({
             success: true,
@@ -225,14 +241,16 @@ const getMonthlySummary = async (req, res) => {
                 month,
                 year,
                 totalSpent,
-                categoryBreakdown: summary,
-                summary: summary.map(item => ({
-                    category:   item._id,
-                    amount:     item.totalAmount,
-                    count:      item.count,
-                    percentage: totalSpent > 0 ? Math.round((item.totalAmount / totalSpent) * 100) : 0
-                }))
-            }
+                summary: rows.map((item) => ({
+                    categoryId:    item._id ? item._id.toString() : null,
+                    category:      item.categoryName,         // string name, not ObjectId
+                    categoryColor: item.categoryColor,
+                    categoryIcon:  item.categoryIcon,
+                    amount:        item.totalAmount,
+                    count:         item.count,
+                    percentage:    totalSpent > 0 ? Math.round((item.totalAmount / totalSpent) * 100) : 0,
+                })),
+            },
         });
     } catch (error) {
         console.error('Get summary error:', error);

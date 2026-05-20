@@ -13,6 +13,7 @@ interface DashboardStats {
     monthlyIncome:      number;
     monthlySpend:       number;
     recentTransactions: any[];
+    recentActivityCount: number;
     chartData:          { name: string; amount: number }[];
 }
 
@@ -35,6 +36,7 @@ export default function DashboardPage() {
         monthlyIncome:      0,
         monthlySpend:       0,
         recentTransactions: [],
+        recentActivityCount: 0,
         chartData:          [],
     });
 
@@ -46,11 +48,15 @@ export default function DashboardPage() {
                 const month = now.getUTCMonth();
                 const monthStart = new Date(Date.UTC(year, month,     1, 0, 0, 0, 0));
                 const monthEnd   = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59, 999));
+                const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
                 // Run in parallel; one failure doesn't break the others.
-                const [expenseSummaryRes, txRes, goalsRes, incomeListRes] = await Promise.allSettled([
+                const [expenseSummaryRes, recentTxRes, last7Res, goalsRes, incomeListRes] = await Promise.allSettled([
                     api.get(`/expenses/summary/${year}/${month + 1}`),
-                    api.get("/expenses"),
+                    api.get("/expenses", { params: { limit: 5 } }),
+                    api.get("/expenses", {
+                        params: { startDate: sevenDaysAgo.toISOString(), endDate: now.toISOString(), limit: 1 },
+                    }),
                     api.get("/goals/dashboard"),
                     api.get("/incomes", {
                         params: { startDate: monthStart.toISOString(), endDate: monthEnd.toISOString(), limit: 100 },
@@ -66,9 +72,15 @@ export default function DashboardPage() {
                     }))
                     : [];
 
-                const recentTransactions = txRes.status === "fulfilled"
-                    ? (txRes.value.data?.data ?? []).slice(0, 5)
+                const recentTransactions = recentTxRes.status === "fulfilled"
+                    ? (recentTxRes.value.data?.data ?? []).slice(0, 5)
                     : [];
+
+                // pagination.total is the real count in the date window —
+                // far more useful than "5 txns" no matter what.
+                const recentActivityCount = last7Res.status === "fulfilled"
+                    ? (last7Res.value.data?.pagination?.total ?? 0)
+                    : 0;
 
                 const totalSaved = goalsRes.status === "fulfilled"
                     ? (goalsRes.value.data?.data?.totalSavedAmount ?? 0)
@@ -80,7 +92,7 @@ export default function DashboardPage() {
                     )
                     : 0;
 
-                setStats({ totalSaved, monthlyIncome, monthlySpend, recentTransactions, chartData });
+                setStats({ totalSaved, monthlyIncome, monthlySpend, recentTransactions, recentActivityCount, chartData });
             } catch (err) {
                 console.error("Failed to load dashboard data", err);
             } finally {
@@ -135,7 +147,7 @@ export default function DashboardPage() {
                 />
                 <StatCard
                     title="Recent Activity"
-                    value={`${stats.recentTransactions.length} txns`}
+                    value={`${stats.recentActivityCount} txns`}
                     trend="Last 7 Days"
                     icon={TrendingUp}
                 />

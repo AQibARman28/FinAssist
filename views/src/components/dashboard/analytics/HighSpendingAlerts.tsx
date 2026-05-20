@@ -3,23 +3,35 @@
 import { useEffect, useState } from "react";
 import { AlertCircle, ShoppingBag } from "lucide-react";
 import { api } from "@/lib/api";
+import { useAuthStore } from "@/lib/store";
+import { iconFor, type IconName } from "@/lib/categoryIcons";
+
+interface Alert {
+    _id: string;
+    category: string;
+    categoryColor: string;
+    categoryIcon: IconName;
+    total: number;
+}
 
 export function HighSpendingAlerts() {
-    const [alerts, setAlerts] = useState<any[]>([]);
+    const currency = useAuthStore((s) => s.user?.currency) || "USD";
+    const fmt = new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 0 });
+
+    const [alerts, setAlerts] = useState<Alert[]>([]);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        const fetchAlerts = async () => {
+        (async () => {
             try {
                 const res = await api.get("/analytics/high-spending");
-                setAlerts(res.data.data);
+                setAlerts(res.data?.data ?? []);
             } catch (err) {
                 console.error("Failed to fetch alerts", err);
             } finally {
                 setLoading(false);
             }
-        };
-        fetchAlerts();
+        })();
     }, []);
 
     if (loading) return <div className="h-40 animate-pulse bg-zinc-900/50 rounded-3xl" />;
@@ -42,18 +54,22 @@ export function HighSpendingAlerts() {
                 <h3 className="text-lg font-semibold text-white">Unusual Spending</h3>
             </div>
 
-            <div className="space-y-3">
-                {alerts.map((item, idx) => (
-                    <div key={idx} className="p-3 rounded-xl bg-red-500/10 border border-red-500/20">
-                        <div className="flex justify-between items-start">
-                            <div>
-                                <span className="text-red-400 text-sm font-medium">{item._id}</span>
-                                <p className="text-xs text-red-300/70 mt-0.5">50% higher than average</p>
+            <div className="space-y-2">
+                {alerts.map((item) => {
+                    const Icon = iconFor(item.categoryIcon);
+                    return (
+                        <div key={item._id} className="flex items-center justify-between p-3 rounded-xl bg-red-500/10 border border-red-500/20">
+                            <div className="flex items-center gap-3 min-w-0">
+                                <Icon className="w-4 h-4 text-red-400 shrink-0" />
+                                <div className="min-w-0">
+                                    <div className="text-red-400 text-sm font-medium truncate">{item.category}</div>
+                                    <div className="text-[11px] text-red-300/70 mt-0.5">50%+ above your cross-category average</div>
+                                </div>
                             </div>
-                            <span className="text-red-400 font-bold">${item.total.toFixed(0)}</span>
+                            <span className="text-red-400 font-bold tabular-nums shrink-0">{fmt.format(item.total)}</span>
                         </div>
-                    </div>
-                ))}
+                    );
+                })}
             </div>
         </div>
     );

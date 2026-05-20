@@ -1,23 +1,46 @@
 const Expense = require('../models/Expense');
-const Budget = require('../models/Budget');
-const { expenseTotalForPeriod, incomeTotalForPeriod } = require('../utils/finance');
+const Income = require('../models/Income');
+const {
+    expenseTotalForPeriod,
+    incomeTotalForPeriod,
+    monthlyEquivalentIncome,
+    FREQ_MULTIPLIER,
+} = require('../utils/finance');
 
 // UTC bounds. recurring.js's date arithmetic uses UTC throughout, and Mongo
 // stores Dates as UTC milliseconds — using local time here was producing a
-// half-day skew on either edge (a local-time anchor at month-start landed
-// in the previous UTC month for any TZ east of UTC), which let
-// computeRecurringDates project two occurrences into one local month for
-// monthly templates anchored at local midnight.
+// half-day skew on either edge.
 const getMonthDateRange = (year, month) => {
     const start = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
     const end   = new Date(Date.UTC(year, month,     0, 23, 59, 59, 999));
     return { start, end };
 };
 
+// Common $lookup stages for "join Expense.category → categories collection
+// and project the name/color/icon". Keep the shape consistent across every
+// analytics endpoint so the frontend doesn't have to special-case anything.
+const CATEGORY_LOOKUP_STAGES = [
+    { $lookup: { from: 'categories', localField: '_id', foreignField: '_id', as: 'cat' } },
+    { $unwind: { path: '$cat', preserveNullAndEmptyArrays: true } },
+    { $project: {
+        _id:           1,
+        total:         1,
+        count:         1,
+        category:      { $ifNull: ['$cat.name',  'Uncategorized'] },
+        categoryColor: { $ifNull: ['$cat.color', '#6B7280']        },
+        categoryIcon:  { $ifNull: ['$cat.icon',  'more']           },
+    } },
+];
+
+// GET /api/analytics/monthly-analytics?year=&month=
+//
+// Compares current vs. previous month, grouped by category. Each row now
+// carries the category NAME / color / icon — earlier the chart's X-axis
+// rendered Category ObjectIds as 24-hex hashes.
 const monthlyAnalytics = async (req, res) => {
     try {
-        const year = parseInt(req.query.year);
-        const month = parseInt(req.query.month);
+        const year   = parseInt(req.query.year);
+        const month  = parseInt(req.query.month);
         const userId = req.user._id;
 
         if (!year || !month || isNaN(year) || isNaN(month) || month < 1 || month > 12) {
@@ -25,66 +48,69 @@ const monthlyAnalytics = async (req, res) => {
         }
 
         const { start: currentStart, end: currentEnd } = getMonthDateRange(year, month);
-
-        const currentExpenses = await Expense.aggregate([
-            { $match: { user: userId, date: { $gte: currentStart, $lte: currentEnd } } },
-            { $group: { _id: '$category', total: { $sum: '$amount' } } }
-        ]);
-
         const prevMonth = month - 1 === 0 ? 12 : month - 1;
-        const prevYear = month - 1 === 0 ? year - 1 : year;
+        const prevYear  = month - 1 === 0 ? year - 1 : year;
         const { start: prevStart, end: prevEnd } = getMonthDateRange(prevYear, prevMonth);
 
-        const previousExpenses = await Expense.aggregate([
-            { $match: { user: userId, date: { $gte: prevStart, $lte: prevEnd } } },
-            { $group: { _id: '$category', total: { $sum: '$amount' } } }
+        const [currentExpenses, previousExpenses] = await Promise.all([
+            Expense.aggregate([
+                { $match: { user: userId, date: { $gte: currentStart, $lte: currentEnd } } },
+                { $group: { _id: '$category', total: { $sum: '$amount' } } },
+                ...CATEGORY_LOOKUP_STAGES,
+                { $sort: { total: -1 } },
+            ]),
+            Expense.aggregate([
+                { $match: { user: userId, date: { $gte: prevStart, $lte: prevEnd } } },
+                { $group: { _id: '$category', total: { $sum: '$amount' } } },
+                ...CATEGORY_LOOKUP_STAGES,
+                { $sort: { total: -1 } },
+            ]),
         ]);
 
-        res.json({ success: true, data: { currentExpenses, previousExpenses } });
+        const totalCurrent  = currentExpenses.reduce((s, x) => s + x.total, 0);
+        const totalPrevious = previousExpenses.reduce((s, x) => s + x.total, 0);
+        const monthOverMonthDelta = totalCurrent - totalPrevious;
+        const monthOverMonthPct   = totalPrevious === 0 ? null : (monthOverMonthDelta / totalPrevious);
+
+        res.json({
+            success: true,
+            data: {
+                currentExpenses,
+                previousExpenses,
+                totalCurrent,
+                totalPrevious,
+                monthOverMonthDelta,
+                monthOverMonthPct,
+            },
+        });
     } catch (error) {
         console.error('Monthly analytics error:', error);
         res.status(500).json({ success: false, message: 'Server error' });
     }
 };
 
-const recurringExpenses = async (req, res) => {
-    try {
-        const userId = req.user._id;
-
-        const recurring = await Expense.aggregate([
-            { $match: { user: userId } },
-            { $group: { _id: '$description', count: { $sum: 1 }, total: { $sum: '$amount' } } },
-            { $match: { count: { $gte: 2 } } },
-            { $sort: { count: -1 } }
-        ]);
-
-        res.json({ success: true, data: recurring });
-    } catch (error) {
-        console.error('Recurring expenses error:', error);
-        res.status(500).json({ success: false, message: 'Server error' });
-    }
-};
-
+// GET /api/analytics/high-spending
+//
+// Categories whose 3-month total exceeds 1.5× the cross-category mean.
+// Same $lookup fix so labels read "Food" / "Transport" instead of an
+// ObjectId.
 const highSpendingCategories = async (req, res) => {
     try {
         const userId = req.user._id;
-
         const threeMonthsAgo = new Date();
         threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
 
-        const categories = await Expense.aggregate([
+        const rows = await Expense.aggregate([
             { $match: { user: userId, date: { $gte: threeMonthsAgo } } },
             { $group: { _id: '$category', total: { $sum: '$amount' } } },
-            { $sort: { total: -1 } }
+            ...CATEGORY_LOOKUP_STAGES,
+            { $sort: { total: -1 } },
         ]);
 
-        if (categories.length === 0) {
-            return res.json({ success: true, data: [] });
-        }
+        if (rows.length === 0) return res.json({ success: true, data: [] });
 
-        const avg = categories.reduce((sum, c) => sum + c.total, 0) / categories.length;
-        const highSpending = categories.filter(c => c.total > avg * 1.5);
-
+        const avg = rows.reduce((s, r) => s + r.total, 0) / rows.length;
+        const highSpending = rows.filter((r) => r.total > avg * 1.5);
         res.json({ success: true, data: highSpending });
     } catch (error) {
         console.error('High-spending error:', error);
@@ -92,16 +118,67 @@ const highSpendingCategories = async (req, res) => {
     }
 };
 
-// GET /api/analytics/expense-income-ratio
+// GET /api/analytics/recurring-expenses (deprecated, kept for back-compat)
 //
-// Part 7 rewrite: sources totals from the real Income and Expense
-// collections for the current calendar month. Earlier versions used
-// Budget.limit as "income" — that's the budget envelope, not the user's
-// actual income, and produced a 100% ratio for anyone who set a budget
-// without recording income. The new shape is { totalIncome, totalExpense,
-// ratio } per the Part-7 brief; ratio is `null` (not 0, not Infinity)
-// when totalIncome is 0 so the frontend can render "no income on file"
-// without doing math on undefined.
+// Originally grouped Expense by `description` to surface duplicates. Since
+// SEC-1 Phase 2 the description field is AES-GCM encrypted with a fresh
+// IV per row, so two semantically-identical expenses have different
+// ciphertexts and never $group together. The endpoint is left in place
+// returning an empty array so old clients don't break; the new
+// /api/analytics/recurring-income endpoint is what the dashboard should
+// consume.
+const recurringExpenses = async (_req, res) => {
+    res.json({
+        success: true,
+        data: [],
+        deprecated: true,
+        replacedBy: '/api/analytics/recurring-income',
+    });
+};
+
+// GET /api/analytics/recurring-income
+//
+// Lists the user's recurring income templates (the rows that materialize
+// instances on every list call — see utils/recurring.js). Each row carries
+// the cadence and a projected MONTHLY contribution to make the dashboard
+// math obvious.
+const recurringIncome = async (req, res) => {
+    try {
+        const userId = req.user._id;
+
+        const templates = await Income.aggregate([
+            { $match: { user: userId, isRecurring: true, parentRecurringId: null } },
+            { $lookup: { from: 'categories', localField: 'category', foreignField: '_id', as: 'cat' } },
+            { $unwind: { path: '$cat', preserveNullAndEmptyArrays: true } },
+            { $sort: { amount: -1 } },
+        ]);
+
+        const items = templates.map((t) => {
+            const m = FREQ_MULTIPLIER[t.recurringFrequency] || 0;
+            const monthlyEquivalent = (t.amount * m) / 12;
+            return {
+                _id:                 t._id.toString(),
+                amount:              t.amount,
+                frequency:           t.recurringFrequency,
+                isPostTax:           t.isPostTax,
+                category:            t.cat?.name  ?? 'Uncategorized',
+                categoryColor:       t.cat?.color ?? '#6B7280',
+                categoryIcon:        t.cat?.icon  ?? 'more',
+                date:                t.date,
+                monthlyEquivalent,
+                annualEquivalent:    t.amount * m,
+            };
+        });
+
+        const monthlyTotal = items.reduce((s, x) => s + x.monthlyEquivalent, 0);
+        res.json({ success: true, data: { items, monthlyTotal } });
+    } catch (error) {
+        console.error('Recurring income error:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+};
+
+// GET /api/analytics/expense-income-ratio (unchanged from Part 7)
 const expenseIncomeRatio = async (req, res) => {
     try {
         const userId = req.user._id;
@@ -114,7 +191,6 @@ const expenseIncomeRatio = async (req, res) => {
         ]);
 
         const ratio = totalIncome === 0 ? null : totalExpense / totalIncome;
-
         res.json({ success: true, data: { totalIncome, totalExpense, ratio } });
     } catch (error) {
         console.error('Expense-to-income ratio error:', error);
@@ -122,4 +198,113 @@ const expenseIncomeRatio = async (req, res) => {
     }
 };
 
-module.exports = { monthlyAnalytics, recurringExpenses, highSpendingCategories, expenseIncomeRatio };
+// GET /api/analytics/savings-rate
+//
+// Current month. savingsRate = (income − expense) / income, with the
+// usual null-on-zero-income guard. Bundles the daily-average too because
+// the frontend tile renders both side by side.
+const savingsRate = async (req, res) => {
+    try {
+        const userId = req.user._id;
+        const now = new Date();
+        const { start, end } = getMonthDateRange(now.getUTCFullYear(), now.getUTCMonth() + 1);
+
+        const [totalIncome, totalExpense] = await Promise.all([
+            incomeTotalForPeriod(userId, start, end),
+            expenseTotalForPeriod(userId, start, end),
+        ]);
+
+        const savingsRateValue = totalIncome === 0 ? null : (totalIncome - totalExpense) / totalIncome;
+        const dayOfMonth       = Math.max(1, now.getUTCDate());
+        const dailyAverage     = totalExpense / dayOfMonth;
+
+        res.json({
+            success: true,
+            data: {
+                totalIncome,
+                totalExpense,
+                savingsRate: savingsRateValue,
+                dailyAverage,
+                dayOfMonth,
+            },
+        });
+    } catch (error) {
+        console.error('Savings-rate error:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+};
+
+// GET /api/analytics/dashboard-stats
+//
+// Single round-trip aggregation for the analytics page header strip:
+// returns monthlyIncome + monthlyExpense + savingsRate + dailyAverage +
+// monthOverMonth + topCategories. Frontend can fan-out from one fetch
+// instead of N.
+const dashboardStats = async (req, res) => {
+    try {
+        const userId = req.user._id;
+        const now    = new Date();
+        const { start, end } = getMonthDateRange(now.getUTCFullYear(), now.getUTCMonth() + 1);
+        const prevMonth = now.getUTCMonth() === 0 ? 12 : now.getUTCMonth();
+        const prevYear  = now.getUTCMonth() === 0 ? now.getUTCFullYear() - 1 : now.getUTCFullYear();
+        const { start: prevStart, end: prevEnd } = getMonthDateRange(prevYear, prevMonth);
+
+        const [
+            totalIncome, totalExpense, totalPrevious, monthlyRecurringIncome, topCategories,
+        ] = await Promise.all([
+            incomeTotalForPeriod(userId, start, end),
+            expenseTotalForPeriod(userId, start, end),
+            expenseTotalForPeriod(userId, prevStart, prevEnd),
+            monthlyEquivalentIncome(userId),
+            Expense.aggregate([
+                { $match: { user: userId, date: { $gte: start, $lte: end } } },
+                { $group: { _id: '$category', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+                ...CATEGORY_LOOKUP_STAGES,
+                { $sort: { total: -1 } },
+                { $limit: 5 },
+            ]),
+        ]);
+
+        const savingsRateValue = totalIncome === 0 ? null : (totalIncome - totalExpense) / totalIncome;
+        const dayOfMonth       = Math.max(1, now.getUTCDate());
+        const dailyAverage     = totalExpense / dayOfMonth;
+        const momDelta         = totalExpense - totalPrevious;
+        const momPct           = totalPrevious === 0 ? null : (momDelta / totalPrevious);
+
+        res.json({
+            success: true,
+            data: {
+                totalIncome,
+                totalExpense,
+                totalPrevious,
+                monthlyRecurringIncome,
+                savingsRate:        savingsRateValue,
+                dailyAverage,
+                monthOverMonthDelta: momDelta,
+                monthOverMonthPct:   momPct,
+                topCategories: topCategories.map((c) => ({
+                    categoryId:    c._id?.toString() ?? null,
+                    category:      c.category,
+                    categoryColor: c.categoryColor,
+                    categoryIcon:  c.categoryIcon,
+                    total:         c.total,
+                    count:         c.count,
+                    percentage:    totalExpense > 0 ? Math.round((c.total / totalExpense) * 100) : 0,
+                })),
+            },
+        });
+    } catch (error) {
+        console.error('Dashboard-stats error:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+};
+
+module.exports = {
+    monthlyAnalytics,
+    recurringExpenses,
+    recurringIncome,
+    highSpendingCategories,
+    expenseIncomeRatio,
+    savingsRate,
+    dashboardStats,
+};
