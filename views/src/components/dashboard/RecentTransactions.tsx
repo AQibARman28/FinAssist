@@ -2,6 +2,7 @@
 
 import { CreditCard } from "lucide-react";
 import { format } from "date-fns";
+import { useCurrency } from "@/lib/useCurrency";
 
 interface Transaction {
     _id: string;
@@ -16,6 +17,7 @@ interface RecentTransactionsProps {
 }
 
 export function RecentTransactions({ transactions }: RecentTransactionsProps) {
+    const { formatExpense } = useCurrency();
     if (transactions.length === 0) {
         return <div className="text-zinc-500 text-sm text-center py-10">No recent transactions</div>;
     }
@@ -40,7 +42,7 @@ export function RecentTransactions({ transactions }: RecentTransactionsProps) {
                             </div>
                         </div>
                         <span className="text-white font-medium text-sm tabular-nums">
-                            -{tx.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                            {formatExpense(tx.amount)}
                         </span>
                     </div>
                 );

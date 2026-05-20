@@ -6,9 +6,11 @@ import { ExpenseList } from "@/components/dashboard/expenses/ExpenseList";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { TrendingDown, Calendar, Wallet } from "lucide-react";
 import { api } from "@/lib/api";
+import { useCurrency } from "@/lib/useCurrency";
 import { format } from "date-fns";
 
 export default function ExpensesPage() {
+    const { format: fmtMoney } = useCurrency();
     const [refreshTrigger, setRefreshTrigger] = useState(0);
     const [stats, setStats] = useState({
         totalSpent: 0,
@@ -56,7 +58,7 @@ export default function ExpensesPage() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <StatCard
                     title="Total Spent"
-                    value={`$${stats.totalSpent.toLocaleString()}`}
+                    value={fmtMoney(stats.totalSpent)}
                     trend="This Month"
                     trendUp={false}
                     icon={TrendingDown}
@@ -71,7 +73,7 @@ export default function ExpensesPage() {
                 />
                 <StatCard
                     title="Daily Average"
-                    value={`$${stats.dailyAverage.toFixed(2)}`}
+                    value={fmtMoney(stats.dailyAverage)}
                     icon={Wallet}
                     className="bg-zinc-900/50"
                 />

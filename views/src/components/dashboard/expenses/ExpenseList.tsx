@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { format } from "date-fns";
 import { Trash2, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
+import { useCurrency } from "@/lib/useCurrency";
 import { iconFor, type IconName } from "@/lib/categoryIcons";
 
 interface Expense {
@@ -27,6 +28,7 @@ interface ExpenseListProps {
 }
 
 export function ExpenseList({ refreshTrigger }: ExpenseListProps) {
+    const { formatExpense } = useCurrency();
     const [expenses, setExpenses]   = useState<Expense[]>([]);
     const [catMap, setCatMap]       = useState<Record<string, Category>>({});
     const [isLoading, setIsLoading] = useState(true);
@@ -109,7 +111,7 @@ export function ExpenseList({ refreshTrigger }: ExpenseListProps) {
 
                                 <div className="flex items-center gap-6">
                                     <span className="text-white font-medium text-sm tabular-nums">
-                                        -${expense.amount.toFixed(2)}
+                                        {formatExpense(expense.amount)}
                                     </span>
                                     <button
                                         onClick={() => handleDelete(expense._id)}
