@@ -4,15 +4,26 @@ import { useState } from "react";
 import { Plus, Loader2, AlertCircle } from "lucide-react";
 import { api } from "@/lib/api";
 import { CategoryPicker } from "@/components/CategoryPicker";
+import { useCurrency } from "@/lib/useCurrency";
+import { parseAmount } from "@/lib/parseAmount";
 
 interface ExpenseFormProps {
     onAdd: () => void;
 }
 
+const AMOUNT_REASON: Record<string, string> = {
+    empty:     "Enter an amount",
+    invalid:   "Enter a valid amount or expression",
+    negative:  "Amount must be positive",
+    too_large: "Amount is too large",
+};
+
 export function ExpenseForm({ onAdd }: ExpenseFormProps) {
+    const { format: fmtMoney } = useCurrency();
     const [isLoading, setIsLoading] = useState(false);
     const [serverError, setServerError] = useState<string | null>(null);
     const [categoryError, setCategoryError] = useState<string | null>(null);
+    const [amountError, setAmountError] = useState<string | null>(null);
     const [formData, setFormData] = useState({
         title: "",                                  // backend field: description
         amount: "",
@@ -21,12 +32,22 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
         note: "",
     });
 
+    // Live-parsed amount — drives both the "= ৳1,700" preview and submit.
+    const parsed = parseAmount(formData.amount);
+
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setServerError(null);
         setCategoryError(null);
+        setAmountError(null);
 
-        if (!formData.title || !formData.amount) return;
+        if (!formData.title) return;
+        if (!parsed.ok) {
+            // Non-empty invalid input already shows an inline hint under the
+            // field; only the empty case needs a message surfaced here.
+            if (parsed.reason === "empty") setAmountError(AMOUNT_REASON.empty);
+            return;
+        }
         if (!formData.category) {
             setCategoryError("Pick a category");
             return;
@@ -36,7 +57,7 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
         try {
             await api.post("/expenses", {
                 description: formData.title,
-                amount:      parseFloat(formData.amount),
+                amount:      parsed.value,   // evaluated value, committed on submit
                 category:    formData.category,
                 date:        formData.date,
                 ...(formData.note ? { note: formData.note } : {}),
@@ -74,17 +95,28 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
                         />
                     </div>
 
-                    <div className="w-full md:w-32 space-y-2">
+                    <div className="w-full md:w-36 space-y-2 relative">
                         <label className="text-xs text-zinc-500">Amount</label>
                         <input
-                            type="number"
-                            step="0.01"
-                            placeholder="0.00"
+                            type="text"
+                            inputMode="text"
+                            placeholder="0.00 or 4*250"
                             value={formData.amount}
-                            onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
+                            onChange={(e) => { setFormData({ ...formData, amount: e.target.value }); setAmountError(null); }}
                             className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/50 transition-colors tabular-nums"
                             required
                         />
+                        {/* Live preview / hint floats below without shifting the row. */}
+                        {parsed.ok && parsed.isExpression && (
+                            <div className="absolute top-full left-0 mt-1 text-xs text-zinc-500 tabular-nums">
+                                = {fmtMoney(parsed.value)}
+                            </div>
+                        )}
+                        {!parsed.ok && formData.amount.trim() !== "" && parsed.reason !== "empty" && (
+                            <div className="absolute top-full left-0 mt-1 text-xs text-amber-400/80">
+                                {AMOUNT_REASON[parsed.reason]}
+                            </div>
+                        )}
                     </div>
 
                     <div className="w-full md:w-44 space-y-2">
@@ -129,10 +161,10 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
                     />
                 </div>
 
-                {serverError && !categoryError && (
+                {(amountError || (serverError && !categoryError)) && (
                     <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
                         <AlertCircle className="w-4 h-4 shrink-0" />
-                        <span>{serverError}</span>
+                        <span>{amountError || serverError}</span>
                     </div>
                 )}
             </form>
