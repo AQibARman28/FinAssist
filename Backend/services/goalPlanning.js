@@ -113,6 +113,76 @@ function planGoals({ goals, monthlySurplus, now, windowDays = 90 }) {
     return { goals: plans, portfolio: planPortfolio(plans, monthlySurplus) };
 }
 
+// ── Surplus allocation decider (recommend-and-confirm; records nothing) ──────
+//
+// Tiers (priority order): 0 Emergency Fund (up to baseline = 3×monthlyAvgExpenses),
+// 1 dated goals by soonest targetDate (tiebreak priority desc), 2 undated by
+// priority desc (dormant — model requires a date). Greedy-fill each up to its
+// monthly need until surplus is exhausted; leftover = freeSurplus; underfunded
+// dated goals get a {shortfall, extendMonths} tradeoff.
+function allocateSurplus({ goals, monthlySurplus, monthlyAvgExpenses, now }) {
+    const nowMs = now ?? Date.now();
+    const baseline = 3 * monthlyAvgExpenses;
+
+    const enriched = goals.map((g) => {
+        const remaining   = Math.max(g.targetAmount - g.currentAmount, 0);
+        const dated       = g.targetDate != null;
+        const monthsLeft  = dated ? Math.max(monthsUntil(g.targetDate, nowMs), 0.1) : null;
+        const requiredMonthly = dated ? remaining / monthsLeft : null;
+        const isEmergency = g.goalType === 'Emergency Fund';
+
+        let need;
+        if (isEmergency) {
+            const gapToBaseline = Math.max(baseline - g.currentAmount, 0);
+            need = Math.min(requiredMonthly ?? gapToBaseline, gapToBaseline);
+        } else if (dated) {
+            need = requiredMonthly;
+        } else {
+            need = 0; // undated: leftover only
+        }
+        return { ...g, remaining, dated, monthsLeft, requiredMonthly, isEmergency, need: Math.max(need, 0) };
+    });
+
+    const emergency  = enriched.filter((g) => g.isEmergency);
+    const datedNon   = enriched.filter((g) => !g.isEmergency && g.dated)
+        .sort((a, b) => (new Date(a.targetDate) - new Date(b.targetDate)) || ((b.priority ?? 0) - (a.priority ?? 0)));
+    const undatedNon = enriched.filter((g) => !g.isEmergency && !g.dated)
+        .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+    const order = [...emergency, ...datedNon, ...undatedNon];
+
+    let remainingSurplus = Math.max(monthlySurplus, 0);
+    const allocMap = new Map();
+    for (const g of order) {
+        const alloc = Math.max(0, Math.min(remainingSurplus, g.need));
+        allocMap.set(g.id, alloc);
+        remainingSurplus -= alloc;
+    }
+
+    const allocations = order.map((g) => ({ goalId: g.id, suggested: round2(allocMap.get(g.id) || 0) }));
+
+    const tradeoffs = [];
+    for (const g of order) {
+        if (!g.dated) continue;
+        const allocated = allocMap.get(g.id) || 0;
+        const shortfall = (g.requiredMonthly ?? 0) - allocated;
+        if (shortfall > 0.005) {
+            const extendMonths = allocated > 0 ? round1((g.remaining / allocated) - g.monthsLeft) : null;
+            tradeoffs.push({ goalId: g.id, shortfall: round2(shortfall), extendMonths });
+        }
+    }
+
+    const totalRequired = enriched.reduce((s, g) => s + (g.requiredMonthly ?? 0), 0);
+
+    return {
+        monthlySurplus:    round2(monthlySurplus),
+        emergencyBaseline: round2(baseline),
+        allocations,
+        freeSurplus:       round2(Math.max(remainingSurplus, 0)),
+        tradeoffs,
+        overcommitted:     totalRequired > monthlySurplus,
+    };
+}
+
 module.exports = {
     STATUS,
     MS_PER_MONTH,
@@ -122,4 +192,5 @@ module.exports = {
     planGoal,
     planPortfolio,
     planGoals,
+    allocateSurplus,
 };

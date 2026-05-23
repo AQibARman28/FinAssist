@@ -41,6 +41,7 @@ const KNOWN_EVENTS = new Set([
     'income.create',
     'income.update',
     'income.delete',
+    'goal.allocate',
 ]);
 
 function logAudit(req, event, userId = null, metadata = null) {

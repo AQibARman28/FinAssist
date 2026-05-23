@@ -2,7 +2,8 @@ const Goal = require('../models/Goal');
 const { encrypt, safeDecrypt } = require('../utils/encryption');
 const { signRecord, verifyRecord, encryptNote, decryptNote } = require('../utils/signing');
 const { getCashFlow } = require('../services/cashFlow');
-const { planGoals } = require('../services/goalPlanning');
+const { planGoals, allocateSurplus } = require('../services/goalPlanning');
+const { logAudit } = require('../utils/audit');
 
 async function decryptGoal(goal, user, dataKey) {
     const obj         = goal.toJSON ? goal.toJSON() : { ...goal };
@@ -33,6 +34,7 @@ const createGoal = async (req, res) => {
             targetAmount,
             targetDate,
             goalType,
+            priority: req.body.priority ?? 0,
             serverAttestation,
             note: encNote
         });
@@ -103,6 +105,7 @@ const updateGoal = async (req, res) => {
         if (req.body.targetDate   !== undefined) updates.targetDate   = req.body.targetDate;
         if (req.body.goalType     !== undefined) updates.goalType     = req.body.goalType;
         if (req.body.status       !== undefined) updates.status       = req.body.status;
+        if (req.body.priority     !== undefined) updates.priority     = req.body.priority;
         if (req.body.title        !== undefined) updates.title        = await encrypt(req.body.title, req.dataKey);
 
         // serverAttestation is set on creation and NOT regenerated on update —
@@ -321,8 +324,99 @@ const getGoalPlan = async (req, res) => {
     }
 };
 
+// GET /api/goals/allocation-suggestion
+//
+// Recommend-and-confirm: proposes how to deploy this period's surplus across
+// active goals. READ-ONLY — records nothing. Allocations are tracked
+// intentions, not bank transfers.
+const getAllocationSuggestion = async (req, res) => {
+    try {
+        const userId = req.user._id;
+        const cash = await getCashFlow(userId, 90);
+        const goals = await Goal.find({ user: userId, status: 'Active' });
+
+        const inputs = [];
+        const meta = {};
+        for (const g of goals) {
+            const id = g._id.toString();
+            meta[id] = { title: await safeDecrypt(g.title, req.dataKey), goalType: g.goalType, targetAmount: g.targetAmount, currentAmount: g.currentAmount, targetDate: g.targetDate, priority: g.priority ?? 0 };
+            inputs.push({ id, targetAmount: g.targetAmount, currentAmount: g.currentAmount, targetDate: g.targetDate, goalType: g.goalType, priority: g.priority ?? 0 });
+        }
+
+        const result = allocateSurplus({
+            goals: inputs,
+            monthlySurplus: cash.monthlySurplus,
+            monthlyAvgExpenses: cash.monthlyAvgExpenses,
+            now: Date.now(),
+        });
+
+        const suggestedById = new Map(result.allocations.map((a) => [a.goalId, a.suggested]));
+        const goalsOut = inputs.map((g) => ({ goalId: g.id, ...meta[g.id], suggested: suggestedById.get(g.id) ?? 0 }));
+
+        res.json({
+            success: true,
+            data: {
+                cashFlow: cash,
+                emergencyBaseline: result.emergencyBaseline,
+                freeSurplus: result.freeSurplus,
+                overcommitted: result.overcommitted,
+                tradeoffs: result.tradeoffs,
+                goals: goalsOut,
+            },
+        });
+    } catch (error) {
+        console.error('Allocation suggestion error:', error);
+        res.status(500).json({ success: false, message: 'Server error computing allocation suggestion' });
+    }
+};
+
+// POST /api/goals/allocate
+//
+// Records the user's CONFIRMED allocation as a contribution per goal — same
+// path as addContribution (find → reject Completed → push → save; pre-save
+// recomputes currentAmount). IDOR-checked per goal; over-surplus warns, never
+// blocks (user may fund from existing savings). Tracked intentions only.
+const allocateContributions = async (req, res) => {
+    try {
+        const userId = req.user._id;
+        const { allocations, date, note } = req.body;
+
+        // Validate ALL goals up front so we record nothing on a bad request.
+        const targets = [];
+        for (const a of allocations) {
+            const goal = await Goal.findOne({ _id: a.goalId, user: userId });
+            if (!goal) return res.status(404).json({ success: false, message: `Goal ${a.goalId} not found` });
+            if (goal.status === 'Completed') {
+                return res.status(400).json({ success: false, message: 'Cannot allocate to a completed goal' });
+            }
+            targets.push({ goal, amount: a.amount });
+        }
+
+        const when = date ? new Date(date) : new Date();
+        const updated = [];
+        for (const { goal, amount } of targets) {
+            goal.contributions.push({ amount, note: note || 'Surplus allocation', date: when });
+            await goal.save();
+            updated.push(await decryptGoal(goal, req.user, req.dataKey));
+        }
+
+        const totalAllocated = allocations.reduce((s, a) => s + a.amount, 0);
+        const cash = await getCashFlow(userId, 90);
+        const warning = totalAllocated > cash.monthlySurplus
+            ? `Allocated more than your estimated monthly surplus (${cash.monthlySurplus}). The extra must come from existing savings — these are tracked plans, not transfers.`
+            : undefined;
+
+        logAudit(req, 'goal.allocate', userId, { goals: allocations.length, total: totalAllocated });
+
+        res.json({ success: true, data: updated, ...(warning ? { warning } : {}), message: 'Allocation recorded' });
+    } catch (error) {
+        console.error('Allocate error:', error);
+        res.status(500).json({ success: false, message: 'Server error recording allocation' });
+    }
+};
+
 module.exports = {
     createGoal, getGoals, getGoalById, updateGoal, deleteGoal,
     addContribution, getGoalProgress, getGoalReminders, getGoalsDashboard,
-    getGoalPlan,
+    getGoalPlan, getAllocationSuggestion, allocateContributions,
 };

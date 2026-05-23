@@ -4,6 +4,7 @@ const {
     updateGoal, deleteGoal,
     addContribution, getGoalProgress,
     getGoalReminders, getGoalsDashboard, getGoalPlan,
+    getAllocationSuggestion, allocateContributions,
 } = require('../controllers/goalController');
 const { protect } = require('../middleware/authMiddleware');
 const { validate } = require('../middleware/validate');
@@ -20,6 +21,8 @@ router.post('/', validate({ body:  goal.create }), createGoal);
 router.get('/dashboard', getGoalsDashboard);
 router.get('/reminders', getGoalReminders);
 router.get('/plan',      getGoalPlan);
+router.get('/allocation-suggestion', getAllocationSuggestion);
+router.post('/allocate', validate({ body: goal.allocate }), allocateContributions);
 
 router.get('/:id',    validate({ params: idParams }),                       getGoalById);
 router.put('/:id',    validate({ params: idParams, body: goal.update }),    updateGoal);

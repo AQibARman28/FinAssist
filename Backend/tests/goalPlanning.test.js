@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 const mongoose = require('mongoose');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 
-const { planGoal, planGoals, STATUS } = require('../services/goalPlanning');
+const { planGoal, planGoals, allocateSurplus, STATUS } = require('../services/goalPlanning');
 
 const DAY = 86_400_000;
 const MONTH = 30 * DAY;
@@ -100,6 +100,48 @@ describe('planGoals portfolio', () => {
     });
 });
 
+describe('allocateSurplus (pure)', () => {
+    const at = (months) => new Date(NOW + months * MONTH);
+
+    test('scarce surplus → emergency to baseline first, then nearest deadline', () => {
+        const r = allocateSurplus({
+            goals: [
+                { id: 'em',  targetAmount: 30_000, currentAmount: 0, targetDate: at(6),  goalType: 'Emergency Fund', priority: 0 },
+                { id: 'vac', targetAmount: 12_000, currentAmount: 0, targetDate: at(3),  goalType: 'Vacation',       priority: 0 },
+                { id: 'car', targetAmount: 24_000, currentAmount: 0, targetDate: at(12), goalType: 'Car',            priority: 0 },
+            ],
+            monthlySurplus: 6000, monthlyAvgExpenses: 10_000, now: NOW, // baseline 30k
+        });
+        const get = (id) => r.allocations.find((a) => a.goalId === id).suggested;
+        expect(get('em')).toBe(5000);  // required 30k/6, capped by gap, funded first
+        expect(get('vac')).toBe(1000); // remainder after emergency
+        expect(get('car')).toBe(0);    // surplus exhausted
+        expect(r.freeSurplus).toBe(0);
+        expect(r.overcommitted).toBe(true);
+
+        const vac = r.tradeoffs.find((t) => t.goalId === 'vac');
+        expect(vac.shortfall).toBe(3000);   // need 4000 − 1000
+        expect(vac.extendMonths).toBe(9);   // 12000/1000=12mo vs 3mo left
+        const car = r.tradeoffs.find((t) => t.goalId === 'car');
+        expect(car.shortfall).toBe(2000);
+        expect(car.extendMonths).toBeNull(); // allocated 0 → can't forecast
+    });
+
+    test('ample surplus → all funded, freeSurplus reported, no tradeoffs', () => {
+        const r = allocateSurplus({
+            goals: [
+                { id: 'em',  targetAmount: 30_000, currentAmount: 0, targetDate: at(6),  goalType: 'Emergency Fund' },
+                { id: 'vac', targetAmount: 12_000, currentAmount: 0, targetDate: at(3),  goalType: 'Vacation' },
+                { id: 'car', targetAmount: 24_000, currentAmount: 0, targetDate: at(12), goalType: 'Car' },
+            ],
+            monthlySurplus: 20_000, monthlyAvgExpenses: 10_000, now: NOW,
+        });
+        expect(r.freeSurplus).toBe(9000); // 20000 − (5000+4000+2000)
+        expect(r.tradeoffs).toHaveLength(0);
+        expect(r.overcommitted).toBe(false);
+    });
+});
+
 describe('GET /api/goals/plan (DB)', () => {
     let mongo, User, Category, Income, Expense, Goal, goalCtl;
     let masterEncrypt, generateDataKey, encrypt, generateUserKeyBundle, signRecord;
@@ -137,7 +179,14 @@ describe('GET /api/goals/plan (DB)', () => {
         });
         return { user, dataKey };
     }
-    function mockReq(user, dataKey) { return { user, dataKey, query: {}, params: {}, body: {} }; }
+    function mockReq(user, dataKey, body = {}) { return { user, dataKey, query: {}, params: {}, body, ip: '127.0.0.1', get: () => 'jest' }; }
+    async function makeGoal(user, dataKey, { title = 'Car', targetAmount = 12_000, goalType = 'Car' } = {}) {
+        const sa = await signRecord({ title, targetAmount, goalType }, user, dataKey);
+        return Goal.create({
+            user: user._id, title: await encrypt(title, dataKey), targetAmount,
+            targetDate: new Date(Date.now() + 365 * DAY), goalType, serverAttestation: sa,
+        });
+    }
     function mockRes() { const res = {}; res.status = jest.fn().mockReturnValue(res); res.json = jest.fn().mockReturnValue(res); return res; }
     const daysAgo = (n) => { const d = new Date(); return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - n, 12)); };
 
@@ -162,5 +211,32 @@ describe('GET /api/goals/plan (DB)', () => {
         expect(d.goals[0].title).toBe('Car');
         expect(d.goals[0].requiredMonthly).toBeGreaterThan(0);
         expect(d.portfolio).toHaveProperty('overcommitted');
+    });
+
+    test('POST /allocate records contributions via the contribute path', async () => {
+        const { user, dataKey } = await persistUser();
+        const goal = await makeGoal(user, dataKey, { targetAmount: 12_000 });
+
+        const res = mockRes();
+        await goalCtl.allocateContributions(mockReq(user, dataKey, { allocations: [{ goalId: goal._id.toString(), amount: 500 }] }), res);
+        expect(res.json).toHaveBeenCalled();
+
+        const fresh = await Goal.findById(goal._id);
+        expect(fresh.contributions).toHaveLength(1);
+        expect(fresh.contributions[0].amount).toBe(500);
+        expect(fresh.currentAmount).toBe(500); // pre-save recompute
+    });
+
+    test('POST /allocate rejects a goal the user does not own (404, records nothing)', async () => {
+        const { user: a, dataKey: dkA } = await persistUser();
+        const { user: b, dataKey: dkB } = await persistUser();
+        const bGoal = await makeGoal(b, dkB);
+
+        const res = mockRes();
+        await goalCtl.allocateContributions(mockReq(a, dkA, { allocations: [{ goalId: bGoal._id.toString(), amount: 500 }] }), res);
+        expect(res.status).toHaveBeenCalledWith(404);
+
+        const fresh = await Goal.findById(bGoal._id);
+        expect(fresh.contributions).toHaveLength(0);
     });
 });

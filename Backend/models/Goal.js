@@ -15,6 +15,10 @@ const goalSchema = new mongoose.Schema({
         enum: ['Emergency Fund', 'Vacation', 'Car', 'House', 'Education', 'Investment', 'Other']
     },
     status: { type: String, enum: ['Active', 'Completed', 'Paused'], default: 'Active' },
+
+    // GOAL-1: user-set rank used as a tiebreaker when allocating surplus
+    // across goals (higher = funded sooner within a tier). Default 0.
+    priority: { type: Number, default: 0, min: 0 },
     contributions: [{
         amount: { type: Number, required: true, min: [0, 'Must be positive'] },
         date:   { type: Date, default: Date.now },
