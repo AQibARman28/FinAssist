@@ -10,7 +10,7 @@ import { useCurrency } from "@/lib/useCurrency";
 
 export type ChartType = "line" | "bar" | "pie";
 
-interface SpendingDatum {
+export interface SpendingDatum {
     name: string;
     amount: number;
     color?: string; // category color, used to tint pie slices / bars

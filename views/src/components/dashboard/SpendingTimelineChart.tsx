@@ -14,7 +14,7 @@ import { useCurrency } from "@/lib/useCurrency";
 import { flagOutliers } from "@/lib/outliers";
 import { iconFor, type IconName } from "@/lib/categoryIcons";
 
-type Granularity = "daily" | "weekly" | "monthly" | "yearly";
+export type Granularity = "daily" | "weekly" | "monthly" | "yearly";
 
 interface TopExpense {
     _id: string;
@@ -46,14 +46,14 @@ interface TimelineData {
 
 type ChartRow = Bucket & { isOutlier: boolean };
 
-const GRANULARITIES: { key: Granularity; label: string; Icon: typeof Calendar }[] = [
+export const GRANULARITIES: { key: Granularity; label: string; Icon: typeof Calendar }[] = [
     { key: "daily",   label: "Daily",   Icon: Calendar },
     { key: "weekly",  label: "Weekly",  Icon: CalendarRange },
     { key: "monthly", label: "Monthly", Icon: CalendarDays },
     { key: "yearly",  label: "Yearly",  Icon: CalendarClock },
 ];
 
-export function SpendingTimelineChart() {
+export function SpendingTimelineChart({ granularity }: { granularity: Granularity }) {
     const { currency, format: fmtFull } = useCurrency();
     const fmtAxis = useMemo(
         () => new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 0, notation: "compact" }),
@@ -64,7 +64,6 @@ export function SpendingTimelineChart() {
         [currency],
     );
 
-    const [granularity, setGranularity] = useState<Granularity>("monthly");
     const [data, setData] = useState<TimelineData | null>(null);
     const [loading, setLoading] = useState(true);
     const [pinned, setPinned] = useState<Bucket | null>(null);
@@ -87,40 +86,7 @@ export function SpendingTimelineChart() {
     }, [data]);
 
     return (
-        <div className="p-6 rounded-3xl bg-zinc-900/50 border border-white/5">
-            <div className="flex flex-wrap justify-between items-center gap-3 mb-6">
-                <h2 className="text-lg font-semibold text-white">Spending Over Time</h2>
-                <div className="flex gap-1 p-1 bg-black/40 rounded-xl border border-white/5" role="group" aria-label="Granularity">
-                    {GRANULARITIES.map(({ key, label, Icon }) => {
-                        const active = key === granularity;
-                        return (
-                            <button
-                                key={key}
-                                type="button"
-                                aria-pressed={active}
-                                onClick={() => setGranularity(key)}
-                                className={cn(
-                                    "relative px-3 py-1.5 rounded-lg text-xs font-medium transition-colors focus:outline-none focus:ring-1 focus:ring-purple-500/50",
-                                    active ? "text-white" : "text-zinc-500 hover:text-zinc-300",
-                                )}
-                            >
-                                {active && (
-                                    <motion.div
-                                        layoutId="timeline-gran-indicator"
-                                        className="absolute inset-0 bg-purple-600/30 border border-purple-500/30 rounded-lg"
-                                        transition={{ type: "spring", stiffness: 400, damping: 32 }}
-                                    />
-                                )}
-                                <span className="relative flex items-center gap-1.5">
-                                    <Icon className="w-3.5 h-3.5" />
-                                    {label}
-                                </span>
-                            </button>
-                        );
-                    })}
-                </div>
-            </div>
-
+        <>
             {loading ? (
                 <div className="h-[320px] flex items-center justify-center">
                     <Loader2 className="w-5 h-5 animate-spin text-zinc-500" />
@@ -191,7 +157,7 @@ export function SpendingTimelineChart() {
                     onClose={() => setPinned(null)}
                 />
             )}
-        </div>
+        </>
     );
 }
 
@@ -277,6 +243,13 @@ function TimelineBucketDetail({
     const { format: fmtFull } = useCurrency();
     const [rows, setRows] = useState<DetailRow[] | null>(null);
     const [loading, setLoading] = useState(false);
+
+    // Keyboard-dismissible.
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+        document.addEventListener("keydown", onKey);
+        return () => document.removeEventListener("keydown", onKey);
+    }, [onClose]);
 
     useEffect(() => {
         // If the preview already holds the whole bucket, reuse it. Otherwise
