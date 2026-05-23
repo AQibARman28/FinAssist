@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { SpendingChart } from "@/components/dashboard/SpendingChart";
+import { SpendingTimelineChart } from "@/components/dashboard/SpendingTimelineChart";
 import { RecentTransactions } from "@/components/dashboard/RecentTransactions";
 import { Wallet, CreditCard, TrendingUp, Bell, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -168,6 +169,10 @@ export default function DashboardPage() {
                     <RecentTransactions transactions={stats.recentTransactions} />
                 </div>
             </div>
+
+            {/* DASH-1 Phase 2: standalone mount for testing. Phase 4 folds this
+                and SpendingChart into a single DashboardChartPanel switcher. */}
+            <SpendingTimelineChart />
         </div>
     );
 }
