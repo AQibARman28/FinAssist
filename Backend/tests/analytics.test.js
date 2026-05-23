@@ -234,66 +234,59 @@ describe('GET /api/analytics/expense-income-ratio', () => {
 
 // ── financial-health-score ──────────────────────────────────────────────────
 
-describe('GET /api/ai/financial-health-score', () => {
-    test('reflects actual income amount — higher income → better score with same expenses', async () => {
-        const { user: u1, dataKey: dk1 } = await persistUser();
-        const { user: u2, dataKey: dk2 } = await persistUser();
+describe('GET /api/ai/financial-health-score (HS-1 multi-factor)', () => {
+    async function plantOneOffIncome({ user, dataKey, category, amount, date }) {
+        return Income.create({
+            user: user._id, amount, category: category._id,
+            description: await encrypt('income', dataKey), date,
+            isRecurring: false, isPostTax: true,
+        });
+    }
 
-        const inc1 = await makeCategory(u1, 'income', 'Salary');
-        const inc2 = await makeCategory(u2, 'income', 'Salary');
-        const exp1 = await makeCategory(u1, 'expense', 'Food');
-        const exp2 = await makeCategory(u2, 'expense', 'Food');
-
-        // u1: tight — ratio = 60k/80k = 0.75 → 70
-        await plantRecurringIncome({ user: u1, dataKey: dk1, category: inc1, amount: 80_000, anchorDate: startOfCurrentMonth() });
-        await plantExpense({ user: u1, dataKey: dk1, category: exp1, amount: 60_000, date: someDateThisMonth() });
-
-        // u2: comfortable — ratio = 60k/300k = 0.20 → 100
-        await plantRecurringIncome({ user: u2, dataKey: dk2, category: inc2, amount: 300_000, anchorDate: startOfCurrentMonth() });
-        await plantExpense({ user: u2, dataKey: dk2, category: exp2, amount: 60_000, date: someDateThisMonth() });
-
-        const r1 = mockRes();
-        await aiCtl.financialHealthScore(mockReq(u1, dk1), r1);
-        const r2 = mockRes();
-        await aiCtl.financialHealthScore(mockReq(u2, dk2), r2);
-
-        const s1 = lastJson(r1).data.financialHealthScore;
-        const s2 = lastJson(r2).data.financialHealthScore;
-        expect(s2).toBeGreaterThan(s1);                  // higher income → better score
-        expect(s1).toBe(70);                             // 0.75 maps to 70
-        expect(s2).toBe(100);                            // 0.20 maps to 100
-    });
-
-    test('over-spending (ratio > 1) → score 20', async () => {
-        const { user, dataKey } = await persistUser();
-        const inc = await makeCategory(user, 'income', 'Salary');
-        const exp = await makeCategory(user, 'expense', 'Bills');
-        await plantRecurringIncome({ user, dataKey, category: inc, amount: 50_000, anchorDate: startOfCurrentMonth() });
-        await plantExpense({ user, dataKey, category: exp, amount: 75_000, date: someDateThisMonth() });
-
-        const res = mockRes();
-        await aiCtl.financialHealthScore(mockReq(user, dataKey), res);
-        expect(lastJson(res).data.financialHealthScore).toBe(20);
-    });
-
-    test('no income data + no expenses → 100 (neutral healthy)', async () => {
+    test('brand-new account (no data) → building status, never a number', async () => {
         const { user, dataKey } = await persistUser();
         const res = mockRes();
         await aiCtl.financialHealthScore(mockReq(user, dataKey), res);
         const d = lastJson(res).data;
-        expect(d.financialHealthScore).toBe(100);
-        expect(d.monthlyIncome).toBe(0);
-        expect(d.monthlyExpense).toBe(0);
+        expect(d.status).toBe('building');
+        expect(d.score).toBeNull();
+        expect(Array.isArray(d.factors)).toBe(true);
     });
 
-    test('no income but expenses present → 20 (spending without income on file)', async () => {
+    test('REGRESSION: one-off income + expenses scores on real factors, not a stuck 20', async () => {
         const { user, dataKey } = await persistUser();
+        const inc = await makeCategory(user, 'income', 'Salary');
         const exp = await makeCategory(user, 'expense', 'Food');
-        await plantExpense({ user, dataKey, category: exp, amount: 1000, date: someDateThisMonth() });
+        // One-off (non-recurring) income — the OLD endpoint counted only
+        // recurring templates, so this user used to be stuck at 20.
+        await plantOneOffIncome({ user, dataKey, category: inc, amount: 80_000, date: someDateThisMonth() });
+        await plantExpense({ user, dataKey, category: exp, amount: 60_000, date: someDateThisMonth() });
 
         const res = mockRes();
         await aiCtl.financialHealthScore(mockReq(user, dataKey), res);
-        expect(lastJson(res).data.financialHealthScore).toBe(20);
+        const d = lastJson(res).data;
+        expect(d.status).toBe('ok');
+        expect(typeof d.score).toBe('number');
+        expect(d.score).not.toBe(20);
+        expect(d.factors.find((f) => f.label === 'Savings rate').score).not.toBeNull();
+        expect(d.band).toEqual(expect.any(String));
+        expect(d.message).toEqual(expect.any(String));
+    });
+
+    test('recurring income also counts; returns the full factor breakdown shape', async () => {
+        const { user, dataKey } = await persistUser();
+        const inc = await makeCategory(user, 'income', 'Salary');
+        const exp = await makeCategory(user, 'expense', 'Food');
+        await plantRecurringIncome({ user, dataKey, category: inc, amount: 80_000, anchorDate: startOfCurrentMonth() });
+        await plantExpense({ user, dataKey, category: exp, amount: 30_000, date: someDateThisMonth() });
+
+        const res = mockRes();
+        await aiCtl.financialHealthScore(mockReq(user, dataKey), res);
+        const d = lastJson(res).data;
+        expect(d.status).toBe('ok');
+        expect(d.factors).toHaveLength(5);
+        expect(d.contributor).toEqual(expect.objectContaining({ label: expect.any(String), score: expect.any(Number) }));
+        expect(d.detractor).toEqual(expect.objectContaining({ label: expect.any(String), score: expect.any(Number) }));
     });
 });
 

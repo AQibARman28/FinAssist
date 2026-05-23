@@ -1,8 +1,13 @@
 const Expense = require('../models/Expense');
+const Budget = require('../models/Budget');
+const Goal = require('../models/Goal');
+const Category = require('../models/Category');
 const {
     expenseTotalForPeriod,
+    incomeTotalForPeriod,
     monthlyEquivalentIncome,
 } = require('../utils/finance');
+const { computeHealthScore, HEALTH_WINDOW_DAYS } = require('../services/healthScore');
 
 // Helper: current calendar month, UTC bounds. Matches the convention used
 // by utils/recurring.js so monthly templates anchored at UTC midnight don't
@@ -159,38 +164,72 @@ const smartTips = async (req, res) => {
 // number — the score reflects the user's recurring baseline rather than
 // spiky one-off receipts. Switching to "trailing-12-month actual" is a
 // future iteration.
+// GET /api/ai/financial-health-score
+//
+// Multi-factor health score over a trailing 90-day window (HS-1). The math
+// lives in services/healthScore.js; this handler just sources the inputs.
+// Income is sourced via incomeTotalForPeriod (one-off + recurring) — the old
+// endpoint used monthlyEquivalentIncome (recurring-only), so any user without
+// a recurring template scored a misleading 20. See docs/sprints/HS-1-plan.md.
 const financialHealthScore = async (req, res) => {
     try {
         const userId = req.user._id;
-        const { start, end } = _currentMonthRange();
+        const now = new Date();
+        const windowStart = new Date(now.getTime() - HEALTH_WINDOW_DAYS * 86_400_000);
 
-        const [monthlyIncome, monthlyExpense] = await Promise.all([
-            monthlyEquivalentIncome(userId),
-            expenseTotalForPeriod(userId, start, end),
+        // Income + expense over the window.
+        const [income, expense] = await Promise.all([
+            incomeTotalForPeriod(userId, windowStart, now),
+            expenseTotalForPeriod(userId, windowStart, now),
         ]);
 
-        let score;
-        if (monthlyIncome === 0 && monthlyExpense === 0) {
-            score = 100;
-        } else if (monthlyIncome === 0) {
-            score = 20;
-        } else {
-            const ratio = monthlyExpense / monthlyIncome;
-            if      (ratio > 1)   score = 20;
-            else if (ratio > 0.8) score = 50;
-            else if (ratio > 0.6) score = 70;
-            else if (ratio > 0.4) score = 85;
-            else                  score = 100;
+        // Budget adherence inputs: resolve each budget's String-enum category
+        // name to the user's Category ObjectId, then match window expenses by
+        // that id + the budget's month. The stale Budget.spent is ignored.
+        const [allBudgets, expenseCats, perCatMonth, weekAgg, goalDocs] = await Promise.all([
+            Budget.find({ user: userId, isActive: true }).lean(),
+            Category.find({ user: userId, type: { $in: ['expense', 'both'] } }).select('name').lean(),
+            Expense.aggregate([
+                { $match: { user: userId, date: { $gte: windowStart, $lte: now } } },
+                { $group: {
+                    _id:   { cat: '$category', y: { $year: { date: '$date', timezone: 'UTC' } }, m: { $month: { date: '$date', timezone: 'UTC' } } },
+                    total: { $sum: '$amount' },
+                } },
+            ]),
+            Expense.aggregate([
+                { $match: { user: userId, date: { $gte: windowStart, $lte: now } } },
+                { $group: { _id: { $dateTrunc: { date: '$date', unit: 'week', startOfWeek: 'monday', timezone: 'UTC' } }, total: { $sum: '$amount' } } },
+                { $sort: { _id: 1 } },
+            ]),
+            Goal.find({ user: userId, status: 'Active' }).select('currentAmount targetAmount targetDate createdAt').lean(),
+        ]);
+
+        const nameToId = new Map(expenseCats.map((c) => [c.name, c._id.toString()]));
+        const spendKey = (cat, y, m) => `${cat}-${y}-${m}`;
+        const spendMap = new Map(perCatMonth.map((r) => [spendKey(r._id.cat?.toString(), r._id.y, r._id.m), r.total]));
+
+        const budgets = [];
+        for (const b of allBudgets) {
+            // window overlap by month
+            const mStart = new Date(Date.UTC(b.year, b.month - 1, 1, 0, 0, 0, 0));
+            const mEnd   = new Date(Date.UTC(b.year, b.month, 0, 23, 59, 59, 999));
+            if (mEnd < windowStart || mStart > now) continue;
+            const catId = nameToId.get(b.category);
+            if (!catId || b.limit <= 0) continue; // unattributable / zero-limit → exclude
+            const spent = spendMap.get(spendKey(catId, b.year, b.month)) || 0;
+            budgets.push({ limit: b.limit, spent });
         }
 
-        res.json({
-            success: true,
-            data: {
-                financialHealthScore: score,
-                monthlyIncome,
-                monthlyExpense,
-            },
-        });
+        const goals = goalDocs.map((g) => ({
+            currentAmount: g.currentAmount,
+            targetAmount:  g.targetAmount,
+            targetDate:    g.targetDate,
+            createdAt:     g.createdAt,
+        }));
+        const weeklySpends = weekAgg.map((w) => w.total);
+
+        const result = computeHealthScore({ income, expense, budgets, goals, weeklySpends, now: now.getTime() });
+        res.json({ success: true, data: result });
     } catch (error) {
         console.error('Financial health score error:', error);
         res.status(500).json({ success: false, message: 'Server error' });
