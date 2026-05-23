@@ -1,5 +1,8 @@
+const mongoose = require('mongoose');
 const Expense = require('../models/Expense');
 const Income = require('../models/Income');
+const Category = require('../models/Category');
+const { safeDecrypt } = require('../utils/encryption');
 const {
     expenseTotalForPeriod,
     incomeTotalForPeriod,
@@ -299,6 +302,128 @@ const dashboardStats = async (req, res) => {
     }
 };
 
+// GET /api/analytics/spending-timeline?granularity=&from=&to=&category=&previewLimit=
+//
+// Time-bucketed spending — the SHARED primitive for the DASH-1 spending curve
+// and EXP-1 Phase 5 (history). Pure: no outlier math (that's client-side, over
+// the visible window). Query is zod-validated in the route, so values arrive
+// clean (previewLimit coerced to a number).
+//
+// Per bucket: total + count over ALL expenses, plus up to `previewLimit`
+// top-spender preview rows (amount-desc, descriptions decrypted) and the single
+// largest expense's id so the client can flag it without re-sorting. Uses
+// $dateTrunc (Mongo 5.0+) and $topN (5.2+).
+const TRUNC_UNIT  = { daily: 'day', weekly: 'week', monthly: 'month', yearly: 'year' };
+const MONTH_ABBR  = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const DAY_MS      = 86_400_000;
+
+function _defaultRange(granularity, now) {
+    if (granularity === 'daily')   return { from: new Date(now.getTime() - 30 * DAY_MS), to: now };
+    if (granularity === 'weekly')  return { from: new Date(now.getTime() - 12 * 7 * DAY_MS), to: now };
+    if (granularity === 'monthly') return { from: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 11, 1, 0, 0, 0, 0)), to: now };
+    return { from: null, to: now }; // yearly → all years with data
+}
+
+function _bucketLabel(granularity, d) {
+    const dt = new Date(d);
+    const y = dt.getUTCFullYear();
+    if (granularity === 'monthly') return `${MONTH_ABBR[dt.getUTCMonth()]} ${y}`;
+    if (granularity === 'yearly')  return `${y}`;
+    return `${MONTH_ABBR[dt.getUTCMonth()]} ${dt.getUTCDate()}`; // daily + weekly (week-start)
+}
+
+const spendingTimeline = async (req, res) => {
+    try {
+        const userId       = req.user._id;
+        const granularity  = req.query.granularity;
+        const previewLimit = req.query.previewLimit ? parseInt(req.query.previewLimit, 10) : 8;
+
+        const now = new Date();
+        const def = _defaultRange(granularity, now);
+        const from = req.query.from ? new Date(req.query.from) : def.from;
+        const to   = req.query.to   ? new Date(req.query.to)   : def.to;
+
+        const match = { user: userId };
+        if (from || to) {
+            match.date = {};
+            if (from) match.date.$gte = from;
+            if (to)   match.date.$lte = to;
+        }
+        if (req.query.category) match.category = new mongoose.Types.ObjectId(req.query.category);
+
+        const truncSpec = { date: '$date', unit: TRUNC_UNIT[granularity], timezone: 'UTC' };
+        if (granularity === 'weekly') truncSpec.startOfWeek = 'monday';
+
+        const grouped = await Expense.aggregate([
+            { $match: match },
+            { $group: {
+                _id:   { $dateTrunc: truncSpec },
+                total: { $sum: '$amount' },
+                count: { $sum: 1 },
+                top:   { $topN: {
+                    n: previewLimit,
+                    sortBy: { amount: -1 },
+                    output: { _id: '$_id', amount: '$amount', categoryId: '$category', date: '$date', description: '$description' },
+                } },
+            } },
+            { $sort: { _id: 1 } }, // chronological x-axis
+        ]);
+
+        // One batched category lookup for every preview row across all buckets.
+        const catIds = new Set();
+        for (const b of grouped) for (const e of b.top) if (e.categoryId) catIds.add(e.categoryId.toString());
+        const cats = catIds.size
+            ? await Category.find({ _id: { $in: [...catIds] }, user: userId }).select('name color icon').lean()
+            : [];
+        const catMap = new Map(cats.map((c) => [c._id.toString(), c]));
+
+        let grandTotal = 0;
+        let grandCount = 0;
+        const buckets = [];
+        for (const b of grouped) {
+            grandTotal += b.total;
+            grandCount += b.count;
+            const topExpenses = await Promise.all(b.top.map(async (e) => {
+                const cat = e.categoryId ? catMap.get(e.categoryId.toString()) : null;
+                return {
+                    _id:           e._id.toString(),
+                    amount:        e.amount,
+                    description:   await safeDecrypt(e.description, req.dataKey),
+                    categoryId:    e.categoryId ? e.categoryId.toString() : null,
+                    categoryName:  cat?.name  ?? 'Uncategorized',
+                    categoryColor: cat?.color ?? '#6B7280',
+                    categoryIcon:  cat?.icon  ?? 'more',
+                    date:          e.date,
+                };
+            }));
+            buckets.push({
+                period:       new Date(b._id).toISOString().slice(0, 10),
+                label:        _bucketLabel(granularity, b._id),
+                total:        b.total,
+                count:        b.count,
+                maxExpenseId: b.top[0] ? b.top[0]._id.toString() : null, // top is amount-desc
+                hasMore:      b.count > previewLimit,
+                topExpenses,
+            });
+        }
+
+        res.json({
+            success: true,
+            data: {
+                granularity,
+                from: from ? from.toISOString().slice(0, 10) : (buckets[0]?.period ?? null),
+                to:   to.toISOString().slice(0, 10),
+                buckets,
+                grandTotal,
+                grandCount,
+            },
+        });
+    } catch (error) {
+        console.error('Spending-timeline error:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+};
+
 module.exports = {
     monthlyAnalytics,
     recurringExpenses,
@@ -307,4 +432,5 @@ module.exports = {
     expenseIncomeRatio,
     savingsRate,
     dashboardStats,
+    spendingTimeline,
 };
