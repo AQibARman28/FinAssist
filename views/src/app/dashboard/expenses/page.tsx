@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { QuickAddBar } from "@/components/dashboard/expenses/QuickAddBar";
 import { ExpenseForm } from "@/components/dashboard/expenses/ExpenseForm";
 import { ExpenseList } from "@/components/dashboard/expenses/ExpenseList";
 import { StatCard } from "@/components/dashboard/StatCard";
@@ -54,6 +55,14 @@ export default function ExpensesPage() {
                 <p className="text-zinc-500 text-sm">Manage and track your spending</p>
             </div>
 
+            {/* Natural-language quick-add */}
+            <QuickAddBar
+                onAdd={handleRefresh}
+                onUseForm={() =>
+                    document.getElementById("expense-detail-form")?.scrollIntoView({ behavior: "smooth", block: "center" })
+                }
+            />
+
             {/* Stats - Horizontal */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <StatCard
@@ -81,7 +90,9 @@ export default function ExpensesPage() {
 
             {/* Main Content */}
             <div className="grid grid-cols-1 gap-6">
-                <ExpenseForm onAdd={handleRefresh} />
+                <div id="expense-detail-form">
+                    <ExpenseForm onAdd={handleRefresh} />
+                </div>
                 <ExpenseList refreshTrigger={refreshTrigger} />
             </div>
         </div>
