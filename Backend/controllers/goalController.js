@@ -1,6 +1,8 @@
 const Goal = require('../models/Goal');
 const { encrypt, safeDecrypt } = require('../utils/encryption');
 const { signRecord, verifyRecord, encryptNote, decryptNote } = require('../utils/signing');
+const { getCashFlow } = require('../services/cashFlow');
+const { planGoals } = require('../services/goalPlanning');
 
 async function decryptGoal(goal, user, dataKey) {
     const obj         = goal.toJSON ? goal.toJSON() : { ...goal };
@@ -272,7 +274,55 @@ const getGoalsDashboard = async (req, res) => {
     }
 };
 
+// GET /api/goals/plan
+//
+// Cash-flow-aware feasibility + forecast across active goals (GOAL-1). Surplus
+// comes from the shared cash-flow service; the per-goal/portfolio math is the
+// pure goalPlanning service. Read-only — records nothing.
+const getGoalPlan = async (req, res) => {
+    try {
+        const userId = req.user._id;
+        const cash = await getCashFlow(userId, 90);
+        const goals = await Goal.find({ user: userId, status: 'Active' });
+
+        const inputs = [];
+        const titles = {};
+        for (const g of goals) {
+            const id = g._id.toString();
+            titles[id] = await safeDecrypt(g.title, req.dataKey);
+            inputs.push({
+                id,
+                targetAmount:  g.targetAmount,
+                currentAmount: g.currentAmount,
+                targetDate:    g.targetDate,
+                contributions: g.contributions.map((c) => ({ amount: c.amount, date: c.date })),
+            });
+        }
+
+        const plan = planGoals({ goals: inputs, monthlySurplus: cash.monthlySurplus, now: Date.now(), windowDays: 90 });
+        const byId = new Map(goals.map((g) => [g._id.toString(), g]));
+        const goalsOut = plan.goals.map((p) => {
+            const g = byId.get(p.goalId);
+            return {
+                ...p,
+                title:         titles[p.goalId],
+                goalType:      g.goalType,
+                priority:      g.priority ?? 0,
+                targetAmount:  g.targetAmount,
+                currentAmount: g.currentAmount,
+                targetDate:    g.targetDate,
+            };
+        });
+
+        res.json({ success: true, data: { cashFlow: cash, goals: goalsOut, portfolio: plan.portfolio } });
+    } catch (error) {
+        console.error('Goal plan error:', error);
+        res.status(500).json({ success: false, message: 'Server error computing goal plan' });
+    }
+};
+
 module.exports = {
     createGoal, getGoals, getGoalById, updateGoal, deleteGoal,
-    addContribution, getGoalProgress, getGoalReminders, getGoalsDashboard
+    addContribution, getGoalProgress, getGoalReminders, getGoalsDashboard,
+    getGoalPlan,
 };

@@ -3,7 +3,7 @@ const {
     createGoal, getGoals, getGoalById,
     updateGoal, deleteGoal,
     addContribution, getGoalProgress,
-    getGoalReminders, getGoalsDashboard,
+    getGoalReminders, getGoalsDashboard, getGoalPlan,
 } = require('../controllers/goalController');
 const { protect } = require('../middleware/authMiddleware');
 const { validate } = require('../middleware/validate');
@@ -19,6 +19,7 @@ router.post('/', validate({ body:  goal.create }), createGoal);
 
 router.get('/dashboard', getGoalsDashboard);
 router.get('/reminders', getGoalReminders);
+router.get('/plan',      getGoalPlan);
 
 router.get('/:id',    validate({ params: idParams }),                       getGoalById);
 router.put('/:id',    validate({ params: idParams, body: goal.update }),    updateGoal);
