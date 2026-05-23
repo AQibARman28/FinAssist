@@ -137,6 +137,7 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
                             value={formData.category}
                             onChange={(id) => { setFormData({ ...formData, category: id }); setCategoryError(null); }}
                             error={categoryError ?? undefined}
+                            autoSelectDefault
                         />
                     </div>
 
