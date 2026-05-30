@@ -2,6 +2,7 @@ const express = require('express');
 const {
     createIncome,
     getIncomes,
+    getIncomeTimeline,
     getIncomeById,
     updateIncome,
     deleteIncome,
@@ -17,6 +18,9 @@ router.use(protect);
 
 router.get('/',  validate({ query: income.list }),   getIncomes);
 router.post('/', validate({ body:  income.create }), createIncome);
+
+// Specific route — must stay above '/:id' so 'timeline' isn't treated as an id.
+router.get('/timeline', validate({ query: income.timeline }), getIncomeTimeline);
 
 router.get('/:id',    validate({ params: idParams }),                       getIncomeById);
 router.put('/:id',    validate({ params: idParams, body: income.update }),  updateIncome);

@@ -4,6 +4,10 @@ const { signRecord, verifyRecord, encryptNote, decryptNote } = require('../utils
 const { assertCategoryOwnedAndTyped } = require('../utils/categoryGuard');
 const { logAudit } = require('../utils/audit');
 const { materializeRecurring } = require('../utils/recurring');
+const { incomeTotalForPeriod } = require('../utils/finance');
+
+const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const YEARS_BACK = 4;   // yearly chart shows this many prior years + the current one
 
 // Default materialization window when the client doesn't pass a date filter:
 // the start through end of the current calendar month in UTC.
@@ -139,6 +143,52 @@ const getIncomes = async (req, res) => {
     }
 };
 
+// GET /api/incomes/timeline?granularity=monthly|yearly
+//
+// Income totals bucketed for the page's Monthly/Yearly graph. Reuses the
+// canonical incomeTotalForPeriod helper (same source as cashFlow/savings/
+// analytics) so recurring income is projected correctly and totals stay
+// consistent across the app. Read-only.
+//   monthly → Jan..current month of the current year (one bucket per month)
+//   yearly  → the last YEARS_BACK years + the current year (one bucket per year)
+const getIncomeTimeline = async (req, res) => {
+    try {
+        const userId = req.user._id;
+        const granularity = req.query.granularity === 'yearly' ? 'yearly' : 'monthly';
+        const now = new Date();
+        const buckets = [];
+
+        // Cap each window at `now`: this is a backward-looking "income received"
+        // chart, so the current period must not include income that
+        // incomeTotalForPeriod would otherwise project forward from recurring
+        // templates (which would inflate the current month/year). Past periods
+        // end before `now`, so the cap is a no-op for them.
+        const capAtNow = (end) => (end.getTime() > now.getTime() ? now : end);
+
+        if (granularity === 'monthly') {
+            const year = now.getUTCFullYear();
+            for (let m = 0; m <= now.getUTCMonth(); m++) {
+                const from = new Date(Date.UTC(year, m, 1, 0, 0, 0, 0));
+                const to   = capAtNow(new Date(Date.UTC(year, m + 1, 0, 23, 59, 59, 999)));
+                buckets.push({ period: from.toISOString(), label: MONTH_LABELS[m], total: await incomeTotalForPeriod(userId, from, to) });
+            }
+        } else {
+            const thisYear = now.getUTCFullYear();
+            for (let y = thisYear - YEARS_BACK; y <= thisYear; y++) {
+                const from = new Date(Date.UTC(y, 0, 1, 0, 0, 0, 0));
+                const to   = capAtNow(new Date(Date.UTC(y, 11, 31, 23, 59, 59, 999)));
+                buckets.push({ period: from.toISOString(), label: String(y), total: await incomeTotalForPeriod(userId, from, to) });
+            }
+        }
+
+        const grandTotal = buckets.reduce((s, b) => s + b.total, 0);
+        res.json({ success: true, data: { granularity, buckets, grandTotal } });
+    } catch (error) {
+        console.error('Income timeline error:', error);
+        res.status(500).json({ success: false, message: 'Server error building income timeline' });
+    }
+};
+
 // GET /api/incomes/:id
 const getIncomeById = async (req, res) => {
     try {
@@ -222,4 +272,4 @@ const deleteIncome = async (req, res) => {
     }
 };
 
-module.exports = { createIncome, getIncomes, getIncomeById, updateIncome, deleteIncome };
+module.exports = { createIncome, getIncomes, getIncomeTimeline, getIncomeById, updateIncome, deleteIncome };

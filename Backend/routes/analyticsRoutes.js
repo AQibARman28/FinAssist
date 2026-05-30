@@ -8,6 +8,7 @@ const {
     savingsRate,
     dashboardStats,
     spendingTimeline,
+    balance,
 } = require('../controllers/analyticsController');
 const { protect } = require('../middleware/authMiddleware');
 const { validate } = require('../middleware/validate');
@@ -25,5 +26,6 @@ router.get('/expense-income-ratio', expenseIncomeRatio);
 router.get('/savings-rate',         savingsRate);
 router.get('/dashboard-stats',      dashboardStats);
 router.get('/spending-timeline',    validate({ query: spendingTimelineQuery }), spendingTimeline);
+router.get('/balance',              balance);
 
 module.exports = router;

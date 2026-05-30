@@ -2,6 +2,8 @@ const mongoose = require('mongoose');
 const Expense = require('../models/Expense');
 const Income = require('../models/Income');
 const Category = require('../models/Category');
+const Goal = require('../models/Goal');
+const { getBalance } = require('../services/balance');
 const { safeDecrypt } = require('../utils/encryption');
 const {
     expenseTotalForPeriod,
@@ -424,6 +426,22 @@ const spendingTimeline = async (req, res) => {
     }
 };
 
+// GET /api/analytics/balance
+//
+// The single continuous pocket balance + its monthly/yearly classification.
+// Used by the Goals, Income, and Expenses pages. Read-only. Goal contribution
+// amounts/dates are plaintext, so no dataKey is needed here.
+const balance = async (req, res) => {
+    try {
+        const goals = await Goal.find({ user: req.user._id });
+        const data = await getBalance(req.user._id, goals);
+        res.json({ success: true, data });
+    } catch (error) {
+        console.error('Balance error:', error);
+        res.status(500).json({ success: false, message: 'Server error computing balance' });
+    }
+};
+
 module.exports = {
     monthlyAnalytics,
     recurringExpenses,
@@ -433,4 +451,5 @@ module.exports = {
     savingsRate,
     dashboardStats,
     spendingTimeline,
+    balance,
 };

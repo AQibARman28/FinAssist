@@ -34,6 +34,8 @@ const KNOWN_EVENTS = new Set([
     'refresh.rotate',
     'refresh.revoke',
     'email.verify',
+    'email.verify_failure',
+    'email.resend_code',
     'category.create',
     'category.update',
     'category.archive',

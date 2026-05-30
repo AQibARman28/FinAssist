@@ -215,6 +215,9 @@ describe('GET /api/goals/plan (DB)', () => {
 
     test('POST /allocate records contributions via the contribute path', async () => {
         const { user, dataKey } = await persistUser();
+        // Seed monthly savings so the hard cap allows the 500 allocation.
+        const incCat = await Category.create({ user: user._id, name: 'Salary', type: 'income', color: '#10B981', icon: 'briefcase' });
+        await Income.create({ user: user._id, amount: 5_000, category: incCat._id, description: await encrypt('s', dataKey), date: new Date(), isRecurring: false, isPostTax: true });
         const goal = await makeGoal(user, dataKey, { targetAmount: 12_000 });
 
         const res = mockRes();
@@ -225,6 +228,19 @@ describe('GET /api/goals/plan (DB)', () => {
         expect(fresh.contributions).toHaveLength(1);
         expect(fresh.contributions[0].amount).toBe(500);
         expect(fresh.currentAmount).toBe(500); // pre-save recompute
+    });
+
+    test('POST /allocate hard-caps at available savings (rejects, records nothing)', async () => {
+        const { user, dataKey } = await persistUser();
+        // No income → 0 available savings, so any positive allocation is blocked.
+        const goal = await makeGoal(user, dataKey, { targetAmount: 12_000 });
+
+        const res = mockRes();
+        await goalCtl.allocateContributions(mockReq(user, dataKey, { allocations: [{ goalId: goal._id.toString(), amount: 500 }] }), res);
+        expect(res.status).toHaveBeenCalledWith(400);
+
+        const fresh = await Goal.findById(goal._id);
+        expect(fresh.contributions).toHaveLength(0);
     });
 
     test('POST /allocate rejects a goal the user does not own (404, records nothing)', async () => {

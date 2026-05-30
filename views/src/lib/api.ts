@@ -1,6 +1,10 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from "axios";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
+// Relative by default: the app and API are same-origin (Next.js rewrites
+// proxy `/api/*` to the backend — see next.config.ts). This keeps the
+// SameSite=Strict auth cookies working and sidesteps CORS. An absolute
+// NEXT_PUBLIC_API_URL can still override it if ever needed.
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "/api";
 
 export const api = axios.create({
     baseURL: API_URL,

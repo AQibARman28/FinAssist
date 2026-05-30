@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { VerifyCode } from "@/components/auth/VerifyCode";
 
 // Mirrors the server's password policy (Backend/validators/common.js).
 // Showing it client-side stops users from staring at a generic
@@ -32,6 +33,8 @@ export default function RegisterPage() {
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+    // After registering we drop into the inline "enter the code" step.
+    const [pendingEmail, setPendingEmail] = useState<string | null>(null);
     // Only show the "passwords don't match" warning AFTER the user has left
     // the confirm field or submitted -- typing mid-confirm shouldn't blink
     // red on every keystroke until the lengths happen to match.
@@ -65,15 +68,10 @@ export default function RegisterPage() {
                 password: formData.password
             });
 
-            // Two posture branches driven by the API response:
-            //   requiresEmailVerification === true → prod-style, no session.
-            //                                        Bounce to /login with a
-            //                                        notice.
-            //   requiresEmailVerification === false → dev-style (no SMTP),
-            //                                         server set the session
-            //                                         cookies; land on /dashboard.
+            // Every account now verifies by code. Drop into the inline
+            // code-entry step; on success the server logs them straight in.
             if (res.data?.requiresEmailVerification) {
-                router.push("/login?registered=1");
+                setPendingEmail(res.data?.email || formData.email);
             } else {
                 setUser(res.data.data);
                 router.push("/dashboard");
@@ -119,9 +117,17 @@ export default function RegisterPage() {
                             FinAssist
                         </h1>
                     </motion.div>
-                    <p className="text-zinc-500 text-sm">Create your financial identity</p>
+                    <p className="text-zinc-500 text-sm">{pendingEmail ? "One last step" : "Create your financial identity"}</p>
                 </div>
 
+                {pendingEmail ? (
+                    <VerifyCode
+                        email={pendingEmail}
+                        onVerified={(u) => { setUser(u as Parameters<typeof setUser>[0]); router.push("/dashboard"); }}
+                        onBack={() => setPendingEmail(null)}
+                    />
+                ) : (
+                <>
                 {error && (
                     <motion.div
                         initial={{ opacity: 0, height: 0 }}
@@ -210,6 +216,8 @@ export default function RegisterPage() {
                         Sign In
                     </Link>
                 </div>
+                </>
+                )}
             </motion.div>
         </div>
     );

@@ -1,0 +1,30 @@
+# Keeps the free Render backend awake (free tier sleeps after ~15 min idle,
+# causing a ~50s cold start). This pings /api/health every ~14 minutes.
+#
+# Setup: in GitHub → repo Settings → Secrets and variables → Actions →
+# Variables, add a repo variable BACKEND_HEALTH_URL set to
+#   https://<your-render-service>.onrender.com/api/health
+# Until that variable is set, this workflow is a harmless no-op.
+#
+# Note: GitHub may delay scheduled runs under load, and disables schedules
+# after 60 days of repo inactivity — both fine for normal use.
+name: Keep backend awake
+
+on:
+  schedule:
+    - cron: "*/14 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping health endpoint
+        run: |
+          URL="${{ vars.BACKEND_HEALTH_URL }}"
+          if [ -z "$URL" ]; then
+            echo "BACKEND_HEALTH_URL not set — skipping. (Add it as a repo variable to enable.)"
+            exit 0
+          fi
+          echo "Pinging $URL"
+          curl -fsS --max-time 60 "$URL" && echo "" && echo "OK"

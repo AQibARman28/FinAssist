@@ -1,68 +1,60 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Trophy, Calendar, Target, Plus, Loader2 } from "lucide-react";
-import { format } from "date-fns";
+import { Trophy, Target, Plus, Loader2, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useCurrency } from "@/lib/useCurrency";
 
-export type GoalStatus = "On track" | "At risk" | "Not feasible at current rate";
-
-export interface PlanGoal {
-    goalId: string;
+export interface Goal {
+    _id: string;
     title: string;
-    goalType: string;
-    priority: number;
+    period: "monthly" | "yearly";
     targetAmount: number;
     currentAmount: number;
-    targetDate: string;
-    requiredMonthly: number | null;
-    actualMonthlyRate: number | null;
-    forecastMonths: number | null;
-    forecastDelta: number | null;
-    status: GoalStatus;
+    status: "Active" | "Completed" | "Paused";
 }
 
-const STATUS_STYLE: Record<GoalStatus, { label: string; cls: string }> = {
-    "On track":                     { label: "On track",     cls: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" },
-    "At risk":                      { label: "At risk",      cls: "text-amber-400 bg-amber-500/10 border-amber-500/20" },
-    "Not feasible at current rate": { label: "Not feasible", cls: "text-red-400 bg-red-500/10 border-red-500/20" },
-};
-
-function forecastText(g: PlanGoal): string {
-    if (g.actualMonthlyRate === null) return "No contributions yet";
-    if (g.forecastDelta === null) return "";
-    const d = Math.round(g.forecastDelta);
-    if (d <= 0) return "On time at your current rate";
-    return `~${d} month${d === 1 ? "" : "s"} late at your current rate`;
-}
-
-export function GoalCard({ goal, onUpdate }: { goal: PlanGoal; onUpdate: () => void }) {
+export function GoalCard({ goal, onUpdate }: { goal: Goal; onUpdate: () => void }) {
     const { format: fmt } = useCurrency();
     const [isAdding, setIsAdding] = useState(false);
     const [addAmount, setAddAmount] = useState("");
     const [loading, setLoading] = useState(false);
+    const [deleting, setDeleting] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
     const percentage = goal.targetAmount > 0 ? Math.min((goal.currentAmount / goal.targetAmount) * 100, 100) : 0;
-    const isCompleted = percentage >= 100;
-    const status = STATUS_STYLE[goal.status];
-    const forecast = forecastText(goal);
+    const isCompleted = goal.status === "Completed" || percentage >= 100;
 
     const handleContribute = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!addAmount) return;
+        const amount = parseFloat(addAmount);
+        if (!amount || amount <= 0) return;
         setLoading(true);
+        setError(null);
         try {
-            await api.post(`/goals/${goal.goalId}/contribute`, { amount: parseFloat(addAmount), note: "Quick Add" });
+            await api.post(`/goals/${goal._id}/contribute`, { amount, note: "Add funds" });
             setAddAmount("");
             setIsAdding(false);
             onUpdate();
         } catch (err) {
-            console.error(err);
+            const e = err as { response?: { data?: { message?: string } } };
+            setError(e.response?.data?.message || "Failed to add funds");
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleDelete = async () => {
+        if (!window.confirm(`Delete goal "${goal.title}"? This can't be undone.`)) return;
+        setDeleting(true);
+        try {
+            await api.delete(`/goals/${goal._id}`);
+            onUpdate();
+        } catch (err) {
+            console.error(err);
+            setDeleting(false);
         }
     };
 
@@ -84,20 +76,20 @@ export function GoalCard({ goal, onUpdate }: { goal: PlanGoal; onUpdate: () => v
                     </div>
                     <div className="min-w-0">
                         <h3 className="text-lg font-medium text-white truncate">{goal.title}</h3>
-                        <div className="flex items-center gap-2 text-xs text-zinc-500 mt-0.5">
-                            <Calendar className="w-3 h-3 shrink-0" />
-                            <span>{format(new Date(goal.targetDate), "MMM d, yyyy")}</span>
-                        </div>
+                        <span className="text-[11px] uppercase tracking-wider text-zinc-500">{goal.period}</span>
                     </div>
                 </div>
-                {!isCompleted && (
-                    <span className={cn("shrink-0 text-[11px] font-medium px-2 py-1 rounded-full border", status.cls)}>
-                        {status.label}
-                    </span>
-                )}
+                <button
+                    onClick={handleDelete}
+                    disabled={deleting}
+                    aria-label="Delete goal"
+                    className="shrink-0 p-2 rounded-lg text-zinc-600 hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50"
+                >
+                    {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                </button>
             </div>
 
-            <div className="mb-3">
+            <div className="mb-4">
                 <div className="flex justify-between items-end mb-2">
                     <span className="text-3xl font-bold text-white tracking-tight">{fmt(goal.currentAmount)}</span>
                     <span className="text-zinc-500 text-sm mb-1">of {fmt(goal.targetAmount)}</span>
@@ -114,21 +106,15 @@ export function GoalCard({ goal, onUpdate }: { goal: PlanGoal; onUpdate: () => v
                 </div>
             </div>
 
-            {/* Forecast / required line */}
-            {!isCompleted && (
-                <div className="flex items-center justify-between text-xs mb-4">
-                    <span className="text-zinc-500">{forecast}</span>
-                    {goal.requiredMonthly !== null && (
-                        <span className="text-zinc-400">{fmt(goal.requiredMonthly)}/mo needed</span>
-                    )}
-                </div>
-            )}
+            {error && <p className="text-xs text-red-400 mb-3">{error}</p>}
 
             {isAdding ? (
                 <form onSubmit={handleContribute} className="flex gap-2">
                     <input
                         autoFocus
                         type="number"
+                        min={1}
+                        step="any"
                         placeholder="Amount"
                         value={addAmount}
                         onChange={(e) => setAddAmount(e.target.value)}
@@ -140,7 +126,7 @@ export function GoalCard({ goal, onUpdate }: { goal: PlanGoal; onUpdate: () => v
                 </form>
             ) : (
                 <button
-                    onClick={() => setIsAdding(true)}
+                    onClick={() => { setError(null); setIsAdding(true); }}
                     disabled={isCompleted}
                     className={cn(
                         "w-full py-3 rounded-xl border border-dashed flex items-center justify-center gap-2 text-sm font-medium transition-all",

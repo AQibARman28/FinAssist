@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { VerifyCode } from "@/components/auth/VerifyCode";
 
 export default function LoginPage() {
     const router  = useRouter();
@@ -18,6 +19,9 @@ export default function LoginPage() {
     const [requires2FA, setRequires2FA] = useState(false);
     const [isLoading, setIsLoading]     = useState(false);
     const [error, setError]             = useState<string | null>(null);
+    // Set when login is blocked because the email isn't verified yet → we drop
+    // into the same code-entry step (auto-resending a fresh code).
+    const [needsVerifyEmail, setNeedsVerifyEmail] = useState<string | null>(null);
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -36,7 +40,12 @@ export default function LoginPage() {
                 router.push("/dashboard");
             }
         } catch (err: any) {
-            setError(err.response?.data?.message || "Something went wrong. Please try again.");
+            if (err.response?.status === 403 && err.response?.data?.code === "email_unverified") {
+                setError(null);
+                setNeedsVerifyEmail(formData.email);
+            } else {
+                setError(err.response?.data?.message || "Something went wrong. Please try again.");
+            }
         } finally {
             setIsLoading(false);
         }
@@ -85,7 +94,7 @@ export default function LoginPage() {
                         <h1 className="text-2xl font-light tracking-wide text-white">FinAssist</h1>
                     </motion.div>
                     <p className="text-zinc-500 text-sm">
-                        {requires2FA ? "Two-factor authentication" : "Access your financial vault"}
+                        {needsVerifyEmail ? "Verify your email" : requires2FA ? "Two-factor authentication" : "Access your financial vault"}
                     </p>
                 </div>
 
@@ -100,6 +109,14 @@ export default function LoginPage() {
                     </motion.div>
                 )}
 
+                {needsVerifyEmail ? (
+                    <VerifyCode
+                        email={needsVerifyEmail}
+                        autoResend
+                        onVerified={(u) => { setUser(u as Parameters<typeof setUser>[0]); router.push("/dashboard"); }}
+                        onBack={() => setNeedsVerifyEmail(null)}
+                    />
+                ) : (
                 <AnimatePresence mode="wait">
                     {!requires2FA ? (
                         <motion.form
@@ -220,8 +237,9 @@ export default function LoginPage() {
                         </motion.form>
                     )}
                 </AnimatePresence>
+                )}
 
-                {!requires2FA && (
+                {!requires2FA && !needsVerifyEmail && (
                     <div className="mt-8 text-center text-xs text-zinc-500">
                         Don&apos;t have an account?{" "}
                         <Link href="/register" className="text-purple-400 hover:text-purple-300 transition-colors font-medium">

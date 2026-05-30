@@ -2,7 +2,8 @@ const express = require('express');
 const {
     registerUser,
     loginUser,
-    verifyEmail,
+    verifyCode,
+    resendCode,
     refreshSession,
     logout,
     getUserProfile,
@@ -16,9 +17,10 @@ const auth = require('../validators/auth');
 const router = express.Router();
 
 // Public routes
-router.post('/register', validate({ body: auth.register }), registerUser);
-router.post('/login',    validate({ body: auth.login }),    loginUser);
-router.get('/verify-email', validate({ query: auth.verifyEmailQuery }), verifyEmail);
+router.post('/register',    validate({ body: auth.register }),   registerUser);
+router.post('/login',       validate({ body: auth.login }),      loginUser);
+router.post('/verify-code', validate({ body: auth.verifyCode }), verifyCode);
+router.post('/resend-code', validate({ body: auth.resendCode }), resendCode);
 
 // Session management (public — callable without a valid access token)
 router.post('/refresh',  refreshSession);

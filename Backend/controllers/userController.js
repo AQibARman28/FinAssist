@@ -13,7 +13,7 @@ const {
     setTempCookie,
     clearSessionCookies,
 } = require('../utils/sessions');
-const { sendVerificationEmail } = require('../utils/mailer');
+const { sendVerificationCodeEmail, sendWelcomeEmail } = require('../utils/mailer');
 const { logAudit } = require('../utils/audit');
 const { seedDefaultCategoriesForUser } = require('../utils/defaultCategories');
 
@@ -21,7 +21,11 @@ const { seedDefaultCategoriesForUser } = require('../utils/defaultCategories');
 const LOGIN_WINDOW_MS    = 15 * 60 * 1000;   // 15 min
 const LOGIN_FAIL_LIMIT   = 5;
 const LOGIN_LOCKOUT_MS   = 15 * 60 * 1000;   // 15 min base, *2^lockoutCount
-const EMAIL_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+
+// Email verification (code-based, SEC-1 Phase 4 → code rework)
+const EMAIL_CODE_TTL_MS        = 15 * 60 * 1000; // codes expire in 15 min
+const EMAIL_CODE_MAX_ATTEMPTS  = 5;              // wrong guesses before invalidation
+const EMAIL_RESEND_COOLDOWN_MS = 60 * 1000;      // min gap between resends
 
 const buildPublicUser = (user, plainName, plainEmail) => ({
     _id: user._id,
@@ -38,11 +42,27 @@ function _hashVerificationToken(plaintext) {
     return crypto.createHash('sha256').update(plaintext).digest('hex');
 }
 
-async function _issueVerificationToken(user) {
-    const plaintext = crypto.randomBytes(32).toString('base64url');
-    user.emailVerificationToken     = _hashVerificationToken(plaintext);
-    user.emailVerificationExpiresAt = new Date(Date.now() + EMAIL_TOKEN_TTL_MS);
-    return plaintext;
+// Uniform 6-digit numeric code (crypto.randomInt avoids modulo bias).
+function _generateCode() {
+    return String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+}
+
+// Issues a fresh code on the user doc (caller saves). Returns the plaintext
+// code so it can be emailed; only sha256(code) is persisted.
+function _issueVerificationCode(user) {
+    const code = _generateCode();
+    user.emailVerificationToken     = _hashVerificationToken(code);
+    user.emailVerificationExpiresAt = new Date(Date.now() + EMAIL_CODE_TTL_MS);
+    user.emailVerificationAttempts  = 0;
+    return code;
+}
+
+// Constant-time compare of a candidate code against the stored hash.
+function _codeMatches(candidate, storedHash) {
+    if (typeof candidate !== 'string' || typeof storedHash !== 'string') return false;
+    const a = Buffer.from(_hashVerificationToken(candidate), 'hex');
+    const b = Buffer.from(storedHash, 'hex');
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 // ── Lockout helpers ──────────────────────────────────────────────────────────
@@ -109,18 +129,11 @@ const registerUser = async (req, res) => {
             ...keyBundle,
         });
 
-        // Dev-mode bypass: when SMTP isn't configured the operator (who is
-        // also the user) can't receive the verification email, so insisting
-        // on the verification gate just blocks them from their own dashboard.
-        // Auto-verify, skip the token, establish a session. Production with
-        // SMTP_HOST set still runs the full verify-by-email flow.
-        const smtpConfigured = Boolean(process.env.SMTP_HOST);
-        let verificationToken = null;
-        if (smtpConfigured) {
-            verificationToken = await _issueVerificationToken(user);
-        } else {
-            user.emailVerified = true;
-        }
+        // Uniform code flow: every new account gets a 6-digit code and stays
+        // unverified until it's entered. Without SMTP_HOST configured the
+        // mailer logs the code to the server console, so local dev still works
+        // and exercises the same path as production.
+        const code = _issueVerificationCode(user);
         await user.save();
 
         // Best-effort default-category seed. A rare unique-index hit (e.g.
@@ -134,35 +147,23 @@ const registerUser = async (req, res) => {
             console.error('register: default-category seed failed:', seedErr.message);
         }
 
-        if (smtpConfigured) {
-            // Best-effort email. Don't fail the registration on a mail outage —
-            // the user can request a re-send (Phase 5+) or the operator can
-            // pull the URL from logs.
-            try {
-                await sendVerificationEmail(email, verificationToken);
-            } catch (mailErr) {
-                console.error('register: verification email failed:', mailErr.message);
-            }
+        // Best-effort email — don't fail registration on a mail outage; the
+        // user can request a resend, or the operator can read the console code.
+        try {
+            await sendVerificationCodeEmail(email, code);
+        } catch (mailErr) {
+            console.error('register: verification email failed:', mailErr.message);
         }
 
         logAudit(req, 'register', user._id);
 
-        if (smtpConfigured) {
-            // Production posture: no session until they click the link.
-            return res.status(201).json({
-                success: true,
-                data: buildPublicUser(user, name, email),
-                requiresEmailVerification: true,
-                message: 'Account created. Check your email for a verification link.',
-            });
-        }
-
-        // Dev posture: drop them straight onto the dashboard.
-        await establishSession(res, user._id);
+        // No session until the code is verified (POST /auth/verify-code).
         return res.status(201).json({
             success: true,
             data: buildPublicUser(user, name, email),
-            requiresEmailVerification: false,
+            requiresEmailVerification: true,
+            email,
+            message: 'Account created. Enter the verification code we emailed you.',
         });
     } catch (error) {
         console.error('Register error:', error);
@@ -174,33 +175,98 @@ const registerUser = async (req, res) => {
     }
 };
 
-// GET /api/auth/verify-email?token=...
-// Public route — opened directly from the email. Redirects to the frontend
-// login page with ?verified=1 (or ?verified=0 on failure).
-const verifyEmail = async (req, res) => {
-    const frontend = (process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
+// POST /api/auth/verify-code  { email, code }
+// Confirms the 6-digit code, marks the account live, sends the welcome email,
+// and logs the user straight in (best UX — no second trip to /login).
+const verifyCode = async (req, res) => {
     try {
-        const token = req.query?.token;
-        if (typeof token !== 'string' || token.length === 0) {
-            return res.redirect(`${frontend}/login?verified=0&reason=missing`);
+        const { email, code } = req.body;
+        const emailHash = await hashEmail(email);
+        const user = await User.findOne({ emailHash });
+
+        // Generic failure text avoids leaking which emails exist / are pending.
+        const fail = (msg = 'Invalid or expired code') =>
+            res.status(400).json({ success: false, message: msg });
+
+        if (!user) return fail();
+        if (user.emailVerified) {
+            return res.status(400).json({ success: false, message: 'Email already verified. Please sign in.' });
         }
-        const hash = _hashVerificationToken(token);
-        const user = await User.findOne({ emailVerificationToken: hash });
-        if (!user) {
-            return res.redirect(`${frontend}/login?verified=0&reason=invalid`);
+        if (!user.emailVerificationToken || !user.emailVerificationExpiresAt
+            || user.emailVerificationExpiresAt.getTime() < Date.now()) {
+            return fail('Your code has expired. Request a new one.');
         }
-        if (!user.emailVerificationExpiresAt || user.emailVerificationExpiresAt.getTime() < Date.now()) {
-            return res.redirect(`${frontend}/login?verified=0&reason=expired`);
+        if ((user.emailVerificationAttempts || 0) >= EMAIL_CODE_MAX_ATTEMPTS) {
+            user.emailVerificationToken     = null;   // force a resend
+            user.emailVerificationExpiresAt = null;
+            await user.save();
+            logAudit(req, 'email.verify_failure', user._id, { reason: 'too_many_attempts' });
+            return fail('Too many incorrect attempts. Request a new code.');
         }
+        if (!_codeMatches(code, user.emailVerificationToken)) {
+            user.emailVerificationAttempts = (user.emailVerificationAttempts || 0) + 1;
+            await user.save();
+            logAudit(req, 'email.verify_failure', user._id, { reason: 'wrong_code' });
+            return fail();
+        }
+
+        // Success → live.
         user.emailVerified              = true;
         user.emailVerificationToken     = null;
         user.emailVerificationExpiresAt = null;
+        user.emailVerificationAttempts  = 0;
+        _clearLockout(user);
         await user.save();
         logAudit(req, 'email.verify', user._id);
-        return res.redirect(`${frontend}/login?verified=1`);
+
+        const rawKey = await masterDecrypt(user.encryptedDataKey);
+        const dataKey = Buffer.from(rawKey, 'hex');
+        const plainName  = await safeDecrypt(user.name, dataKey);
+        const plainEmail = await safeDecrypt(user.email, dataKey);
+
+        // Thank-you / welcome email — best-effort, never blocks the response.
+        try { await sendWelcomeEmail(plainEmail, plainName); }
+        catch (mailErr) { console.error('verify: welcome email failed:', mailErr.message); }
+
+        // Log them in. (A brand-new account won't have 2FA, but mirror login's
+        // branch for correctness if it somehow does.)
+        if (user.twoFactorEnabled) {
+            setTempCookie(res, mintTempToken(user._id));
+            return res.json({ success: true, requires2FA: true });
+        }
+        await establishSession(res, user._id);
+        return res.json({ success: true, data: buildPublicUser(user, plainName, plainEmail) });
     } catch (error) {
-        console.error('Verify-email error:', error);
-        return res.redirect(`${frontend}/login?verified=0&reason=error`);
+        console.error('Verify-code error:', error);
+        res.status(500).json({ success: false, message: 'Server error verifying code' });
+    }
+};
+
+// POST /api/auth/resend-code  { email }
+// Always responds with a generic success (no account enumeration). Issues a
+// fresh code unless one was sent within the cooldown window.
+const resendCode = async (req, res) => {
+    const generic = { success: true, message: 'If your account needs verification, a new code has been sent.' };
+    try {
+        const { email } = req.body;
+        const emailHash = await hashEmail(email);
+        const user = await User.findOne({ emailHash });
+        if (!user || user.emailVerified) return res.json(generic);
+
+        if (user.emailVerificationExpiresAt) {
+            const issuedAt = user.emailVerificationExpiresAt.getTime() - EMAIL_CODE_TTL_MS;
+            if (Date.now() - issuedAt < EMAIL_RESEND_COOLDOWN_MS) return res.json(generic);
+        }
+
+        const code = _issueVerificationCode(user);
+        await user.save();
+        try { await sendVerificationCodeEmail(email, code); }
+        catch (mailErr) { console.error('resend: verification email failed:', mailErr.message); }
+        logAudit(req, 'email.resend_code', user._id);
+        return res.json(generic);
+    } catch (error) {
+        console.error('Resend-code error:', error);
+        return res.json(generic);
     }
 };
 
@@ -243,7 +309,8 @@ const loginUser = async (req, res) => {
             logAudit(req, 'login.failure', user._id, { reason: 'email_unverified' });
             return res.status(403).json({
                 success: false,
-                message: 'Please verify your email address before signing in. Check your inbox for the verification link.',
+                code: 'email_unverified',
+                message: 'Please verify your email first. Enter the code we emailed you.',
             });
         }
 
@@ -387,7 +454,7 @@ const updateUserProfile = async (req, res) => {
 };
 
 module.exports = {
-    registerUser, loginUser, verifyEmail,
+    registerUser, loginUser, verifyCode, resendCode,
     refreshSession, logout,
     getUserProfile, updateUserProfile,
 };

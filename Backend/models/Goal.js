@@ -9,9 +9,18 @@ const goalSchema = new mongoose.Schema({
 
     targetAmount:  { type: Number, required: [true, 'Target amount is required'], min: [1, 'Must be positive'] },
     currentAmount: { type: Number, default: 0, min: [0, 'Cannot be negative'] },
-    targetDate:    { type: Date, required: [true, 'Target date is required'] },
+
+    // The savings cadence a goal belongs to. Drives the Monthly/Yearly toggle
+    // on the goals page and which savings pool an allocation draws from.
+    period: { type: String, enum: ['monthly', 'yearly'], required: true, default: 'monthly' },
+
+    // Optional now (was required). A free-named goal needs neither a fixed type
+    // nor an explicit deadline — targetDate is auto-derived (end of period) on
+    // create and used only for display/forecast. goalType defaults to 'Other'
+    // and is retained for back-compat + the ECDSA attestation payload.
+    targetDate:    { type: Date },
     goalType: {
-        type: String, required: true,
+        type: String, default: 'Other',
         enum: ['Emergency Fund', 'Vacation', 'Car', 'House', 'Education', 'Investment', 'Other']
     },
     status: { type: String, enum: ['Active', 'Completed', 'Paused'], default: 'Active' },
@@ -45,9 +54,13 @@ goalSchema.virtual('progressPercentage').get(function () {
 });
 goalSchema.virtual('remainingAmount').get(function () { return Math.max(0, this.targetAmount - this.currentAmount); });
 goalSchema.virtual('daysRemaining').get(function () {
+    if (!this.targetDate) return null;
     return Math.ceil((this.targetDate.getTime() - Date.now()) / (1000 * 3600 * 24));
 });
-goalSchema.virtual('isOverdue').get(function () { return Date.now() > this.targetDate && this.status !== 'Completed'; });
+goalSchema.virtual('isOverdue').get(function () {
+    if (!this.targetDate) return false;
+    return Date.now() > this.targetDate && this.status !== 'Completed';
+});
 goalSchema.set('toJSON', { virtuals: true });
 
 module.exports = mongoose.model('Goal', goalSchema);

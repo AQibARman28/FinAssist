@@ -26,8 +26,12 @@ const userSchema = new mongoose.Schema({
     // registration. emailVerificationToken is sha256(plaintext); the
     // plaintext lives only in the email.
     emailVerified:              { type: Boolean, default: false },
+    // sha256 of the 6-digit verification code (the code itself lives only in
+    // the email). emailVerificationAttempts caps wrong guesses before the code
+    // is invalidated and a resend is required.
     emailVerificationToken:     { type: String,  default: null },
     emailVerificationExpiresAt: { type: Date,    default: null },
+    emailVerificationAttempts:  { type: Number,  default: 0 },
 
     // ── Login lockout (SEC-1 Phase 4) ───────────────────────────────────────
     // Counters reset on every successful login. After 5 failures inside the

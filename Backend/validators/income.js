@@ -52,4 +52,10 @@ const list = z
     })
     .strict();
 
-module.exports = { create, update, list };
+const timeline = z
+    .object({
+        granularity: z.enum(['monthly', 'yearly']).optional(),
+    })
+    .strict();
+
+module.exports = { create, update, list, timeline };

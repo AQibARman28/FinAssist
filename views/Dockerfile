@@ -11,6 +11,11 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# next.config rewrites bake the backend destination at BUILD time, so the
+# backend origin must be present here (not just at runtime). In compose this is
+# http://backend:5000; on Vercel it's set as a project env var instead.
+ARG BACKEND_ORIGIN=http://localhost:5000
+ENV BACKEND_ORIGIN=${BACKEND_ORIGIN}
 RUN npm run build
 
 # Production runner

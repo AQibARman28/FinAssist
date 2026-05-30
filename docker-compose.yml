@@ -12,19 +12,31 @@ services:
       PORT: 5000
       MONGO_URI: ${MONGO_URI}
       JWT_SECRET: ${JWT_SECRET}
-      JWT_EXPIRE: ${JWT_EXPIRE:-30d}
+      ACCESS_TOKEN_TTL: ${ACCESS_TOKEN_TTL:-15m}
+      # Required — the backend refuses to start without these (64 hex chars each).
+      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY}
+      EMAIL_HASH_SECRET: ${EMAIL_HASH_SECRET}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      # Optional outbound SMTP (unset → verification emails log to the console).
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-FinAssist <no-reply@finassist.local>}
     depends_on:
       - mongo
 
   frontend:
-    build: ./views
+    build:
+      context: ./views
+      args:
+        # Baked into the Next.js rewrite at build time so /api proxies to the
+        # backend service (same-origin in the browser → SameSite cookies work).
+        BACKEND_ORIGIN: http://backend:5000
     container_name: finassist-web
     restart: unless-stopped
     ports:
       - "3000:3000"
-    environment:
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:5000/api}
     depends_on:
       - backend
 

@@ -3,7 +3,16 @@ const { encrypt, safeDecrypt } = require('../utils/encryption');
 const { signRecord, verifyRecord, encryptNote, decryptNote } = require('../utils/signing');
 const { getCashFlow } = require('../services/cashFlow');
 const { planGoals, allocateSurplus } = require('../services/goalPlanning');
+const { getBalance } = require('../services/balance');
 const { logAudit } = require('../utils/audit');
+
+// End-of-period date used as a display/forecast targetDate when the user
+// doesn't supply one (the period-based UI doesn't ask for a deadline).
+function endOfPeriod(period, now = new Date()) {
+    return period === 'yearly'
+        ? new Date(now.getFullYear(), 11, 31, 23, 59, 59)
+        : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+}
 
 async function decryptGoal(goal, user, dataKey) {
     const obj         = goal.toJSON ? goal.toJSON() : { ...goal };
@@ -21,8 +30,10 @@ function goalAttestationPayload(title, targetAmount, goalType) {
 const createGoal = async (req, res) => {
     try {
         const { title, description, targetAmount, targetDate, goalType } = req.body;
+        const period      = req.body.period || 'monthly';
+        const resolvedType = goalType || 'Other';
 
-        const serverAttestation = await signRecord(goalAttestationPayload(title, targetAmount, goalType), req.user, req.dataKey);
+        const serverAttestation = await signRecord(goalAttestationPayload(title, targetAmount, resolvedType), req.user, req.dataKey);
         const encTitle          = await encrypt(title, req.dataKey);
         const encDesc           = description ? (await encrypt(description, req.dataKey)) : undefined;
         const encNote           = req.body.note ? (await encryptNote(req.body.note, req.user)) : undefined;
@@ -32,8 +43,9 @@ const createGoal = async (req, res) => {
             title: encTitle,
             description: encDesc,
             targetAmount,
-            targetDate,
-            goalType,
+            period,
+            targetDate: targetDate || endOfPeriod(period),
+            goalType: resolvedType,
             priority: req.body.priority ?? 0,
             serverAttestation,
             note: encNote
@@ -49,13 +61,16 @@ const createGoal = async (req, res) => {
 // GET /api/goals
 const getGoals = async (req, res) => {
     try {
-        const { status, goalType } = req.query;
+        const { status, goalType, period } = req.query;
 
         const query = { user: req.user._id };
         if (status)   query.status   = status;
         if (goalType) query.goalType = goalType;
 
-        const goals = await Goal.find(query).sort({ createdAt: -1 });
+        let goals = await Goal.find(query).sort({ createdAt: -1 });
+        // Split by period in JS so pre-existing goals (no `period`) count as
+        // 'monthly'. Volumes are tiny (personal finance), so no index needed.
+        if (period) goals = goals.filter((g) => (g.period || 'monthly') === period);
 
         const items = [];
         for (const g of goals) {
@@ -149,6 +164,17 @@ const addContribution = async (req, res) => {
 
         if (goal.status === 'Completed') {
             return res.status(400).json({ success: false, message: 'Cannot add contribution to completed goal' });
+        }
+
+        // Hard cap: you can't save more than your available balance (the single
+        // continuous pocket = cumulative income − expenses − already-saved).
+        const allGoals = await Goal.find({ user: req.user._id });
+        const { available } = await getBalance(req.user._id, allGoals);
+        if (amount > available) {
+            return res.status(400).json({
+                success: false,
+                message: `Only ${Math.max(0, Math.round(available))} ${req.user.currency} is available to save right now.`,
+            });
         }
 
         goal.contributions.push({ amount, note, date: new Date() });
@@ -392,6 +418,18 @@ const allocateContributions = async (req, res) => {
             targets.push({ goal, amount: a.amount });
         }
 
+        // Hard cap: the total saved can't exceed the available balance (the
+        // single continuous pocket = cumulative income − expenses − saved).
+        const allGoals = await Goal.find({ user: userId });
+        const { available } = await getBalance(userId, allGoals);
+        const requestedTotal = targets.reduce((s, t) => s + t.amount, 0);
+        if (requestedTotal > available) {
+            return res.status(400).json({
+                success: false,
+                message: `Allocation exceeds your available balance (${Math.max(0, Math.round(available))} ${req.user.currency}).`,
+            });
+        }
+
         const when = date ? new Date(date) : new Date();
         const updated = [];
         for (const { goal, amount } of targets) {
@@ -401,14 +439,9 @@ const allocateContributions = async (req, res) => {
         }
 
         const totalAllocated = allocations.reduce((s, a) => s + a.amount, 0);
-        const cash = await getCashFlow(userId, 90);
-        const warning = totalAllocated > cash.monthlySurplus
-            ? `Allocated more than your estimated monthly surplus (${cash.monthlySurplus}). The extra must come from existing savings — these are tracked plans, not transfers.`
-            : undefined;
-
         logAudit(req, 'goal.allocate', userId, { goals: allocations.length, total: totalAllocated });
 
-        res.json({ success: true, data: updated, ...(warning ? { warning } : {}), message: 'Allocation recorded' });
+        res.json({ success: true, data: updated, message: 'Allocation recorded' });
     } catch (error) {
         console.error('Allocate error:', error);
         res.status(500).json({ success: false, message: 'Server error recording allocation' });

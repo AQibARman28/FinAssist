@@ -38,8 +38,15 @@ const twoFactorVerify = z
     .object({ token: totpCode })
     .strict();
 
-const verifyEmailQuery = z
-    .object({ token: z.string().min(1).max(256) })
+const verifyCode = z
+    .object({
+        email,
+        code: z.string().regex(/^\d{6}$/, 'Code must be 6 digits'),
+    })
     .strict();
 
-module.exports = { register, login, updateProfile, twoFactorVerify, verifyEmailQuery };
+const resendCode = z
+    .object({ email })
+    .strict();
+
+module.exports = { register, login, updateProfile, twoFactorVerify, verifyCode, resendCode };

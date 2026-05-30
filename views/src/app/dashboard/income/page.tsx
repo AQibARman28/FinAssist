@@ -11,6 +11,8 @@ import { api } from "@/lib/api";
 import { useAuthStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { iconFor, type IconName } from "@/lib/categoryIcons";
+import { IncomeChart, type IncomeGranularity } from "@/components/dashboard/income/IncomeChart";
+import { SavingsBreakdown, type BalanceData } from "@/components/dashboard/SavingsBreakdown";
 
 interface Income {
     _id: string;
@@ -52,6 +54,8 @@ export default function IncomePage() {
     const [catMap, setCatMap]   = useState<Record<string, Category>>({});
     const [loading, setLoading] = useState(true);
     const [error, setError]     = useState<string | null>(null);
+    const [granularity, setGranularity] = useState<IncomeGranularity>("monthly");
+    const [balance, setBalance] = useState<BalanceData | null>(null);
 
     const load = async () => {
         setLoading(true);
@@ -86,6 +90,18 @@ export default function IncomePage() {
 
     useEffect(() => { load(); }, []);
 
+    // The continuous balance (carry-forward + income − expenses − savings).
+    useEffect(() => {
+        let cancelled = false;
+        api.get("/analytics/balance")
+            .then((res) => { if (!cancelled) setBalance(res.data?.data ?? null); })
+            .catch((err) => { if (!cancelled) { console.error(err); setBalance(null); } });
+        return () => { cancelled = true; };
+    }, []);
+
+    const totalIncome = incomes.reduce((sum, inc) => sum + inc.amount, 0);
+    const breakdown = balance ? balance[granularity] : null;
+
     const handleDelete = async (id: string) => {
         if (!confirm("Delete this income entry?")) return;
         try {
@@ -118,6 +134,38 @@ export default function IncomePage() {
                     <span>{error}</span>
                 </div>
             )}
+
+            <div className="p-5 rounded-3xl border bg-gradient-to-br from-emerald-900/15 to-black border-emerald-500/15 flex items-center justify-between">
+                <span className="text-xs uppercase tracking-wider text-zinc-500">Total income</span>
+                {loading ? (
+                    <Loader2 className="w-5 h-5 animate-spin text-zinc-500" />
+                ) : (
+                    <span className="text-2xl font-bold tabular-nums text-emerald-400">{fmt.format(totalIncome)}</span>
+                )}
+            </div>
+
+            <div className="p-6 rounded-3xl bg-zinc-900/50 border border-white/5">
+                <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+                    <h2 className="text-white font-medium">Income over time</h2>
+                    <div className="flex items-center gap-1 p-1 rounded-xl bg-black/30 border border-white/5">
+                        {(["monthly", "yearly"] as const).map((g) => (
+                            <button
+                                key={g}
+                                onClick={() => setGranularity(g)}
+                                className={cn(
+                                    "px-4 py-1.5 rounded-lg text-sm font-medium capitalize transition-colors",
+                                    granularity === g ? "bg-emerald-500 text-black" : "text-zinc-400 hover:text-white",
+                                )}
+                            >
+                                {g}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+                <IncomeChart granularity={granularity} />
+            </div>
+
+            {breakdown && <SavingsBreakdown breakdown={breakdown} periodLabel={granularity === "monthly" ? "this month" : "this year"} />}
 
             <div className="p-6 rounded-3xl bg-zinc-900/50 border border-white/5 min-h-[400px]">
                 {loading ? (

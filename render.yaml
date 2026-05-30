@@ -1,0 +1,42 @@
+# Render Blueprint for the FinAssist backend (free tier, Docker).
+# In Render: New → Blueprint → connect this repo. Render reads this file,
+# creates the service, and you fill the `sync: false` secrets in the dashboard.
+#
+# Render injects PORT automatically; the app listens on process.env.PORT.
+# Frontend lives on Vercel (see DEPLOY.md) — not in this blueprint.
+services:
+  - type: web
+    name: finassist-api
+    runtime: docker
+    dockerfilePath: ./Backend/Dockerfile
+    dockerContext: ./Backend
+    plan: free
+    region: oregon
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ACCESS_TOKEN_TTL
+        value: 15m
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_FROM
+        value: FinAssist <no-reply@finassist.app>
+      # ── Secrets — set these in the Render dashboard (never commit them) ──
+      - key: MONGO_URI            # mongodb+srv://...  (% in password → %25)
+        sync: false
+      - key: JWT_SECRET           # 64 hex chars
+        sync: false
+      - key: MASTER_ENCRYPTION_KEY # 64 hex chars — BACK THIS UP; losing it loses all encrypted PII
+        sync: false
+      - key: EMAIL_HASH_SECRET    # 64 hex chars
+        sync: false
+      - key: FRONTEND_URL         # your Vercel URL, e.g. https://finassist.vercel.app
+        sync: false
+      - key: SMTP_HOST            # e.g. smtp.resend.com (or leave unset to log emails)
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
