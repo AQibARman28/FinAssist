@@ -2,26 +2,10 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import {
-    LayoutDashboard, Wallet, CreditCard, Target, Settings, LogOut,
-    PieChart, TrendingUp,
-} from "lucide-react";
+import { LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/lib/store";
-
-// Ordered so the financial flow reads top-to-bottom:
-//   overview → analytics → planning (budgets) → in (income) → out (expenses)
-//   → savings (goals) → account (settings)
-// Categories are managed inline in the CategoryPicker (HS-1) — no standalone page.
-const menuItems = [
-    { icon: LayoutDashboard, label: "Dashboard",  href: "/dashboard" },
-    { icon: PieChart,        label: "Analytics",  href: "/dashboard/analytics" },
-    { icon: Wallet,          label: "Budgets",    href: "/dashboard/budgets" },
-    { icon: TrendingUp,      label: "Income",     href: "/dashboard/income" },
-    { icon: CreditCard,      label: "Expenses",   href: "/dashboard/expenses" },
-    { icon: Target,          label: "Goals",      href: "/dashboard/goals" },
-    { icon: Settings,        label: "Settings",   href: "/dashboard/settings" },
-];
+import { menuItems } from "./navItems";
 
 export function Sidebar() {
     const pathname = usePathname();

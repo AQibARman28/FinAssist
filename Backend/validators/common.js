@@ -20,19 +20,12 @@ const currencyEnum = z.enum([
     'BDT', 'USD', 'EUR', 'GBP', 'INR', 'CAD', 'AUD', 'SGD', 'AED',
 ]);
 
-// Password complexity policy (Phase 4):
-//   - 12+ characters
-//   - mixed-character classes: at least one lower, one upper, one digit
-//   Symbols are encouraged but not required (NIST 800-63B leans on length
-//   over composition); the lower/upper/digit rule is the minimum the brief
-//   calls out as "require mix".
+// Password policy: minimum 6 characters (relaxed from the earlier 12-char +
+// upper/lower/digit rule at the owner's request, for a lighter sign-up).
 const passwordPolicy = z
     .string()
-    .min(12, 'Password must be at least 12 characters')
-    .max(256, 'Password too long')
-    .refine((s) => /[a-z]/.test(s), 'Password must contain a lowercase letter')
-    .refine((s) => /[A-Z]/.test(s), 'Password must contain an uppercase letter')
-    .refine((s) => /\d/.test(s),   'Password must contain a digit');
+    .min(6, 'Password must be at least 6 characters')
+    .max(256, 'Password too long');
 
 // 6-digit numeric TOTP code as a string. We use `.string()` not `.number()`
 // because the wire format is a string and leading zeros matter.

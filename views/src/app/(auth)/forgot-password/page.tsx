@@ -11,10 +11,7 @@ import { cn } from "@/lib/utils";
 
 // Mirror the server password policy (Backend/validators/common.js).
 const PASSWORD_RULES = [
-    { id: "len",   label: "12+ characters",   test: (s: string) => s.length >= 12 },
-    { id: "lower", label: "Lowercase letter", test: (s: string) => /[a-z]/.test(s) },
-    { id: "upper", label: "Uppercase letter", test: (s: string) => /[A-Z]/.test(s) },
-    { id: "digit", label: "Digit",            test: (s: string) => /\d/.test(s) },
+    { id: "len", label: "At least 6 characters", test: (s: string) => s.length >= 6 },
 ] as const;
 
 const RESEND_COOLDOWN = 30;
@@ -163,11 +160,11 @@ export default function ForgotPasswordPage() {
                                     placeholder="New password"
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
-                                    className="w-full bg-zinc-900/50 border-b border-zinc-800 focus:border-purple-500 text-zinc-300 placeholder:text-zinc-600 pl-10 pr-10 py-3 outline-none transition-all rounded-t-sm"
+                                    className="w-full bg-zinc-900/50 border-b border-zinc-800 focus:border-purple-500 text-zinc-300 placeholder:text-zinc-600 pl-10 pr-12 py-3 outline-none transition-all rounded-t-sm"
                                     required
                                 />
-                                <button type="button" onClick={() => setShowPw((s) => !s)} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300" aria-label={showPw ? "Hide password" : "Show password"}>
-                                    {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                <button type="button" onClick={() => setShowPw((s) => !s)} className="absolute right-1 top-1/2 -translate-y-1/2 p-2 text-zinc-300 hover:text-white" aria-label={showPw ? "Hide password" : "Show password"}>
+                                    {showPw ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                                 </button>
                             </div>
                             <ul className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">

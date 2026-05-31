@@ -14,10 +14,7 @@ import { VerifyCode } from "@/components/auth/VerifyCode";
 // Showing it client-side stops users from staring at a generic
 // "Invalid request" while wondering which rule they broke.
 const PASSWORD_RULES = [
-    { id: "len",   label: "12+ characters",     test: (s: string) => s.length >= 12 },
-    { id: "lower", label: "Lowercase letter",   test: (s: string) => /[a-z]/.test(s) },
-    { id: "upper", label: "Uppercase letter",   test: (s: string) => /[A-Z]/.test(s) },
-    { id: "digit", label: "Digit",              test: (s: string) => /\d/.test(s) },
+    { id: "len", label: "At least 6 characters", test: (s: string) => s.length >= 6 },
 ] as const;
 
 export default function RegisterPage() {
@@ -255,15 +252,15 @@ function FormField({ icon: Icon, type, placeholder, value, onChange, onBlur, err
                     maxLength={maxLength}
                     className={cn(
                         "w-full bg-zinc-900/50 border-b text-zinc-300 placeholder:text-zinc-600 pl-10 py-3 outline-none transition-all duration-300 rounded-t-sm",
-                        isPassword ? "pr-10" : "pr-4",
+                        isPassword ? "pr-12" : "pr-4",
                         error
                             ? "border-red-500/60 focus:border-red-500"
                             : "border-zinc-800 focus:border-purple-500",
                     )}
                 />
                 {isPassword && (
-                    <button type="button" onClick={() => setReveal((s) => !s)} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300" aria-label={reveal ? "Hide password" : "Show password"}>
-                        {reveal ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    <button type="button" onClick={() => setReveal((s) => !s)} className="absolute right-1 top-1/2 -translate-y-1/2 p-2 text-zinc-300 hover:text-white" aria-label={reveal ? "Hide password" : "Show password"}>
+                        {reveal ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                     </button>
                 )}
             </div>
