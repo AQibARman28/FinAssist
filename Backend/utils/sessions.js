@@ -31,9 +31,10 @@ const crypto = require('node:crypto');
 const native = require('./nativeCrypto');
 const RefreshToken = require('../models/RefreshToken');
 
-const ACCESS_TTL       = process.env.ACCESS_TOKEN_TTL || '15m';
-const REFRESH_TTL_DAYS = 7;
-const TEMP_2FA_TTL     = '5m';
+const ACCESS_TTL          = process.env.ACCESS_TOKEN_TTL || '15m';
+const REFRESH_TTL_DAYS         = 7;    // default session
+const REFRESH_TTL_DAYS_REMEMBER = 30;  // "remember me" session
+const TEMP_2FA_TTL        = '5m';
 
 const COOKIE_ACCESS  = 'fa_access';
 const COOKIE_REFRESH = 'fa_refresh';
@@ -65,10 +66,11 @@ function mintTempToken(userId) {
     return native.signJwt({ id: userId.toString(), type: 'temp_2fa' }, process.env.JWT_SECRET, TEMP_2FA_TTL);
 }
 
-async function mintRefreshToken(userId) {
+async function mintRefreshToken(userId, rememberMe = false) {
     const plaintext = crypto.randomBytes(32).toString('base64url');
     const tokenHash = _hashRefreshToken(plaintext);
-    const expiresAt = new Date(Date.now() + REFRESH_TTL_DAYS * 24 * 3600 * 1000);
+    const days = rememberMe ? REFRESH_TTL_DAYS_REMEMBER : REFRESH_TTL_DAYS;
+    const expiresAt = new Date(Date.now() + days * 24 * 3600 * 1000);
     await RefreshToken.create({ userId, tokenHash, expiresAt });
     return { plaintext, expiresAt };
 }
@@ -101,6 +103,12 @@ async function revokeRefreshToken(plaintextRefresh) {
     await RefreshToken.updateOne({ tokenHash, revokedAt: null }, { $set: { revokedAt: new Date() } });
 }
 
+// Revoke every live refresh token for a user — used after a password reset so
+// any other/old sessions (including an attacker's) are forced to re-auth.
+async function revokeAllForUser(userId) {
+    await RefreshToken.updateMany({ userId, revokedAt: null }, { $set: { revokedAt: new Date() } });
+}
+
 // ── Cookie set / clear ──────────────────────────────────────────────────────
 
 function setAccessCookie(res, accessToken) {
@@ -131,9 +139,10 @@ function clearTempCookie(res) {
 }
 
 // Convenience: mint + set both cookies after a fresh authentication.
-async function establishSession(res, userId) {
+// rememberMe extends the refresh token to 30 days (vs 7).
+async function establishSession(res, userId, { rememberMe = false } = {}) {
     const accessToken = mintAccessToken(userId);
-    const refresh     = await mintRefreshToken(userId);
+    const refresh     = await mintRefreshToken(userId, rememberMe);
     setAccessCookie(res, accessToken);
     setRefreshCookie(res, refresh.plaintext, refresh.expiresAt);
 }
@@ -141,7 +150,7 @@ async function establishSession(res, userId) {
 module.exports = {
     COOKIE_ACCESS, COOKIE_REFRESH, COOKIE_TEMP,
     mintAccessToken, mintTempToken, mintRefreshToken,
-    rotateRefreshToken, revokeRefreshToken,
+    rotateRefreshToken, revokeRefreshToken, revokeAllForUser,
     setAccessCookie, setRefreshCookie, setTempCookie,
     clearSessionCookies, clearTempCookie,
     establishSession,

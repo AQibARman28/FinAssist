@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Lock, Mail, User, ArrowRight, AlertCircle, Check, X } from "lucide-react";
+import { Lock, Mail, User, ArrowRight, AlertCircle, Check, X, Eye, EyeOff } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
@@ -238,12 +238,15 @@ interface FormFieldProps {
 }
 
 function FormField({ icon: Icon, type, placeholder, value, onChange, onBlur, error, required, maxLength }: FormFieldProps) {
+    const [reveal, setReveal] = useState(false);
+    const isPassword = type === "password";
+    const inputType = isPassword && reveal ? "text" : type;
     return (
         <div className="group">
             <div className="relative">
                 <Icon className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500 group-focus-within:text-purple-400 transition-colors" />
                 <input
-                    type={type}
+                    type={inputType}
                     placeholder={placeholder}
                     value={value}
                     onChange={(e) => onChange(e.target.value)}
@@ -251,12 +254,18 @@ function FormField({ icon: Icon, type, placeholder, value, onChange, onBlur, err
                     required={required}
                     maxLength={maxLength}
                     className={cn(
-                        "w-full bg-zinc-900/50 border-b text-zinc-300 placeholder:text-zinc-600 pl-10 pr-4 py-3 outline-none transition-all duration-300 rounded-t-sm",
+                        "w-full bg-zinc-900/50 border-b text-zinc-300 placeholder:text-zinc-600 pl-10 py-3 outline-none transition-all duration-300 rounded-t-sm",
+                        isPassword ? "pr-10" : "pr-4",
                         error
                             ? "border-red-500/60 focus:border-red-500"
                             : "border-zinc-800 focus:border-purple-500",
                     )}
                 />
+                {isPassword && (
+                    <button type="button" onClick={() => setReveal((s) => !s)} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300" aria-label={reveal ? "Hide password" : "Show password"}>
+                        {reveal ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                )}
             </div>
             {error && (
                 <div className="mt-1 flex items-center gap-1.5 text-red-400 text-xs">

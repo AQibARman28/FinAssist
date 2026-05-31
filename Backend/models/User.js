@@ -33,6 +33,12 @@ const userSchema = new mongoose.Schema({
     emailVerificationExpiresAt: { type: Date,    default: null },
     emailVerificationAttempts:  { type: Number,  default: 0 },
 
+    // ── Password reset (code-based) ─────────────────────────────────────────
+    // sha256 of the 6-digit reset code (code lives only in the email).
+    passwordResetToken:     { type: String, default: null },
+    passwordResetExpiresAt: { type: Date,   default: null },
+    passwordResetAttempts:  { type: Number, default: 0 },
+
     // ── Login lockout (SEC-1 Phase 4) ───────────────────────────────────────
     // Counters reset on every successful login. After 5 failures inside the
     // sliding window, lockedUntil is set to (now + 15 min * 2^lockoutCount),

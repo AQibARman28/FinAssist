@@ -1,7 +1,7 @@
 "use client";
 
 import { motion, AnimatePresence } from "framer-motion";
-import { Lock, Mail, ArrowRight, AlertCircle, ShieldCheck } from "lucide-react";
+import { Lock, Mail, ArrowRight, AlertCircle, ShieldCheck, Eye, EyeOff } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
@@ -15,6 +15,8 @@ export default function LoginPage() {
     const setUser = useAuthStore((s) => s.setUser);
 
     const [formData, setFormData]       = useState({ email: "", password: "" });
+    const [rememberMe, setRememberMe]   = useState(false);
+    const [showPw, setShowPw]           = useState(false);
     const [totpCode, setTotpCode]       = useState("");
     const [requires2FA, setRequires2FA] = useState(false);
     const [isLoading, setIsLoading]     = useState(false);
@@ -29,7 +31,7 @@ export default function LoginPage() {
         setError(null);
 
         try {
-            const res = await api.post("/auth/login", formData);
+            const res = await api.post("/auth/login", { ...formData, rememberMe });
 
             if (res.data.requires2FA) {
                 // The fa_temp cookie is now set server-side; we just flip the
@@ -145,23 +147,31 @@ export default function LoginPage() {
                                     <div className="relative">
                                         <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500 group-focus-within:text-purple-400 transition-colors" />
                                         <input
-                                            type="password"
+                                            type={showPw ? "text" : "password"}
                                             placeholder="Password"
                                             value={formData.password}
                                             onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                                            className="w-full bg-zinc-900/50 border-b border-zinc-800 focus:border-purple-500 text-zinc-300 placeholder:text-zinc-600 pl-10 pr-4 py-3 outline-none transition-all duration-300 rounded-t-sm"
+                                            className="w-full bg-zinc-900/50 border-b border-zinc-800 focus:border-purple-500 text-zinc-300 placeholder:text-zinc-600 pl-10 pr-10 py-3 outline-none transition-all duration-300 rounded-t-sm"
                                             required
                                         />
+                                        <button type="button" onClick={() => setShowPw((s) => !s)} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300" aria-label={showPw ? "Hide password" : "Show password"}>
+                                            {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                        </button>
                                     </div>
                                 </div>
                             </div>
 
                             <div className="flex items-center justify-between text-xs text-zinc-500">
                                 <label className="flex items-center gap-2 cursor-pointer hover:text-zinc-400 transition-colors">
-                                    <input type="checkbox" className="accent-purple-500 rounded border-zinc-700 bg-zinc-900" />
+                                    <input
+                                        type="checkbox"
+                                        checked={rememberMe}
+                                        onChange={(e) => setRememberMe(e.target.checked)}
+                                        className="accent-purple-500 rounded border-zinc-700 bg-zinc-900"
+                                    />
                                     Remember me
                                 </label>
-                                <Link href="#" className="hover:text-purple-400 transition-colors">Forgot Password?</Link>
+                                <Link href="/forgot-password" className="hover:text-purple-400 transition-colors">Forgot Password?</Link>
                             </div>
 
                             <motion.button

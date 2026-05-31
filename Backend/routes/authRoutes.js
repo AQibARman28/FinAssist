@@ -4,6 +4,8 @@ const {
     loginUser,
     verifyCode,
     resendCode,
+    forgotPassword,
+    resetPassword,
     refreshSession,
     logout,
     getUserProfile,
@@ -21,6 +23,8 @@ router.post('/register',    validate({ body: auth.register }),   registerUser);
 router.post('/login',       validate({ body: auth.login }),      loginUser);
 router.post('/verify-code', validate({ body: auth.verifyCode }), verifyCode);
 router.post('/resend-code', validate({ body: auth.resendCode }), resendCode);
+router.post('/forgot-password', validate({ body: auth.forgotPassword }), forgotPassword);
+router.post('/reset-password',  validate({ body: auth.resetPassword }),  resetPassword);
 
 // Session management (public — callable without a valid access token)
 router.post('/refresh',  refreshSession);

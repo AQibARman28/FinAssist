@@ -30,7 +30,32 @@ function _getTransporter() {
     return _transporter;
 }
 
+// Send via Resend's HTTP API (https, port 443). Required on hosts that block
+// outbound SMTP ports — e.g. Render's free tier. Activated when RESEND_API_KEY
+// is set, taking priority over SMTP.
+async function _sendViaResend({ to, subject, text, html }) {
+    const from = process.env.SMTP_FROM || 'FinAssist <onboarding@resend.dev>';
+    const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ from, to, subject, text, html }),
+    });
+    if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Resend API ${res.status}: ${body}`);
+    }
+}
+
 async function sendMail({ to, subject, text, html }) {
+    // Prefer the HTTP API when configured (works where SMTP ports are blocked).
+    if (process.env.RESEND_API_KEY) {
+        await _sendViaResend({ to, subject, text, html });
+        return;
+    }
+
     const transporter = _getTransporter();
     if (!transporter) {
         // Dev: surface the email content to the console so the developer can
@@ -83,6 +108,24 @@ async function sendVerificationCodeEmail(to, code) {
     });
 }
 
+// Password-reset code. Same look as the verification code email.
+async function sendPasswordResetEmail(to, code) {
+    await sendMail({
+        to,
+        subject: `${code} is your FinAssist password reset code`,
+        text:
+            `We received a request to reset your FinAssist password.\n\n` +
+            `Your reset code is: ${code}\n\n` +
+            `Enter it in the app to set a new password. It expires in 15 minutes.\n\n` +
+            `If you didn't request this, you can ignore this email — your password stays the same.\n`,
+        html: _wrap("Reset your password",
+            `<p style="margin:0 0 20px;color:#a1a1aa;font-size:14px">Enter this code in the app to set a new password. It expires in <strong style="color:#e4e4e7">15 minutes</strong>. If you didn't request a reset, ignore this email.</p>
+             <div style="text-align:center;margin:24px 0">
+               <span style="display:inline-block;font-size:34px;font-weight:700;letter-spacing:10px;color:#fff;background:#0b0b0d;border:1px solid rgba(168,85,247,0.4);border-radius:14px;padding:16px 24px">${code}</span>
+             </div>`),
+    });
+}
+
 // "Thank you for joining" — sent once, the moment a user becomes verified/live.
 async function sendWelcomeEmail(to, name) {
     const appUrl = (process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
@@ -125,4 +168,4 @@ async function sendVerificationEmail(to, token) {
     return url;
 }
 
-module.exports = { sendMail, sendVerificationEmail, sendVerificationCodeEmail, sendWelcomeEmail };
+module.exports = { sendMail, sendVerificationEmail, sendVerificationCodeEmail, sendWelcomeEmail, sendPasswordResetEmail };

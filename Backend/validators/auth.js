@@ -21,6 +21,7 @@ const login = z
     .object({
         email,
         password: z.string().min(1, 'Password is required').max(256, 'Password too long'),
+        rememberMe: z.boolean().optional(),
     })
     .strict();
 
@@ -49,4 +50,16 @@ const resendCode = z
     .object({ email })
     .strict();
 
-module.exports = { register, login, updateProfile, twoFactorVerify, verifyCode, resendCode };
+const forgotPassword = z
+    .object({ email })
+    .strict();
+
+const resetPassword = z
+    .object({
+        email,
+        code: z.string().regex(/^\d{6}$/, 'Code must be 6 digits'),
+        newPassword: passwordPolicy,
+    })
+    .strict();
+
+module.exports = { register, login, updateProfile, twoFactorVerify, verifyCode, resendCode, forgotPassword, resetPassword };

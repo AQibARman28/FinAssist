@@ -8,12 +8,13 @@ const {
     establishSession,
     rotateRefreshToken,
     revokeRefreshToken,
+    revokeAllForUser,
     setAccessCookie,
     setRefreshCookie,
     setTempCookie,
     clearSessionCookies,
 } = require('../utils/sessions');
-const { sendVerificationCodeEmail, sendWelcomeEmail } = require('../utils/mailer');
+const { sendVerificationCodeEmail, sendWelcomeEmail, sendPasswordResetEmail } = require('../utils/mailer');
 const { logAudit } = require('../utils/audit');
 const { seedDefaultCategoriesForUser } = require('../utils/defaultCategories');
 
@@ -26,6 +27,10 @@ const LOGIN_LOCKOUT_MS   = 15 * 60 * 1000;   // 15 min base, *2^lockoutCount
 const EMAIL_CODE_TTL_MS        = 15 * 60 * 1000; // codes expire in 15 min
 const EMAIL_CODE_MAX_ATTEMPTS  = 5;              // wrong guesses before invalidation
 const EMAIL_RESEND_COOLDOWN_MS = 60 * 1000;      // min gap between resends
+
+// Password reset (code-based) — same policy as email verification.
+const PWRESET_TTL_MS       = 15 * 60 * 1000;
+const PWRESET_MAX_ATTEMPTS = 5;
 
 const buildPublicUser = (user, plainName, plainEmail) => ({
     _id: user._id,
@@ -273,7 +278,7 @@ const resendCode = async (req, res) => {
 // POST /api/auth/login
 const loginUser = async (req, res) => {
     try {
-        const { email, password } = req.body;
+        const { email, password, rememberMe } = req.body;
 
         const emailHash = await hashEmail(email);
         const user = await User.findOne({ emailHash });
@@ -340,7 +345,7 @@ const loginUser = async (req, res) => {
             await user.save();
         }
 
-        await establishSession(res, user._id);
+        await establishSession(res, user._id, { rememberMe: !!rememberMe });
         logAudit(req, 'login.success', user._id);
 
         res.json({
@@ -354,6 +359,99 @@ const loginUser = async (req, res) => {
     } catch (error) {
         console.error('Login error:', error);
         res.status(500).json({ success: false, message: 'Server error during login' });
+    }
+};
+
+// POST /api/auth/forgot-password  { email }
+// Always responds generically (no account enumeration). If the account exists,
+// emails a 6-digit reset code (subject to a short resend cooldown).
+const forgotPassword = async (req, res) => {
+    const generic = { success: true, message: 'If an account exists for that email, a reset code has been sent.' };
+    try {
+        const { email } = req.body;
+        const user = await User.findOne({ emailHash: await hashEmail(email) });
+        if (!user) return res.json(generic);
+
+        if (user.passwordResetExpiresAt) {
+            const issuedAt = user.passwordResetExpiresAt.getTime() - PWRESET_TTL_MS;
+            if (Date.now() - issuedAt < EMAIL_RESEND_COOLDOWN_MS) return res.json(generic);
+        }
+
+        const code = _generateCode();
+        user.passwordResetToken     = _hashVerificationToken(code);
+        user.passwordResetExpiresAt = new Date(Date.now() + PWRESET_TTL_MS);
+        user.passwordResetAttempts  = 0;
+        await user.save();
+
+        try { await sendPasswordResetEmail(email, code); }
+        catch (mailErr) { console.error('forgot-password: email failed:', mailErr.message); }
+        logAudit(req, 'password.reset_request', user._id);
+        return res.json(generic);
+    } catch (error) {
+        console.error('Forgot-password error:', error);
+        return res.json(generic);
+    }
+};
+
+// POST /api/auth/reset-password  { email, code, newPassword }
+// Verifies the reset code, sets the new password, marks the email verified,
+// revokes all existing sessions, and logs the user in on this device.
+const resetPassword = async (req, res) => {
+    try {
+        const { email, code, newPassword } = req.body;
+        const user = await User.findOne({ emailHash: await hashEmail(email) });
+
+        const fail = (msg = 'Invalid or expired code') =>
+            res.status(400).json({ success: false, message: msg });
+
+        if (!user) return fail();
+        if (!user.passwordResetToken || !user.passwordResetExpiresAt
+            || user.passwordResetExpiresAt.getTime() < Date.now()) {
+            return fail('Your reset code has expired. Request a new one.');
+        }
+        if ((user.passwordResetAttempts || 0) >= PWRESET_MAX_ATTEMPTS) {
+            user.passwordResetToken     = null;
+            user.passwordResetExpiresAt = null;
+            await user.save();
+            logAudit(req, 'password.reset_failure', user._id, { reason: 'too_many_attempts' });
+            return fail('Too many incorrect attempts. Request a new code.');
+        }
+        if (!_codeMatches(code, user.passwordResetToken)) {
+            user.passwordResetAttempts = (user.passwordResetAttempts || 0) + 1;
+            await user.save();
+            logAudit(req, 'password.reset_failure', user._id, { reason: 'wrong_code' });
+            return fail();
+        }
+
+        // Success — set new password (pre-save hook re-hashes argon2id), clear
+        // reset + lockout state, and treat the email as verified (they just
+        // proved control of it).
+        user.password               = newPassword;
+        user.passwordResetToken     = null;
+        user.passwordResetExpiresAt = null;
+        user.passwordResetAttempts  = 0;
+        user.emailVerified          = true;
+        _clearLockout(user);
+        await user.save();
+
+        // Kick any other/old sessions, then sign in on this device.
+        await revokeAllForUser(user._id);
+        logAudit(req, 'password.reset', user._id);
+
+        if (user.twoFactorEnabled) {
+            setTempCookie(res, mintTempToken(user._id));
+            return res.json({ success: true, requires2FA: true });
+        }
+        const rawKey = await masterDecrypt(user.encryptedDataKey);
+        const dataKey = Buffer.from(rawKey, 'hex');
+        await establishSession(res, user._id);
+        return res.json({
+            success: true,
+            data: buildPublicUser(user, await safeDecrypt(user.name, dataKey), await safeDecrypt(user.email, dataKey)),
+        });
+    } catch (error) {
+        console.error('Reset-password error:', error);
+        res.status(500).json({ success: false, message: 'Server error resetting password' });
     }
 };
 
@@ -455,6 +553,7 @@ const updateUserProfile = async (req, res) => {
 
 module.exports = {
     registerUser, loginUser, verifyCode, resendCode,
+    forgotPassword, resetPassword,
     refreshSession, logout,
     getUserProfile, updateUserProfile,
 };
