@@ -32,7 +32,7 @@ export interface BalanceData {
 // Savings is highlighted green because it isn't spent — it's set aside.
 export function SavingsBreakdown({ breakdown, periodLabel }: { breakdown: PeriodBreakdown; periodLabel?: string }) {
     const { format: fmt } = useCurrency();
-    const carryLabel = breakdown.period === "yearly" ? "Carried forward (from last year)" : "Carried forward (from last month)";
+    const carryLabel = "Carried forward";
 
     return (
         <div className="p-5 rounded-3xl bg-zinc-900/50 border border-white/5 space-y-1">
@@ -70,9 +70,12 @@ const TONE: Record<string, string> = {
 
 function Row({ icon, label, value, tone }: { icon: React.ReactNode; label: string; value: string; tone: keyof typeof TONE }) {
     return (
-        <div className="flex items-center justify-between py-1.5">
-            <span className={cn("flex items-center gap-2 text-sm", TONE[tone])}>{icon}{label}</span>
-            <span className={cn("text-sm tabular-nums", TONE[tone])}>{value}</span>
+        <div className="flex items-center justify-between gap-3 py-1.5">
+            <span className={cn("flex items-center gap-2 text-sm min-w-0", TONE[tone])}>
+                <span className="shrink-0">{icon}</span>
+                <span className="truncate">{label}</span>
+            </span>
+            <span className={cn("text-sm tabular-nums shrink-0", TONE[tone])}>{value}</span>
         </div>
     );
 }

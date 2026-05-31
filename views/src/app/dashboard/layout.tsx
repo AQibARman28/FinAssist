@@ -2,6 +2,7 @@
 
 import { Sidebar } from "@/components/dashboard/Sidebar";
 import { MobileNav } from "@/components/dashboard/MobileNav";
+import { QuickExpenseFab } from "@/components/dashboard/QuickExpenseFab";
 
 export default function DashboardLayout({
     children,
@@ -15,6 +16,7 @@ export default function DashboardLayout({
             <main className="md:ml-64 min-h-screen">
                 {children}
             </main>
+            <QuickExpenseFab />
         </div>
     );
 }
