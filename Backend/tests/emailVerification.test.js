@@ -21,6 +21,7 @@ beforeAll(() => {
     process.env.MASTER_ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
     process.env.EMAIL_HASH_SECRET     = crypto.randomBytes(32).toString('hex');
     process.env.JWT_SECRET            = crypto.randomBytes(32).toString('hex');
+    process.env.REQUIRE_EMAIL_VERIFICATION = 'true'; // exercise the verification-gate path
     delete process.env.SMTP_HOST;
 });
 beforeAll(async () => {
@@ -31,7 +32,7 @@ beforeAll(async () => {
     mailer  = require('../utils/mailer');
     await User.init();
 }, 60_000);
-afterAll(async () => { await mongoose.disconnect(); if (mongo) await mongo.stop(); });
+afterAll(async () => { delete process.env.REQUIRE_EMAIL_VERIFICATION; await mongoose.disconnect(); if (mongo) await mongo.stop(); });
 beforeEach(async () => {
     if (!mongoose.connection.db) return;
     const colls = await mongoose.connection.db.listCollections().toArray();

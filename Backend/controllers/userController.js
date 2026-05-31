@@ -32,6 +32,13 @@ const EMAIL_RESEND_COOLDOWN_MS = 60 * 1000;      // min gap between resends
 const PWRESET_TTL_MS       = 15 * 60 * 1000;
 const PWRESET_MAX_ATTEMPTS = 5;
 
+// Email verification is a gate only when REQUIRE_EMAIL_VERIFICATION=true.
+// Default (unset) auto-verifies on signup — needed until a verified sending
+// domain exists so codes can reach arbitrary users. Flip to 'true' to re-enable.
+function requireEmailVerification() {
+    return process.env.REQUIRE_EMAIL_VERIFICATION === 'true';
+}
+
 const buildPublicUser = (user, plainName, plainEmail) => ({
     _id: user._id,
     name: plainName,
@@ -134,41 +141,42 @@ const registerUser = async (req, res) => {
             ...keyBundle,
         });
 
-        // Uniform code flow: every new account gets a 6-digit code and stays
-        // unverified until it's entered. Without SMTP_HOST configured the
-        // mailer logs the code to the server console, so local dev still works
-        // and exercises the same path as production.
-        const code = _issueVerificationCode(user);
+        // Two registration postures, toggled by REQUIRE_EMAIL_VERIFICATION:
+        //   'true'  → issue a 6-digit code, no session until verified.
+        //   else    → auto-verify and sign in immediately (default). Used when
+        //             email can't yet reach arbitrary users (no verified
+        //             sending domain). Flip the env var to re-enable the gate.
+        if (requireEmailVerification()) {
+            const code = _issueVerificationCode(user);
+            await user.save();
+            try { await seedDefaultCategoriesForUser(user._id); }
+            catch (seedErr) { console.error('register: default-category seed failed:', seedErr.message); }
+            try { await sendVerificationCodeEmail(email, code); }
+            catch (mailErr) { console.error('register: verification email failed:', mailErr.message); }
+            logAudit(req, 'register', user._id);
+            return res.status(201).json({
+                success: true,
+                data: buildPublicUser(user, name, email),
+                requiresEmailVerification: true,
+                email,
+                message: 'Account created. Enter the verification code we emailed you.',
+            });
+        }
+
+        // Auto-verify: mark live, seed categories, send a best-effort welcome,
+        // and establish the session so the user lands straight on the dashboard.
+        user.emailVerified = true;
         await user.save();
-
-        // Best-effort default-category seed. A rare unique-index hit (e.g.
-        // a partial earlier migration left some rows behind for this same
-        // userId) should not fail registration — the user can create the
-        // remaining categories manually. Same fail-open posture as the
-        // verification email below.
-        try {
-            await seedDefaultCategoriesForUser(user._id);
-        } catch (seedErr) {
-            console.error('register: default-category seed failed:', seedErr.message);
-        }
-
-        // Best-effort email — don't fail registration on a mail outage; the
-        // user can request a resend, or the operator can read the console code.
-        try {
-            await sendVerificationCodeEmail(email, code);
-        } catch (mailErr) {
-            console.error('register: verification email failed:', mailErr.message);
-        }
-
+        try { await seedDefaultCategoriesForUser(user._id); }
+        catch (seedErr) { console.error('register: default-category seed failed:', seedErr.message); }
+        try { await sendWelcomeEmail(email, name); }
+        catch (mailErr) { console.error('register: welcome email failed:', mailErr.message); }
         logAudit(req, 'register', user._id);
-
-        // No session until the code is verified (POST /auth/verify-code).
+        await establishSession(res, user._id);
         return res.status(201).json({
             success: true,
             data: buildPublicUser(user, name, email),
-            requiresEmailVerification: true,
-            email,
-            message: 'Account created. Enter the verification code we emailed you.',
+            requiresEmailVerification: false,
         });
     } catch (error) {
         console.error('Register error:', error);
@@ -310,7 +318,7 @@ const loginUser = async (req, res) => {
 
         // Password OK — but block unverified accounts before establishing a
         // session.
-        if (user.emailVerified === false) {
+        if (requireEmailVerification() && user.emailVerified === false) {
             logAudit(req, 'login.failure', user._id, { reason: 'email_unverified' });
             return res.status(403).json({
                 success: false,
