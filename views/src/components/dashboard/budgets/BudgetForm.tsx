@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Loader2, Save } from "lucide-react";
 import { api } from "@/lib/api";
+import { useCurrency } from "@/lib/useCurrency";
 
 const CATEGORIES = ["Food", "Transport", "Entertainment", "Shopping", "Bills", "Healthcare", "Education", "Other"];
 
@@ -11,6 +12,7 @@ interface BudgetFormProps {
 }
 
 export function BudgetForm({ onSuccess }: BudgetFormProps) {
+    const { currency } = useCurrency();
     const [isLoading, setIsLoading] = useState(false);
     const [formData, setFormData] = useState({
         category: "",
@@ -66,7 +68,7 @@ export function BudgetForm({ onSuccess }: BudgetFormProps) {
 
                 {/* Limit Input */}
                 <div className="w-full md:w-1/3 space-y-2">
-                    <label className="text-xs text-zinc-500">Monthly Limit ($)</label>
+                    <label className="text-xs text-zinc-500">Monthly Limit ({currency})</label>
                     <input
                         type="number"
                         placeholder="e.g. 500"

@@ -10,9 +10,9 @@ import { DashboardStatsStrip }  from "@/components/dashboard/analytics/Dashboard
 
 export default function AnalyticsPage() {
     return (
-        <div className="p-6 max-w-7xl mx-auto space-y-6">
+        <div className="p-4 md:p-6 max-w-7xl mx-auto space-y-5 md:space-y-6">
             <header className="mb-2">
-                <h1 className="text-2xl font-bold text-white tracking-tight">Analytics &amp; AI Insights</h1>
+                <h1 className="text-xl md:text-2xl font-bold text-white tracking-tight">Analytics &amp; AI Insights</h1>
                 <p className="text-zinc-400 text-sm mt-1">Deep dive into your financial habits.</p>
             </header>
 

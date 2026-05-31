@@ -113,10 +113,10 @@ export default function IncomePage() {
     };
 
     return (
-        <div className="p-6 max-w-7xl mx-auto space-y-6">
+        <div className="p-4 md:p-6 max-w-7xl mx-auto space-y-5 md:space-y-6">
             <div className="flex justify-between items-end mb-8 flex-wrap gap-3">
                 <div>
-                    <h1 className="text-2xl font-bold text-white">Income</h1>
+                    <h1 className="text-xl md:text-2xl font-bold text-white">Income</h1>
                     <p className="text-zinc-500 text-sm">Earnings recorded for the current and previous month.</p>
                 </div>
                 <Link

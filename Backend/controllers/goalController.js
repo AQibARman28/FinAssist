@@ -4,6 +4,7 @@ const { signRecord, verifyRecord, encryptNote, decryptNote } = require('../utils
 const { getCashFlow } = require('../services/cashFlow');
 const { planGoals, allocateSurplus } = require('../services/goalPlanning');
 const { getBalance } = require('../services/balance');
+const SavingsEntry = require('../models/SavingsEntry');
 const { logAudit } = require('../utils/audit');
 
 // End-of-period date used as a display/forecast targetDate when the user
@@ -166,10 +167,11 @@ const addContribution = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Cannot add contribution to completed goal' });
         }
 
-        // Hard cap: you can't save more than your available balance (the single
-        // continuous pocket = cumulative income − expenses − already-saved).
+        // Hard cap: you can't save more than your available wallet (cumulative
+        // income − expenses − goal contributions − standalone savings).
         const allGoals = await Goal.find({ user: req.user._id });
-        const { available } = await getBalance(req.user._id, allGoals);
+        const savingsEntries = await SavingsEntry.find({ user: req.user._id });
+        const { available } = await getBalance(req.user._id, allGoals, savingsEntries);
         if (amount > available) {
             return res.status(400).json({
                 success: false,
@@ -421,7 +423,8 @@ const allocateContributions = async (req, res) => {
         // Hard cap: the total saved can't exceed the available balance (the
         // single continuous pocket = cumulative income − expenses − saved).
         const allGoals = await Goal.find({ user: userId });
-        const { available } = await getBalance(userId, allGoals);
+        const savingsEntries = await SavingsEntry.find({ user: userId });
+        const { available } = await getBalance(userId, allGoals, savingsEntries);
         const requestedTotal = targets.reduce((s, t) => s + t.amount, 0);
         if (requestedTotal > available) {
             return res.status(400).json({

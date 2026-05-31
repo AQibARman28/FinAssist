@@ -1,4 +1,4 @@
-import { LayoutDashboard, Wallet, CreditCard, Target, Settings, PieChart, TrendingUp, type LucideIcon } from "lucide-react";
+import { LayoutDashboard, Wallet, CreditCard, Target, Settings, PieChart, TrendingUp, PiggyBank, type LucideIcon } from "lucide-react";
 
 // Shared by the desktop Sidebar and the mobile drawer (MobileNav) so the two
 // navigations never drift apart.
@@ -15,5 +15,6 @@ export const menuItems: NavItem[] = [
     { icon: TrendingUp,      label: "Income",    href: "/dashboard/income" },
     { icon: CreditCard,      label: "Expenses",  href: "/dashboard/expenses" },
     { icon: Target,          label: "Goals",     href: "/dashboard/goals" },
+    { icon: PiggyBank,       label: "Savings",   href: "/dashboard/savings" },
     { icon: Settings,        label: "Settings",  href: "/dashboard/settings" },
 ];

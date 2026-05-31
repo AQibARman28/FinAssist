@@ -30,11 +30,13 @@ const { incomeTotalForPeriod, expenseTotalForPeriod } = require('../utils/financ
 
 const EPOCH = new Date(0); // floor for "all time before X" cumulative windows
 
-// Pure: derive the two figures the UI shows for a period.
-function summarize({ carriedForward, income, expenses, saved }) {
+// Pure: derive the figures the UI shows for a period. `savingsOut` is the net
+// amount moved into the standalone Savings account in the window (deposits −
+// withdrawals); it leaves the Wallet just like a goal contribution.
+function summarize({ carriedForward, income, expenses, saved, savingsOut = 0 }) {
     const cf = carriedForward || 0;
     const netIncome = income - expenses;
-    return { netIncome, closing: cf + income - expenses - saved };
+    return { netIncome, closing: cf + income - expenses - saved - savingsOut };
 }
 
 // Pure: the [from, now] window for a period.
@@ -61,44 +63,62 @@ function savedInWindow(goals, from, to = null) {
     return total;
 }
 
-// Cumulative (income − expenses − saved) for all time strictly before `before`.
-async function carriedForwardBefore(userId, before, goals) {
+// Pure: NET standalone-savings movement in [from, to] = deposits − withdrawals.
+// `to` omitted ⇒ open-ended (used for "before" / all-time).
+function savingsNet(entries, from, to = null) {
+    let total = 0;
+    const fromMs = from ? from.getTime() : -Infinity;
+    const toMs = to ? to.getTime() : Infinity;
+    for (const e of entries || []) {
+        const t = new Date(e.date).getTime();
+        if (t < fromMs || t > toMs) continue;
+        total += e.direction === 'withdraw' ? -e.amount : e.amount;
+    }
+    return total;
+}
+
+// Cumulative (income − expenses − goalSaved − savingsNet) strictly before `before`.
+async function carriedForwardBefore(userId, before, goals, savingsEntries = []) {
     const end = new Date(before.getTime() - 1); // strictly before `before`
     const [income, expenses] = await Promise.all([
         incomeTotalForPeriod(userId, EPOCH, end),
         expenseTotalForPeriod(userId, EPOCH, end),
     ]);
     const saved = savedInWindow(goals, EPOCH, end);
-    return income - expenses - saved;
+    return income - expenses - saved - savingsNet(savingsEntries, EPOCH, end);
 }
 
-// One period's breakdown: opening (carried forward) + income − expenses − saved.
-async function periodBreakdown(userId, period, goals, now) {
+// One period's breakdown: opening + income − expenses − goalSaved − savingsOut.
+async function periodBreakdown(userId, period, goals, savingsEntries, now) {
     const { from, to } = periodWindow(period, now);
     const [income, expenses] = await Promise.all([
         incomeTotalForPeriod(userId, from, to),
         expenseTotalForPeriod(userId, from, to),
     ]);
     const saved = savedInWindow(goals, from, to);
-    const carriedForward = await carriedForwardBefore(userId, from, goals);
-    return { period, from, to, carriedForward, income, expenses, saved, ...summarize({ carriedForward, income, expenses, saved }) };
+    const savingsOut = savingsNet(savingsEntries, from, to);
+    const carriedForward = await carriedForwardBefore(userId, from, goals, savingsEntries);
+    return { period, from, to, carriedForward, income, expenses, saved, savingsOut, ...summarize({ carriedForward, income, expenses, saved, savingsOut }) };
 }
 
-// Full picture for /analytics/balance. `available` is the single spendable
-// pocket (period-independent) used for the savings hard cap.
-async function getBalance(userId, goals, now = new Date()) {
+// Full picture for /analytics/balance. `available` (a.k.a. the Wallet) is the
+// single spendable pocket, period-independent, used as the hard cap for goal
+// contributions and savings deposits. `savingsBalance` is the standalone
+// Savings account (all-time net deposits).
+async function getBalance(userId, goals, savingsEntries = [], now = new Date()) {
     const ref = now instanceof Date ? now : new Date(now);
     const [monthly, yearly] = await Promise.all([
-        periodBreakdown(userId, 'monthly', goals, ref),
-        periodBreakdown(userId, 'yearly', goals, ref),
+        periodBreakdown(userId, 'monthly', goals, savingsEntries, ref),
+        periodBreakdown(userId, 'yearly', goals, savingsEntries, ref),
     ]);
     const [income, expenses] = await Promise.all([
         incomeTotalForPeriod(userId, EPOCH, ref),
         expenseTotalForPeriod(userId, EPOCH, ref),
     ]);
     const saved = savedInWindow(goals, EPOCH, ref);
-    const available = income - expenses - saved;
-    return { available, cumulative: { income, expenses, saved }, monthly, yearly };
+    const savingsBalance = savingsNet(savingsEntries, EPOCH, ref);
+    const available = income - expenses - saved - savingsBalance;
+    return { available, wallet: available, savingsBalance, cumulative: { income, expenses, saved }, monthly, yearly };
 }
 
-module.exports = { summarize, periodWindow, savedInWindow, carriedForwardBefore, periodBreakdown, getBalance };
+module.exports = { summarize, periodWindow, savedInWindow, savingsNet, carriedForwardBefore, periodBreakdown, getBalance };

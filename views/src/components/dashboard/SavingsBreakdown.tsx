@@ -12,13 +12,16 @@ export interface PeriodBreakdown {
     carriedForward: number;
     income: number;
     expenses: number;
-    saved: number;
+    saved: number;       // moved into goals this period
+    savingsOut: number;  // net moved into the Savings account this period
     netIncome: number;
-    closing: number;
+    closing: number;     // = the Wallet for this period
 }
 
 export interface BalanceData {
     available: number;
+    wallet: number;
+    savingsBalance: number;
     cumulative: { income: number; expenses: number; saved: number };
     monthly: PeriodBreakdown;
     yearly: PeriodBreakdown;
@@ -41,10 +44,15 @@ export function SavingsBreakdown({ breakdown, periodLabel }: { breakdown: Period
             <Row icon={<ArrowDown className="w-3.5 h-3.5" />} label={carryLabel} value={fmt(breakdown.carriedForward)} tone="carry" />
             <Row icon={<ArrowUp className="w-3.5 h-3.5" />} label="Income" value={`+ ${fmt(breakdown.income)}`} tone="income" />
             <Row icon={<ArrowDown className="w-3.5 h-3.5" />} label="Expenses (out of pocket)" value={`− ${fmt(breakdown.expenses)}`} tone="expense" />
-            <Row icon={<PiggyBank className="w-3.5 h-3.5" />} label="Savings (set aside, not spent)" value={`− ${fmt(breakdown.saved)}`} tone="savings" />
+            {breakdown.saved > 0 && (
+                <Row icon={<PiggyBank className="w-3.5 h-3.5" />} label="Saved to goals" value={`− ${fmt(breakdown.saved)}`} tone="savings" />
+            )}
+            {breakdown.savingsOut > 0 && (
+                <Row icon={<PiggyBank className="w-3.5 h-3.5" />} label="Moved to savings" value={`− ${fmt(breakdown.savingsOut)}`} tone="savings" />
+            )}
 
             <div className="flex items-center justify-between pt-3 mt-2 border-t border-white/10">
-                <span className="text-sm font-medium text-zinc-300">Balance carried forward</span>
+                <span className="text-sm font-medium text-zinc-300">Wallet (spendable)</span>
                 <span className={cn("text-lg font-bold tabular-nums", breakdown.closing < 0 ? "text-red-400" : "text-white")}>
                     {fmt(breakdown.closing)}
                 </span>

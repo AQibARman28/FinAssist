@@ -3,6 +3,7 @@ const Expense = require('../models/Expense');
 const Income = require('../models/Income');
 const Category = require('../models/Category');
 const Goal = require('../models/Goal');
+const SavingsEntry = require('../models/SavingsEntry');
 const { getBalance } = require('../services/balance');
 const { safeDecrypt } = require('../utils/encryption');
 const {
@@ -433,8 +434,11 @@ const spendingTimeline = async (req, res) => {
 // amounts/dates are plaintext, so no dataKey is needed here.
 const balance = async (req, res) => {
     try {
-        const goals = await Goal.find({ user: req.user._id });
-        const data = await getBalance(req.user._id, goals);
+        const [goals, savingsEntries] = await Promise.all([
+            Goal.find({ user: req.user._id }),
+            SavingsEntry.find({ user: req.user._id }),
+        ]);
+        const data = await getBalance(req.user._id, goals, savingsEntries);
         res.json({ success: true, data });
     } catch (error) {
         console.error('Balance error:', error);

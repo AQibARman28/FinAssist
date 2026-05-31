@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { RefreshCw, Check, AlertTriangle } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
+import { useCurrency } from "@/lib/useCurrency";
 
 export function RecurringExpensesList() {
+    const { format: fmt } = useCurrency();
     const [recurring, setRecurring] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
 
@@ -48,7 +50,7 @@ export function RecurringExpensesList() {
                                 </div>
                             </div>
                             <div className="text-right">
-                                <span className="block text-white font-medium">${item.total.toFixed(2)}</span>
+                                <span className="block text-white font-medium">{fmt(item.total)}</span>
                                 <span className="text-xs text-zinc-500">Total spent</span>
                             </div>
                         </div>

@@ -71,6 +71,10 @@ const userSchema = new mongoose.Schema({
     twoFactorEnabled: { type: Boolean, default: false },
     twoFactorSecret:  { type: String }, // base32 secret, AES-encrypted with dataKey
 
+    // Month-rollover tracking: the "YYYY-MM" the user last handled the
+    // first-of-month carry-forward prompt for. Null until the first rollover.
+    lastRolloverYearMonth: { type: String, default: null },
+
     // ── RBAC ────────────────────────────────────────────────────────────────
     role: { type: String, enum: ['user', 'admin'], default: 'user' },
 

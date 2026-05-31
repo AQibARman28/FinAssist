@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import { BudgetForm } from "@/components/dashboard/budgets/BudgetForm";
 import { BudgetCard } from "@/components/dashboard/budgets/BudgetCard";
 import { StatCard } from "@/components/dashboard/StatCard";
+import { useCurrency } from "@/lib/useCurrency";
 
 interface BudgetData {
     _id: string;
@@ -18,6 +19,7 @@ interface BudgetData {
 }
 
 export default function BudgetsPage() {
+    const { format: fmt } = useCurrency();
     const [budgets, setBudgets] = useState<BudgetData[]>([]);
     const [summary, setSummary] = useState({ totalLimit: 0, totalSpent: 0 });
     const [refreshTrigger, setRefreshTrigger] = useState(0);
@@ -49,10 +51,10 @@ export default function BudgetsPage() {
     };
 
     return (
-        <div className="p-6 space-y-6 max-w-7xl mx-auto">
+        <div className="p-4 md:p-6 space-y-5 md:space-y-6 max-w-7xl mx-auto">
             {/* Header */}
             <div className="mb-8">
-                <h1 className="text-2xl font-bold text-white">Budgets</h1>
+                <h1 className="text-xl md:text-2xl font-bold text-white">Budgets</h1>
                 <p className="text-zinc-500 text-sm">Set limits and track your monthly spending goals</p>
             </div>
 
@@ -60,13 +62,13 @@ export default function BudgetsPage() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <StatCard
                     title="Total Budget"
-                    value={`$${summary.totalLimit.toLocaleString()}`}
+                    value={fmt(summary.totalLimit)}
                     icon={Wallet}
                     className="bg-zinc-900/50"
                 />
                 <StatCard
                     title="Total Spent"
-                    value={`$${summary.totalSpent.toLocaleString()}`}
+                    value={fmt(summary.totalSpent)}
                     trend={`${((summary.totalSpent / (summary.totalLimit || 1)) * 100).toFixed(0)}% Used`}
                     trendUp={false}
                     icon={TrendingUp}

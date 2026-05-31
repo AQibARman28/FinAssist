@@ -31,14 +31,14 @@ export function StatTile({ icon: Icon, label, value, sub, accent = "zinc", trend
     const isGradient = accent !== "zinc";
     return (
         <div className={cn(
-            "p-5 rounded-3xl border h-full flex flex-col gap-2",
+            "p-4 md:p-5 rounded-2xl border h-full flex flex-col gap-1.5",
             isGradient ? `bg-gradient-to-br ${ACCENT_BG[accent]}` : ACCENT_BG[accent],
         )}>
             <div className="flex items-center justify-between">
                 <span className="text-xs uppercase tracking-wider text-zinc-500">{label}</span>
                 <Icon className={cn("w-4 h-4", ACCENT_TEXT[accent])} />
             </div>
-            <div className="text-2xl font-bold tabular-nums text-white">{value}</div>
+            <div className="text-xl md:text-2xl font-bold tabular-nums text-white truncate">{value}</div>
             <div className="flex items-center gap-2">
                 {trend && (
                     <span className={cn(

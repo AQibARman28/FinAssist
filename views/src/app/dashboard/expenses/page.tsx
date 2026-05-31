@@ -54,11 +54,11 @@ export default function ExpensesPage() {
     };
 
     return (
-        <div className="p-6 space-y-6 max-w-7xl mx-auto">
+        <div className="p-4 md:p-6 space-y-5 md:space-y-6 max-w-7xl mx-auto">
             {/* Header */}
             <div className="mb-8 flex items-start justify-between flex-wrap gap-3">
                 <div>
-                    <h1 className="text-2xl font-bold text-white">Expenses</h1>
+                    <h1 className="text-xl md:text-2xl font-bold text-white">Expenses</h1>
                     <p className="text-zinc-500 text-sm">Manage and track your spending</p>
                 </div>
                 <Link

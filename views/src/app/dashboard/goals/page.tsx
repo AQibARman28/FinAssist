@@ -51,10 +51,10 @@ export default function GoalsPage() {
     const periodLabel = period === "monthly" ? "this month" : "this year";
 
     return (
-        <div className="p-6 space-y-6 max-w-7xl mx-auto">
+        <div className="p-4 md:p-6 space-y-5 md:space-y-6 max-w-7xl mx-auto">
             <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
                 <div>
-                    <h1 className="text-2xl font-bold text-white">Goals &amp; Savings</h1>
+                    <h1 className="text-xl md:text-2xl font-bold text-white">Goals &amp; Savings</h1>
                     <p className="text-zinc-500 text-sm">Income − expenses is your balance, carried forward. Saving is a choice — what you put into goals.</p>
                 </div>
                 <PeriodToggle period={period} onChange={setPeriod} />

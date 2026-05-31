@@ -9,7 +9,11 @@
  *   - Navigations: network-first, falling back to a cached page only offline.
  *   - Bump CACHE to invalidate old static caches on deploy.
  */
-const CACHE = "finassist-static-v1";
+// Bump this version on every deploy that changes cached assets — it forces the
+// browser to install the new service worker, purge old caches (see activate),
+// and (with the controllerchange reload in ServiceWorkerRegister) refresh the
+// app. Without a bump, an unchanged sw.js means clients keep the old version.
+const CACHE = "finassist-static-v2";
 
 self.addEventListener("install", (event) => {
     self.skipWaiting();

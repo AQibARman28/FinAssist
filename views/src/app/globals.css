@@ -20,7 +20,10 @@
 }
 
 body {
-  background: var(--background);
+  background: #09090b; /* zinc-950 — the app is dark; don't flash light */
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  /* Use the Geist font that layout.tsx loads (was incorrectly overridden to Arial). */
+  font-family: var(--font-geist-sans), system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }

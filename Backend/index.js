@@ -162,6 +162,8 @@ app.use('/api/auth', authLimiter, require('./routes/authRoutes'));
 app.use('/api/expenses', require('./routes/expenseRoutes'));
 app.use('/api/budgets', require('./routes/budgetRoutes'));
 app.use('/api/goals', require('./routes/goalsRoutes'));
+app.use('/api/savings', require('./routes/savingsRoutes'));
+app.use('/api/wallet', require('./routes/walletRoutes'));
 app.use('/api/categories', require('./routes/categoryRoutes'));
 app.use('/api/incomes', require('./routes/incomeRoutes'));
 app.use('/api/analytics', require('./routes/analyticsRoutes'));

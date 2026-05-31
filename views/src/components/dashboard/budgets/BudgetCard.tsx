@@ -1,7 +1,8 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { AlertTriangle, TrendingUp } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
+import { useCurrency } from "@/lib/useCurrency";
 
 interface BudgetCardProps {
     category: string;
@@ -13,6 +14,8 @@ interface BudgetCardProps {
 }
 
 export function BudgetCard({ category, limit, spent, usagePercentage, isOverLimit, onEdit }: BudgetCardProps) {
+    const { format: fmt } = useCurrency();
+
     // Determine color based on usage
     let colorClass = "bg-emerald-500";
     let glowClass = "shadow-[0_0_10px_rgba(16,185,129,0.3)]";
@@ -46,7 +49,7 @@ export function BudgetCard({ category, limit, spent, usagePercentage, isOverLimi
                     <p className="text-xs text-zinc-500 mt-1">Monthly Limit</p>
                 </div>
                 <div className="text-right">
-                    <span className="block text-xl font-bold text-white">${limit.toLocaleString()}</span>
+                    <span className="block text-xl font-bold text-white">{fmt(limit)}</span>
                     <span className={`text-xs ${isOverLimit ? 'text-red-400' : 'text-zinc-500'}`}>
                         {isOverLimit ? 'Over Budget!' : 'Total Budget'}
                     </span>
@@ -66,7 +69,7 @@ export function BudgetCard({ category, limit, spent, usagePercentage, isOverLimi
 
             <div className="flex justify-between items-center mt-3 text-sm">
                 <span className="text-zinc-400">
-                    Spent: <span className="text-white font-medium">${spent.toLocaleString()}</span>
+                    Spent: <span className="text-white font-medium">{fmt(spent)}</span>
                 </span>
                 <span className={`${isOverLimit ? 'text-red-400 font-bold' : 'text-zinc-500'}`}>
                     {usagePercentage.toFixed(0)}%
