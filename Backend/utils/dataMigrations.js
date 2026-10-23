@@ -117,11 +117,28 @@ async function upgradeFieldEncryption({ apply = false, sealPlaintext = false } =
 
 async function reattestRecords({ apply = false } = {}) {
     const { User, Expense, Income, Goal, Budget } = _models();
-    const result = { checked: 0, resigned: 0, needing: [] };
+    const result = { checked: 0, resigned: 0, legacyKeyBundles: 0, needing: [] };
 
-    for (const user of await User.find({ encryptedDataKey: { $type: 'string' }, encryptedEccPrivateKey: { $type: 'string' } }).lean()) {
+    for (let user of await User.find({ encryptedDataKey: { $type: 'string' }, encryptedEccPrivateKey: { $type: 'string' } }).lean()) {
         const dataKey = await _userDataKey(user);
         const userId = user._id;
+
+        // A user who never signed in after SEC-1 still holds the hex-JSON
+        // bundle, which can't sign. The app replaces it with a PEM bundle on
+        // their next request (authMiddleware); do the same here, then every
+        // record of theirs is signed under the new key below.
+        const legacy = keyMgmt.hasLegacyKeyBundle(user);
+        if (legacy) {
+            result.legacyKeyBundles += 1;
+            if (apply) {
+                const fresh = { _id: userId, keyVersion: user.keyVersion };
+                await keyMgmt.regenerateUserKeyBundle(fresh, dataKey);
+                const { _id, ...bundle } = fresh;
+                await User.updateOne({ _id: userId }, { $set: bundle });
+                user = { ...user, ...bundle };
+            }
+        }
+        const stillLegacy = legacy && !apply;
 
         const kinds = [
             [Expense, 'expense', async (d) => [payloads.expense(d)]],
@@ -134,9 +151,14 @@ async function reattestRecords({ apply = false } = {}) {
                 result.checked += 1;
                 const options = await candidates(doc);
                 let status = 'invalid';
-                for (const p of options) {
-                    status = await attestationStatus(p, doc.serverAttestation, user);
-                    if (status !== 'invalid') break;
+                if (stillLegacy) {
+                    // Dry run: a hex-JSON public key can't verify anything.
+                    status = doc.serverAttestation ? 'invalid' : 'missing';
+                } else {
+                    for (const p of options) {
+                        status = await attestationStatus(p, doc.serverAttestation, user);
+                        if (status !== 'invalid') break;
+                    }
                 }
                 if (status === 'valid') continue;
                 result.needing.push({ kind, id: String(doc._id), status });

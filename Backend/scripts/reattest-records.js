@@ -21,6 +21,9 @@ const { reattestRecords } = require('../utils/dataMigrations');
     const r = await reattestRecords({ apply });
     for (const n of r.needing) console.log(`  ${n.status.padEnd(7)} ${n.kind} ${n.id}`);
     console.log(`${apply ? 'APPLY' : 'DRY RUN'}: ${r.checked} record(s) checked; ${r.needing.length} without a valid attestation; ${r.resigned} signed.`);
+    if (r.legacyKeyBundles) {
+        console.log(`${r.legacyKeyBundles} user(s) still hold a pre-PEM key bundle; ${apply ? 'each was given a fresh one (as on their next sign-in)' : 'apply gives each a fresh one, as their next sign-in would'}.`);
+    }
     if (!apply && r.needing.length) console.log('Review the list above, then re-run with --apply.');
     await mongoose.disconnect();
 })().catch((err) => {

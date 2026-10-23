@@ -116,4 +116,35 @@ describe('attestation baseline', () => {
         expect(await signing.attestationStatus({ amount: e.amount, category: e.category }, e.serverAttestation, user)).toBe('valid');
         expect((await migrations.reattestRecords({ apply: true })).resigned).toBe(0);
     });
+
+    // Users who never signed in after SEC-1 still hold the hex-JSON bundle the
+    // Python crypto wrote; the app swaps it for a PEM bundle on their next
+    // request (authMiddleware), and the baseline job has to do the same.
+    test('a user still holding a pre-PEM key bundle gets a fresh one and their records are signed', async () => {
+        const rawKey = crypto.randomBytes(32).toString('hex');
+        const dataKey = Buffer.from(rawKey, 'hex');
+        const _id = new mongoose.Types.ObjectId();
+        const hexJson = JSON.stringify({ d: 'aa', x: 'bb', y: 'cc' });
+        await User.collection.insertOne({
+            _id, emailHash: 'h-' + _id, password: 'x', passwordHashScheme: 'argon2id',
+            name: await enc.encrypt('Ada', dataKey), email: await enc.encrypt('ada@example.com', dataKey),
+            encryptedDataKey: await enc.masterEncrypt(rawKey),
+            rsaPublicKey: hexJson, encryptedRsaPrivateKey: await enc.encrypt(hexJson, dataKey),
+            eccPublicKey: hexJson, encryptedEccPrivateKey: await enc.encrypt(hexJson, dataKey),
+        });
+        const expenseId = new mongoose.Types.ObjectId();
+        await Expense.collection.insertOne({ _id: expenseId, user: _id, amount: 40, category: new mongoose.Types.ObjectId(), date: new Date() });
+
+        const dry = await migrations.reattestRecords({ apply: false });
+        expect(dry.legacyKeyBundles).toBe(1);
+        expect(keyMgmt.hasLegacyKeyBundle(await User.findById(_id).lean())).toBe(true);
+
+        const applied = await migrations.reattestRecords({ apply: true });
+        expect(applied.resigned).toBe(1);
+        const user = await User.findById(_id).lean();
+        expect(keyMgmt.hasLegacyKeyBundle(user)).toBe(false);
+        const e = await Expense.findById(expenseId).lean();
+        expect(await signing.attestationStatus({ amount: e.amount, category: e.category }, e.serverAttestation, user)).toBe('valid');
+        expect((await migrations.reattestRecords({ apply: true })).resigned).toBe(0);
+    });
 });
