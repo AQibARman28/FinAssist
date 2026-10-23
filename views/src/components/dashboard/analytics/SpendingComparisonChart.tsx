@@ -6,6 +6,8 @@ import { api } from "@/lib/api";
 import { useAuthStore } from "@/lib/store";
 
 interface Row { category: string; Current: number; Previous: number; }
+// One row of currentExpenses / previousExpenses from GET /analytics/monthly-analytics.
+interface CategoryTotal { category: string; total: number; }
 
 export function SpendingComparisonChart() {
     const currency = useAuthStore((s) => s.user?.currency) || "USD";
@@ -19,19 +21,19 @@ export function SpendingComparisonChart() {
             try {
                 const d = new Date();
                 const res = await api.get(`/analytics/monthly-analytics?year=${d.getUTCFullYear()}&month=${d.getUTCMonth() + 1}`);
-                const current  = res.data?.data?.currentExpenses  ?? [];
-                const previous = res.data?.data?.previousExpenses ?? [];
+                const current:  CategoryTotal[] = res.data?.data?.currentExpenses  ?? [];
+                const previous: CategoryTotal[] = res.data?.data?.previousExpenses ?? [];
 
                 // Merge by category NAME (not _id ObjectId) so the X-axis
                 // labels read "Food" / "Transport" instead of a 24-hex hash.
                 const allNames = new Set<string>([
-                    ...current.map((c: any)  => c.category),
-                    ...previous.map((p: any) => p.category),
+                    ...current.map((c)  => c.category),
+                    ...previous.map((p) => p.category),
                 ]);
                 const rows: Row[] = Array.from(allNames).map((name) => ({
                     category: name,
-                    Current:  current.find((c: any)  => c.category === name)?.total  ?? 0,
-                    Previous: previous.find((p: any) => p.category === name)?.total ?? 0,
+                    Current:  current.find((c)  => c.category === name)?.total  ?? 0,
+                    Previous: previous.find((p) => p.category === name)?.total ?? 0,
                 }));
                 rows.sort((a, b) => (b.Current + b.Previous) - (a.Current + a.Previous));
                 setData(rows);

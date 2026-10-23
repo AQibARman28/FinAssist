@@ -31,11 +31,15 @@ export default function SavingsPage() {
     const [error, setError] = useState<string | null>(null);
     const [tick, setTick] = useState(0);
 
-    const refresh = useCallback(() => setTick((t) => t + 1), []);
+    // `loading` starts true for the first fetch; a refresh flips it back on in
+    // the same update that triggers the refetch.
+    const refresh = useCallback(() => {
+        setLoading(true);
+        setTick((t) => t + 1);
+    }, []);
 
     useEffect(() => {
         let cancelled = false;
-        setLoading(true);
         api.get("/savings")
             .then((res) => { if (!cancelled) setData(res.data?.data ?? null); })
             .catch((err) => { if (!cancelled) { console.error(err); setData(null); } })

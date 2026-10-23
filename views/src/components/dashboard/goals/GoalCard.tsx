@@ -6,6 +6,9 @@ import { useState } from "react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useCurrency } from "@/lib/useCurrency";
+import { apiErrorMessage } from "@/lib/apiError";
+import { GoalStatusBadge } from "./GoalStatusBadge";
+import { PRIORITY_OPTIONS, priorityLevel, type GoalPlanRow } from "./goalPlanModel";
 
 export interface Goal {
     _id: string;
@@ -14,14 +17,25 @@ export interface Goal {
     targetAmount: number;
     currentAmount: number;
     status: "Active" | "Completed" | "Paused";
+    priority?: number;
+    targetDate?: string;
 }
 
-export function GoalCard({ goal, onUpdate }: { goal: Goal; onUpdate: () => void }) {
+interface GoalCardProps {
+    goal: Goal;
+    onUpdate: () => void;
+    /** This goal's row from GET /goals/plan (active goals only). */
+    plan?: GoalPlanRow;
+}
+
+export function GoalCard({ goal, onUpdate, plan }: GoalCardProps) {
     const { format: fmt } = useCurrency();
     const [isAdding, setIsAdding] = useState(false);
     const [addAmount, setAddAmount] = useState("");
     const [loading, setLoading] = useState(false);
+    const [confirmingDelete, setConfirmingDelete] = useState(false);
     const [deleting, setDeleting] = useState(false);
+    const [savingPriority, setSavingPriority] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     const percentage = goal.targetAmount > 0 ? Math.min((goal.currentAmount / goal.targetAmount) * 100, 100) : 0;
@@ -39,22 +53,37 @@ export function GoalCard({ goal, onUpdate }: { goal: Goal; onUpdate: () => void 
             setIsAdding(false);
             onUpdate();
         } catch (err) {
-            const e = err as { response?: { data?: { message?: string } } };
-            setError(e.response?.data?.message || "Failed to add funds");
+            setError(apiErrorMessage(err, "Failed to add funds"));
         } finally {
             setLoading(false);
         }
     };
 
+    // Deleting archives the goal server-side: its saved money returns to the
+    // wallet as of today; earlier months' balances are not rewritten.
     const handleDelete = async () => {
-        if (!window.confirm(`Delete goal "${goal.title}"? This can't be undone.`)) return;
         setDeleting(true);
+        setError(null);
         try {
             await api.delete(`/goals/${goal._id}`);
             onUpdate();
         } catch (err) {
-            console.error(err);
+            setError(apiErrorMessage(err, "Failed to delete goal"));
             setDeleting(false);
+            setConfirmingDelete(false);
+        }
+    };
+
+    const handlePriority = async (value: number) => {
+        setSavingPriority(true);
+        setError(null);
+        try {
+            await api.put(`/goals/${goal._id}`, { priority: value });
+            onUpdate();
+        } catch (err) {
+            setError(apiErrorMessage(err, "Failed to update priority"));
+        } finally {
+            setSavingPriority(false);
         }
     };
 
@@ -76,20 +105,52 @@ export function GoalCard({ goal, onUpdate }: { goal: Goal; onUpdate: () => void 
                     </div>
                     <div className="min-w-0">
                         <h3 className="text-lg font-medium text-white truncate">{goal.title}</h3>
-                        <span className="text-[11px] uppercase tracking-wider text-zinc-500">{goal.period}</span>
+                        <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                            <span className="text-[11px] uppercase tracking-wider text-zinc-500">{goal.period}</span>
+                            {!isCompleted && plan && <GoalStatusBadge status={plan.status} />}
+                        </div>
                     </div>
                 </div>
                 <button
-                    onClick={handleDelete}
-                    disabled={deleting}
-                    aria-label="Delete goal"
-                    className="shrink-0 p-2 rounded-lg text-zinc-600 hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50"
+                    onClick={() => { setError(null); setConfirmingDelete(true); }}
+                    disabled={deleting || confirmingDelete}
+                    aria-label={`Delete goal ${goal.title}`}
+                    className="shrink-0 p-2.5 -mr-1 rounded-lg text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50"
                 >
-                    {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                    <Trash2 className="w-4 h-4" />
                 </button>
             </div>
 
-            <div className="mb-4">
+            {confirmingDelete && (
+                <div className="relative mb-4 p-3 rounded-xl bg-red-500/5 border border-red-500/20 space-y-2.5">
+                    <p className="text-xs text-zinc-300">
+                        Delete &ldquo;{goal.title}&rdquo;?{" "}
+                        {goal.currentAmount > 0
+                            ? <>The <span className="text-white font-medium tabular-nums">{fmt(goal.currentAmount)}</span> saved in it goes back to your wallet as of today. </>
+                            : null}
+                        Past months&apos; balances stay as they were.
+                    </p>
+                    <div className="flex gap-2">
+                        <button
+                            onClick={handleDelete}
+                            disabled={deleting}
+                            className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-red-500/15 text-red-300 border border-red-500/30 hover:bg-red-500/25 disabled:opacity-50 transition-colors"
+                        >
+                            {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                            Delete goal
+                        </button>
+                        <button
+                            onClick={() => setConfirmingDelete(false)}
+                            disabled={deleting}
+                            className="px-3 py-2 text-xs rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-white/5 disabled:opacity-50 transition-colors"
+                        >
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            <div className="mb-4 relative">
                 <div className="flex justify-between items-end mb-2">
                     <span className="text-3xl font-bold text-white tracking-tight">{fmt(goal.currentAmount)}</span>
                     <span className="text-zinc-500 text-sm mb-1">of {fmt(goal.targetAmount)}</span>
@@ -104,12 +165,36 @@ export function GoalCard({ goal, onUpdate }: { goal: Goal; onUpdate: () => void 
                         <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-r from-transparent via-white/30 to-transparent -translate-x-full animate-[shimmer_2s_infinite]" />
                     </motion.div>
                 </div>
+                {!isCompleted && plan && plan.requiredMonthly !== null && (
+                    <p className="text-[11px] text-zinc-500 mt-2 tabular-nums">
+                        Needs {fmt(plan.requiredMonthly)}/mo
+                        {plan.actualMonthlyRate !== null ? ` · saving ${fmt(plan.actualMonthlyRate)}/mo` : " · no recent contributions"}
+                    </p>
+                )}
             </div>
 
-            {error && <p className="text-xs text-red-400 mb-3">{error}</p>}
+            {!isCompleted && (
+                <div className="relative flex items-center justify-between gap-2 mb-4">
+                    <label htmlFor={`prio-${goal._id}`} className="text-xs text-zinc-500">Priority</label>
+                    <div className="flex items-center gap-2">
+                        {savingPriority && <Loader2 className="w-3.5 h-3.5 animate-spin text-zinc-500" />}
+                        <select
+                            id={`prio-${goal._id}`}
+                            value={priorityLevel(goal.priority)}
+                            disabled={savingPriority}
+                            onChange={(e) => handlePriority(parseInt(e.target.value, 10))}
+                            className="bg-black/40 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-yellow-500/50 cursor-pointer disabled:opacity-50"
+                        >
+                            {PRIORITY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                        </select>
+                    </div>
+                </div>
+            )}
+
+            {error && <p className="text-xs text-red-400 mb-3 relative">{error}</p>}
 
             {isAdding ? (
-                <form onSubmit={handleContribute} className="flex gap-2">
+                <form onSubmit={handleContribute} className="flex gap-2 relative">
                     <input
                         autoFocus
                         type="number"
@@ -129,7 +214,7 @@ export function GoalCard({ goal, onUpdate }: { goal: Goal; onUpdate: () => void 
                     onClick={() => { setError(null); setIsAdding(true); }}
                     disabled={isCompleted}
                     className={cn(
-                        "w-full py-3 rounded-xl border border-dashed flex items-center justify-center gap-2 text-sm font-medium transition-all",
+                        "w-full py-3 rounded-xl border border-dashed flex items-center justify-center gap-2 text-sm font-medium transition-all relative",
                         isCompleted ? "border-transparent text-yellow-500 cursor-default" : "border-white/10 text-zinc-400 hover:text-white hover:bg-white/5 hover:border-white/20",
                     )}
                 >

@@ -68,10 +68,18 @@ export function SpendingTimelineChart({ granularity }: { granularity: Granularit
     const [loading, setLoading] = useState(true);
     const [pinned, setPinned] = useState<Bucket | null>(null);
 
-    useEffect(() => {
-        let cancelled = false;
+    // On a granularity switch: show the spinner and drop the pinned bucket
+    // (it belongs to the old series). Adjusted during render (React's "store
+    // the previous prop" pattern) instead of synchronously in the fetch effect.
+    const [prevGranularity, setPrevGranularity] = useState(granularity);
+    if (granularity !== prevGranularity) {
+        setPrevGranularity(granularity);
         setLoading(true);
         setPinned(null);
+    }
+
+    useEffect(() => {
+        let cancelled = false;
         api.get(`/analytics/spending-timeline?granularity=${granularity}`)
             .then((res) => { if (!cancelled) setData(res.data?.data ?? null); })
             .catch((err) => { if (!cancelled) { console.error("spending-timeline fetch failed", err); setData(null); } })
@@ -241,8 +249,19 @@ function TimelineBucketDetail({
     onClose: () => void;
 }) {
     const { format: fmtFull } = useCurrency();
-    const [rows, setRows] = useState<DetailRow[] | null>(null);
-    const [loading, setLoading] = useState(false);
+    // Rows fetched for a bucket whose preview is incomplete, tagged with the
+    // request they answer so a stale result is never shown for another bucket.
+    const [fetched, setFetched] = useState<{ bucket: Bucket; granularity: Granularity; rows: DetailRow[] } | null>(null);
+
+    // If the preview already holds the whole bucket, use it as-is; otherwise
+    // the rows come from the fetch below and we're loading until it lands.
+    const previewRows: DetailRow[] | null = bucket.hasMore ? null : bucket.topExpenses.map((e) => ({
+        _id: e._id, amount: e.amount, description: e.description,
+        categoryName: e.categoryName, categoryColor: e.categoryColor, categoryIcon: e.categoryIcon,
+    }));
+    const fetchedRows = fetched && fetched.bucket === bucket && fetched.granularity === granularity ? fetched.rows : null;
+    const rows = previewRows ?? fetchedRows;
+    const loading = bucket.hasMore && fetchedRows === null;
 
     // Keyboard-dismissible.
     useEffect(() => {
@@ -252,17 +271,9 @@ function TimelineBucketDetail({
     }, [onClose]);
 
     useEffect(() => {
-        // If the preview already holds the whole bucket, reuse it. Otherwise
-        // fetch the full list for the bucket window + a category map.
-        if (!bucket.hasMore) {
-            setRows(bucket.topExpenses.map((e) => ({
-                _id: e._id, amount: e.amount, description: e.description,
-                categoryName: e.categoryName, categoryColor: e.categoryColor, categoryIcon: e.categoryIcon,
-            })));
-            return;
-        }
+        // Preview incomplete: fetch the full list for the bucket window + a category map.
+        if (!bucket.hasMore) return;
         let cancelled = false;
-        setLoading(true);
         const { start, end } = bucketBounds(granularity, bucket.period);
         Promise.all([
             api.get("/expenses", { params: { startDate: start.toISOString(), endDate: end.toISOString(), limit: 100 } }),
@@ -282,10 +293,9 @@ function TimelineBucketDetail({
                     };
                 });
                 list.sort((a, b) => b.amount - a.amount);
-                setRows(list);
+                setFetched({ bucket, granularity, rows: list });
             })
-            .catch((err) => { if (!cancelled) { console.error("bucket detail fetch failed", err); setRows([]); } })
-            .finally(() => { if (!cancelled) setLoading(false); });
+            .catch((err) => { if (!cancelled) { console.error("bucket detail fetch failed", err); setFetched({ bucket, granularity, rows: [] }); } });
         return () => { cancelled = true; };
     }, [bucket, granularity]);
 

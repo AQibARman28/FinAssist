@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Save, Loader2, AlertCircle, ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { apiErrorBody, apiErrorMessage } from "@/lib/apiError";
 import { cn } from "@/lib/utils";
 import { CategoryPicker } from "@/components/CategoryPicker";
 
@@ -83,14 +84,10 @@ export function IncomeForm({ mode, incomeId, initial }: IncomeFormProps) {
                 await api.put(`/incomes/${incomeId}`, body);
             }
             router.push("/dashboard/income");
-        } catch (err: any) {
-            const errs = err.response?.data?.errors;
+        } catch (err: unknown) {
+            const errs = apiErrorBody(err)?.errors;
             if (errs) setFieldErrors(errs);
-            setError(
-                err.response?.data?.message
-                || (errs && Object.values(errs).join(", "))
-                || (mode === "create" ? "Failed to create income" : "Failed to save changes")
-            );
+            setError(apiErrorMessage(err, mode === "create" ? "Failed to create income" : "Failed to save changes"));
         } finally {
             setSubmitting(false);
         }

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Loader2, Plus, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { PRIORITY_OPTIONS } from "./goalPlanModel";
 
 export type GoalPeriod = "monthly" | "yearly";
 
@@ -19,6 +20,9 @@ export function GoalForm({ period, onSuccess }: GoalFormProps) {
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [formData, setFormData] = useState({ title: "", targetAmount: "", note: "" });
+    // Goal.priority: higher = funded sooner when the allocator has to choose
+    // between goals with the same deadline. 0 ("Normal") is the default.
+    const [priority, setPriority] = useState<number>(0);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -31,9 +35,11 @@ export function GoalForm({ period, onSuccess }: GoalFormProps) {
                 title: formData.title.trim(),
                 targetAmount: parseFloat(formData.targetAmount),
                 period,
+                priority,
                 note: formData.note || undefined,
             });
             setFormData({ title: "", targetAmount: "", note: "" });
+            setPriority(0);
             onSuccess();
         } catch (err) {
             const e = err as { response?: { data?: { message?: string } } };
@@ -101,6 +107,30 @@ export function GoalForm({ period, onSuccess }: GoalFormProps) {
                         {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Plus className="w-5 h-5" />}
                         <span>Create</span>
                     </button>
+                </div>
+
+                <div className="space-y-2">
+                    <span id="goal-priority-label" className="text-xs text-zinc-500">Priority</span>
+                    <div className="flex flex-wrap items-center gap-3">
+                        <div role="radiogroup" aria-labelledby="goal-priority-label" className="flex items-center gap-1 p-1 rounded-xl bg-black/40 border border-white/10 w-fit">
+                            {PRIORITY_OPTIONS.map((opt) => (
+                                <button
+                                    key={opt.value}
+                                    type="button"
+                                    role="radio"
+                                    aria-checked={priority === opt.value}
+                                    onClick={() => setPriority(opt.value)}
+                                    className={cn(
+                                        "px-3.5 py-2 rounded-lg text-sm font-medium transition-colors",
+                                        priority === opt.value ? "bg-yellow-500 text-black" : "text-zinc-400 hover:text-white",
+                                    )}
+                                >
+                                    {opt.label}
+                                </button>
+                            ))}
+                        </div>
+                        <span className="text-[11px] text-zinc-600">Higher-priority goals get your surplus first when deadlines tie.</span>
+                    </div>
                 </div>
 
                 <div className="space-y-2">

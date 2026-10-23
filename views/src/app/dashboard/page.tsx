@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { DashboardChartPanel } from "@/components/dashboard/DashboardChartPanel";
-import { RecentTransactions } from "@/components/dashboard/RecentTransactions";
+import { RecentTransactions, type Transaction } from "@/components/dashboard/RecentTransactions";
 import { MonthRolloverModal } from "@/components/dashboard/MonthRolloverModal";
 import { Wallet, CreditCard, TrendingUp, PiggyBank, Target, Bell, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -15,9 +15,16 @@ interface DashboardStats {
     totalSaved:         number;
     monthlyIncome:      number;
     monthlySpend:       number;
-    recentTransactions: any[];
+    recentTransactions: Transaction[];
     recentActivityCount: number;
     chartData:          { name: string; amount: number; color?: string }[];
+}
+
+// One row of GET /expenses/summary/:year/:month (only the fields used here).
+interface SummaryRow {
+    category:       string;
+    amount:         number;
+    categoryColor?: string;
 }
 
 function currencyFormatter(code = "USD"): Intl.NumberFormat {
@@ -46,7 +53,10 @@ export default function DashboardPage() {
         chartData:          [],
     });
 
-    const fetchDashboardData = useCallback(async () => {
+    // Loads on mount and again after the month-rollover modal finishes
+    // (refreshTrigger). State is only written once the requests settle.
+    useEffect(() => {
+        const fetchDashboardData = async () => {
             try {
                 const now = new Date();
                 const year  = now.getUTCFullYear();
@@ -73,7 +83,7 @@ export default function DashboardPage() {
                     ? (expenseSummaryRes.value.data?.data?.totalSpent ?? 0)
                     : 0;
                 const chartData = expenseSummaryRes.status === "fulfilled"
-                    ? (expenseSummaryRes.value.data?.data?.summary ?? []).map((it: any) => ({
+                    ? (expenseSummaryRes.value.data?.data?.summary ?? []).map((it: SummaryRow) => ({
                         name: it.category, amount: it.amount, color: it.categoryColor,
                     }))
                     : [];
@@ -111,9 +121,9 @@ export default function DashboardPage() {
             } finally {
                 setLoading(false);
             }
-    }, []);
-
-    useEffect(() => { fetchDashboardData(); }, [fetchDashboardData, refreshTrigger]);
+        };
+        fetchDashboardData();
+    }, [refreshTrigger]);
 
     if (loading) {
         return <div className="flex h-full items-center justify-center p-20"><Loader2 className="w-8 h-8 animate-spin text-purple-500" /></div>;

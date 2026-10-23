@@ -31,4 +31,8 @@ const expenseSchema = new mongoose.Schema({
     parentRecurringId: { type: mongoose.Schema.Types.ObjectId, ref: 'Expense', default: null },
 }, { timestamps: true });
 
+// G7: every list / summary / analytics / balance / budget query filters on
+// { user, date-range } and most sort by date desc.
+expenseSchema.index({ user: 1, date: -1 });
+
 module.exports = mongoose.model('Expense', expenseSchema);

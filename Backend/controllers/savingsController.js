@@ -2,7 +2,12 @@ const Goal = require('../models/Goal');
 const SavingsEntry = require('../models/SavingsEntry');
 const User = require('../models/User');
 const { getBalance } = require('../services/balance');
+const { withWalletLock, WalletBusyError } = require('../services/walletLock');
 const { logAudit } = require('../utils/audit');
+
+// G4: every wallet-capped write (check balance → insert) runs inside the
+// user's wallet lock so parallel requests can't both pass the check.
+const busy = (res, err) => res.status(409).json({ success: false, code: err.code, message: err.message });
 
 // Load goals + savings entries and compute the full balance picture.
 async function loadBalance(userId, now = new Date()) {
@@ -40,18 +45,21 @@ const getSavings = async (req, res) => {
 const depositSavings = async (req, res) => {
     try {
         const { amount, note } = req.body;
-        const { balance } = await loadBalance(req.user._id);
-        if (amount > balance.available) {
-            return res.status(400).json({
-                success: false,
-                message: `Only ${Math.max(0, Math.round(balance.available))} ${req.user.currency} is available in your wallet to set aside.`,
-            });
-        }
-        await SavingsEntry.create({ user: req.user._id, amount, direction: 'deposit', source: 'manual', note });
+        const refused = await withWalletLock(req.user._id, async () => {
+            const { balance } = await loadBalance(req.user._id);
+            if (amount > balance.available) {
+                return `Only ${Math.max(0, Math.round(balance.available))} ${req.user.currency} is available in your wallet to set aside.`;
+            }
+            await SavingsEntry.create({ user: req.user._id, amount, direction: 'deposit', source: 'manual', note });
+            return null;
+        });
+        if (refused) return res.status(400).json({ success: false, message: refused });
+
         logAudit(req, 'savings.deposit', req.user._id, { amount });
         const after = await loadBalance(req.user._id);
         res.status(201).json({ success: true, data: { balance: after.balance.savingsBalance, wallet: after.balance.available }, message: 'Moved to savings' });
     } catch (error) {
+        if (error instanceof WalletBusyError) return busy(res, error);
         console.error('Savings deposit error:', error);
         res.status(500).json({ success: false, message: 'Server error depositing to savings' });
     }
@@ -61,18 +69,21 @@ const depositSavings = async (req, res) => {
 const withdrawSavings = async (req, res) => {
     try {
         const { amount, note } = req.body;
-        const { balance } = await loadBalance(req.user._id);
-        if (amount > balance.savingsBalance) {
-            return res.status(400).json({
-                success: false,
-                message: `Only ${Math.max(0, Math.round(balance.savingsBalance))} ${req.user.currency} is in your savings to withdraw.`,
-            });
-        }
-        await SavingsEntry.create({ user: req.user._id, amount, direction: 'withdraw', source: 'manual', note });
+        const refused = await withWalletLock(req.user._id, async () => {
+            const { balance } = await loadBalance(req.user._id);
+            if (amount > balance.savingsBalance) {
+                return `Only ${Math.max(0, Math.round(balance.savingsBalance))} ${req.user.currency} is in your savings to withdraw.`;
+            }
+            await SavingsEntry.create({ user: req.user._id, amount, direction: 'withdraw', source: 'manual', note });
+            return null;
+        });
+        if (refused) return res.status(400).json({ success: false, message: refused });
+
         logAudit(req, 'savings.withdraw', req.user._id, { amount });
         const after = await loadBalance(req.user._id);
         res.status(201).json({ success: true, data: { balance: after.balance.savingsBalance, wallet: after.balance.available }, message: 'Returned to wallet' });
     } catch (error) {
+        if (error instanceof WalletBusyError) return busy(res, error);
         console.error('Savings withdraw error:', error);
         res.status(500).json({ success: false, message: 'Server error withdrawing from savings' });
     }
@@ -117,28 +128,59 @@ const rolloverStatus = async (req, res) => {
 };
 
 // POST /api/wallet/rollover { action: 'carry' | 'save' }
+//
+// G2: idempotent per month. The month is CLAIMED first with one atomic
+// conditional update (lastRolloverYearMonth != current → current); only the
+// request that wins the claim may write. Repeats and parallel duplicates get
+// 409 and record nothing. If the write fails, the claim is rolled back so
+// the user can retry.
 const rollover = async (req, res) => {
+    const userId = req.user._id;
+    const now = new Date();
+    const currentYM = ym(now);
+    let claimed = null;
     try {
         const { action } = req.body;
-        const now = new Date();
-        const { priorClosing, startOfThisMonth } = await priorMonthClosing(req.user._id, now);
 
-        // "Save" only makes sense for a positive surplus; a deficit always carries.
-        if (action === 'save' && priorClosing > 0) {
-            await SavingsEntry.create({
-                user: req.user._id,
-                amount: priorClosing,
-                direction: 'deposit',
-                source: 'rollover',
-                date: startOfThisMonth,
-                note: `Carried-forward balance moved to savings`,
+        claimed = await User.findOneAndUpdate(
+            { _id: userId, lastRolloverYearMonth: { $ne: currentYM } },
+            { $set: { lastRolloverYearMonth: currentYM } },
+            { new: false },
+        ).select('lastRolloverYearMonth').lean();
+        if (!claimed) {
+            return res.status(409).json({
+                success: false, code: 'ROLLOVER_ALREADY_HANDLED', message: "This month's rollover has already been handled.",
             });
         }
 
-        await User.updateOne({ _id: req.user._id }, { $set: { lastRolloverYearMonth: ym(now) } });
-        logAudit(req, 'wallet.rollover', req.user._id, { action, amount: Math.round(priorClosing) });
+        // "Save" only makes sense for a positive surplus; a deficit always carries.
+        // The deposit lowers the wallet, so it shares the wallet lock (G4).
+        const priorClosing = await withWalletLock(userId, async () => {
+            const { priorClosing: amount, startOfThisMonth } = await priorMonthClosing(userId, now);
+            if (action === 'save' && amount > 0) {
+                await SavingsEntry.create({
+                    user: userId,
+                    amount,
+                    direction: 'deposit',
+                    source: 'rollover',
+                    date: startOfThisMonth,
+                    note: `Carried-forward balance moved to savings`,
+                });
+            }
+            return amount;
+        });
+
+        logAudit(req, 'wallet.rollover', userId, { action, amount: Math.round(priorClosing) });
         res.json({ success: true, message: action === 'save' && priorClosing > 0 ? 'Moved to savings' : 'Carried forward' });
     } catch (error) {
+        if (claimed) {
+            // Release the claim (only if it is still ours) so a retry can apply.
+            await User.updateOne(
+                { _id: userId, lastRolloverYearMonth: currentYM },
+                { $set: { lastRolloverYearMonth: claimed.lastRolloverYearMonth ?? null } },
+            ).catch((e) => console.error('Rollover claim release failed:', e.message));
+        }
+        if (error instanceof WalletBusyError) return busy(res, error);
         console.error('Rollover error:', error);
         res.status(500).json({ success: false, message: 'Server error processing rollover' });
     }

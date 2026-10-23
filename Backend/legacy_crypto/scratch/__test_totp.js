@@ -1,47 +1,43 @@
 'use strict';
 
 /*
- * Round-trip test: scratch TOTP (SHA-256) vs the otplib library (SHA-256 mode).
+ * Round-trip test: scratch TOTP (SHA-256) vs the speakeasy library
+ * (SHA-256 mode) — the TOTP library FinAssist's production code uses
+ * (Backend/utils/nativeCrypto.js).
  *
  * 50 iterations. Each iteration:
- *   - random 20-byte secret
+ *   - random 20-byte secret, base32-encoded with the SCRATCH encoder and
+ *     handed to speakeasy as `encoding: 'base32'` (production's setting),
+ *     so the two base32 implementations are cross-checked as well
  *   - random timestamp in the next 10 years (covers a wide range of counters)
  *
  * Two directions are exercised:
  *
  *   A. scratch GENERATE → library VERIFY
- *      The library must accept our token and report valid=true at the
- *      same timestamp.
+ *      speakeasy.totp.verify must accept our token at the same timestamp.
  *
  *   B. library GENERATE → scratch VERIFY
- *      We must accept the library's token at the same timestamp.
+ *      We must accept speakeasy's token at the same timestamp.
  *
- * Note on the otplib v13 API
+ * Note on the speakeasy 2.x API
  * ─────────────────────────────────────────────────────────────────────────────
- *   - The library exports `generateSync` / `verifySync` as top-level functions
- *     (not `authenticator.generate` / `authenticator.check` like older docs
- *     describe).
- *   - The secret format is base32; we encode our random 20 bytes via the
- *     library's own ScureBase32Plugin so there's no encoder mismatch.
- *   - `period` (not `step`) is the option name.
- *   - `epoch` is in SECONDS — not milliseconds, despite what some docs say.
- *   - verifySync returns { valid: bool, ... }; we check `.valid`.
+ *   - `algorithm` defaults to 'sha1'; we pass 'sha256' explicitly.
+ *   - `time` is in SECONDS; `step` (not `period`) is the step size.
+ *   - speakeasy.totp.verify returns a boolean.
  *
- * If otplib isn't available the test falls back to scratch self-consistency
- * (generate at T, verify at T → must accept; verify at T+90 → must reject).
+ * If speakeasy isn't available the test falls back to scratch
+ * self-consistency (generate at T, verify at T → must accept; verify at
+ * T+90 → must reject).
  */
 
 const crypto = require('crypto');
-const { generateTOTP, verifyTOTP } = require('./totp');
+const { generateTOTP, verifyTOTP, base32Encode } = require('./totp');
 
-let otplib    = null;
-let b32Plugin = null;
-try {
-    otplib    = require('otplib');
-    b32Plugin = new otplib.ScureBase32Plugin();
-} catch { /* not installed */ }
+let speakeasy = null;
+try { speakeasy = require('speakeasy'); } catch { /* not installed */ }
 
 const N = 50;
+const LIB_OPTS = Object.freeze({ encoding: 'base32', algorithm: 'sha256', step: 30, digits: 6 });
 
 function randomFutureTimestamp() {
     const now = Math.floor(Date.now() / 1000);
@@ -60,7 +56,7 @@ function fail(iter, reason, details) {
 
 let pass = 0;
 
-if (!otplib) {
+if (!speakeasy) {
     // ── Fallback: scratch self-consistency only ─────────────────────────
     console.log('library not installed — using self-consistency only');
     for (let i = 0; i < N; i++) {
@@ -84,41 +80,29 @@ if (!otplib) {
     // ── Full library interop, both directions ───────────────────────────
     for (let i = 0; i < N; i++) {
         const secretBuf = crypto.randomBytes(20);
-        const secretB32 = b32Plugin.encode(secretBuf);
+        const secretB32 = base32Encode(secretBuf);
         const timestamp = randomFutureTimestamp();
 
-        // A. scratch generate → otplib verify
+        // A. scratch generate → speakeasy verify
         const scratchToken = generateTOTP(secretBuf, { timestamp });
-        const libVerify = otplib.verifySync({
-            token:     scratchToken,
-            secret:    secretB32,
-            algorithm: 'sha256',
-            period:    30,
-            digits:    6,
-            epoch:     timestamp
+        const libAccepts = speakeasy.totp.verify({
+            ...LIB_OPTS, secret: secretB32, token: scratchToken, time: timestamp, window: 0
         });
-        if (!libVerify.valid) {
-            fail(i, 'A: otplib rejected scratch-generated token', {
-                secretBuf, secretB32, timestamp, scratchToken, libResult: JSON.stringify(libVerify)
+        if (libAccepts !== true) {
+            fail(i, 'A: speakeasy rejected scratch-generated token', {
+                secretBuf, secretB32, timestamp, scratchToken
             });
         }
 
-        // B. otplib generate → scratch verify
-        const libToken = otplib.generateSync({
-            secret:    secretB32,
-            algorithm: 'sha256',
-            period:    30,
-            digits:    6,
-            epoch:     timestamp
-        });
+        // B. speakeasy generate → scratch verify
+        const libToken = speakeasy.totp({ ...LIB_OPTS, secret: secretB32, time: timestamp });
         const scratchAccepts = verifyTOTP(libToken, secretBuf, { timestamp, window: 0 });
         if (!scratchAccepts) {
-            // Also confirm the two libraries even agree on the same code at
-            // the same timestamp — useful diagnostic if things diverge.
-            const scratchToken2 = generateTOTP(secretBuf, { timestamp });
-            fail(i, 'B: scratch rejected otplib-generated token', {
+            // Also report what scratch generates for the same inputs —
+            // useful diagnostic if the implementations diverge.
+            fail(i, 'B: scratch rejected speakeasy-generated token', {
                 secretBuf, secretB32, timestamp,
-                libToken, scratchTokenForSameInputs: scratchToken2
+                libToken, scratchTokenForSameInputs: generateTOTP(secretBuf, { timestamp })
             });
         }
 
@@ -126,4 +110,4 @@ if (!otplib) {
     }
 }
 
-console.log(`${pass}/${N} PASS`);
+console.log(`${pass}/${N} PASS${speakeasy ? ' (vs speakeasy)' : ''}`);

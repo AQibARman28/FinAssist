@@ -22,6 +22,11 @@
  *
  * Hard cap: a new save of X is allowed iff X <= available (see goalController).
  *
+ * Deleted goals (G3) are archived, not removed: their contributions still
+ * count as outflows at their own dates (so past closings never change) and
+ * the goal's `releasedAmount` flows back in at `deletedAt`:
+ *   closing = carriedForward + income − expenses − saved + released − savingsOut
+ *
  * DB reads use the canonical finance helpers; the arithmetic is pure so it
  * unit-tests without a database (tests/balance.test.js).
  */
@@ -33,10 +38,11 @@ const EPOCH = new Date(0); // floor for "all time before X" cumulative windows
 // Pure: derive the figures the UI shows for a period. `savingsOut` is the net
 // amount moved into the standalone Savings account in the window (deposits −
 // withdrawals); it leaves the Wallet just like a goal contribution.
-function summarize({ carriedForward, income, expenses, saved, savingsOut = 0 }) {
+// `released` is money returned to the Wallet from deleted goals in the window.
+function summarize({ carriedForward, income, expenses, saved, savingsOut = 0, released = 0 }) {
     const cf = carriedForward || 0;
     const netIncome = income - expenses;
-    return { netIncome, closing: cf + income - expenses - saved - savingsOut };
+    return { netIncome, closing: cf + income - expenses - saved + released - savingsOut };
 }
 
 // Pure: the [from, now] window for a period.
@@ -48,17 +54,49 @@ function periodWindow(period, now = new Date()) {
     return { from, to: ref };
 }
 
+// A deleted goal's contributions count up to its deletion; anything dated
+// after deletedAt (e.g. a future-dated allocation) never left the wallet.
+function countedContributions(goal) {
+    const all = goal.contributions || [];
+    if (!goal.deletedAt) return all;
+    const cut = new Date(goal.deletedAt).getTime();
+    return all.filter((c) => new Date(c.date).getTime() <= cut);
+}
+
+// What deleting `goal` at `at` returns to the wallet: everything counted
+// as set aside up to that moment.
+function releasableAmount(goal, at) {
+    const cut = new Date(at).getTime();
+    return (goal.contributions || [])
+        .filter((c) => new Date(c.date).getTime() <= cut)
+        .reduce((s, c) => s + c.amount, 0);
+}
+
 // Pure: sum of EVERY goal contribution dated in [from, to] (no period split —
 // savings is one continuous flow). `to` omitted ⇒ open-ended (used for "before").
+// Includes deleted goals' contributions — that history is real.
 function savedInWindow(goals, from, to = null) {
     let total = 0;
     const fromMs = from ? from.getTime() : -Infinity;
     const toMs = to ? to.getTime() : Infinity;
     for (const g of goals || []) {
-        for (const c of g.contributions || []) {
+        for (const c of countedContributions(g)) {
             const t = new Date(c.date).getTime();
             if (t >= fromMs && t <= toMs) total += c.amount;
         }
+    }
+    return total;
+}
+
+// Pure: money returned to the wallet by goals deleted in [from, to].
+function releasedInWindow(goals, from, to = null) {
+    let total = 0;
+    const fromMs = from ? from.getTime() : -Infinity;
+    const toMs = to ? to.getTime() : Infinity;
+    for (const g of goals || []) {
+        if (!g.deletedAt) continue;
+        const t = new Date(g.deletedAt).getTime();
+        if (t >= fromMs && t <= toMs) total += g.releasedAmount || 0;
     }
     return total;
 }
@@ -77,7 +115,7 @@ function savingsNet(entries, from, to = null) {
     return total;
 }
 
-// Cumulative (income − expenses − goalSaved − savingsNet) strictly before `before`.
+// Cumulative (income − expenses − goalSaved + released − savingsNet) strictly before `before`.
 async function carriedForwardBefore(userId, before, goals, savingsEntries = []) {
     const end = new Date(before.getTime() - 1); // strictly before `before`
     const [income, expenses] = await Promise.all([
@@ -85,10 +123,11 @@ async function carriedForwardBefore(userId, before, goals, savingsEntries = []) 
         expenseTotalForPeriod(userId, EPOCH, end),
     ]);
     const saved = savedInWindow(goals, EPOCH, end);
-    return income - expenses - saved - savingsNet(savingsEntries, EPOCH, end);
+    const released = releasedInWindow(goals, EPOCH, end);
+    return income - expenses - saved + released - savingsNet(savingsEntries, EPOCH, end);
 }
 
-// One period's breakdown: opening + income − expenses − goalSaved − savingsOut.
+// One period's breakdown: opening + income − expenses − goalSaved + released − savingsOut.
 async function periodBreakdown(userId, period, goals, savingsEntries, now) {
     const { from, to } = periodWindow(period, now);
     const [income, expenses] = await Promise.all([
@@ -96,9 +135,13 @@ async function periodBreakdown(userId, period, goals, savingsEntries, now) {
         expenseTotalForPeriod(userId, from, to),
     ]);
     const saved = savedInWindow(goals, from, to);
+    const released = releasedInWindow(goals, from, to);
     const savingsOut = savingsNet(savingsEntries, from, to);
     const carriedForward = await carriedForwardBefore(userId, from, goals, savingsEntries);
-    return { period, from, to, carriedForward, income, expenses, saved, savingsOut, ...summarize({ carriedForward, income, expenses, saved, savingsOut }) };
+    return {
+        period, from, to, carriedForward, income, expenses, saved, released, savingsOut,
+        ...summarize({ carriedForward, income, expenses, saved, savingsOut, released }),
+    };
 }
 
 // Full picture for /analytics/balance. `available` (a.k.a. the Wallet) is the
@@ -116,9 +159,13 @@ async function getBalance(userId, goals, savingsEntries = [], now = new Date()) 
         expenseTotalForPeriod(userId, EPOCH, ref),
     ]);
     const saved = savedInWindow(goals, EPOCH, ref);
+    const released = releasedInWindow(goals, EPOCH, ref);
     const savingsBalance = savingsNet(savingsEntries, EPOCH, ref);
-    const available = income - expenses - saved - savingsBalance;
-    return { available, wallet: available, savingsBalance, cumulative: { income, expenses, saved }, monthly, yearly };
+    const available = income - expenses - saved + released - savingsBalance;
+    return { available, wallet: available, savingsBalance, cumulative: { income, expenses, saved, released }, monthly, yearly };
 }
 
-module.exports = { summarize, periodWindow, savedInWindow, savingsNet, carriedForwardBefore, periodBreakdown, getBalance };
+module.exports = {
+    summarize, periodWindow, savedInWindow, releasedInWindow, releasableAmount, savingsNet,
+    carriedForwardBefore, periodBreakdown, getBalance,
+};

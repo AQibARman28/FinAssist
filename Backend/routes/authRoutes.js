@@ -10,6 +10,7 @@ const {
     logout,
     getUserProfile,
     updateUserProfile,
+    confirmEmailChange,
 } = require('../controllers/userController');
 const { setup2FA, enable2FA, disable2FA, verify2FA } = require('../controllers/twoFactorController');
 const { protect } = require('../middleware/authMiddleware');
@@ -36,10 +37,11 @@ router.post('/2fa/verify', validate({ body: auth.twoFactorVerify }), verify2FA);
 // Protected routes
 router.get('/profile',  protect, getUserProfile);
 router.put('/profile',  protect, validate({ body: auth.updateProfile }), updateUserProfile);
+router.post('/profile/email/confirm', protect, validate({ body: auth.confirmEmailChange }), confirmEmailChange);
 
 // 2FA management (require full auth)
 router.post('/2fa/setup',   protect, setup2FA);
-router.post('/2fa/enable',  protect, validate({ body: auth.twoFactorVerify }), enable2FA);
+router.post('/2fa/enable',  protect, validate({ body: auth.twoFactorEnable }), enable2FA);
 router.post('/2fa/disable', protect, validate({ body: auth.twoFactorVerify }), disable2FA);
 
 module.exports = router;

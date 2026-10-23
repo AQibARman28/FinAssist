@@ -15,9 +15,11 @@
  * the underlying primitive (HMAC-SHA256 in our case) `iterations` times in a
  * tight chain — 100,000 iterations means each guess costs the attacker 100,000
  * HMAC calls instead of one. That drags brute-forcing from billions/sec down
- * to thousands/sec on the same hardware. The user sees the same single
- * verification at login time (still well under a second), but the attacker
- * sees a five-orders-of-magnitude tax on every guess.
+ * to thousands/sec on the same hardware. The user sees one verification at
+ * login time (about 0.5 s for this pure-JS version at 100,000 iterations,
+ * measured on an Intel i9-11900H with Node 24; a native implementation is
+ * much faster), but the attacker sees a five-orders-of-magnitude tax on
+ * every guess.
  *
  * The cost factor is configurable, which is the whole point: as hardware gets
  * faster, you bump `iterations` up to keep the verification time roughly
@@ -61,8 +63,8 @@
  *   hashPassword. The algorithm is still ours; we are only using the OS RNG.
  */
 
-const { hmacSha256 } = require('./hmacSha256');
-const crypto         = require('crypto');   // randomBytes only — see hashPassword
+const { createHmacSha256 } = require('./hmacSha256');
+const crypto               = require('crypto');   // randomBytes only — see hashPassword
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -83,6 +85,19 @@ const HASH_OUTPUT_BYTES = 32;
 const HASH_PASSWORD_ITERATIONS  = 100000;
 const HASH_PASSWORD_KEY_LENGTH  = 32;
 const HASH_PASSWORD_SALT_LENGTH = 16;
+
+/*
+ * Upper bounds. verifyPassword reads the iteration count and the derived-
+ * key length out of the stored string, so without a cap a corrupted or
+ * hostile record ("pbkdf2-sha256$999999999999$...") turns one login into
+ * hours of CPU. The caps are far above any sane setting:
+ *   - MAX_ITERATIONS = 10,000,000 (~16× OWASP 2023's 600,000 for
+ *     PBKDF2-HMAC-SHA256);
+ *   - MAX_KEY_LENGTH = 1024 bytes (32 output blocks; every extra 32-byte
+ *     block re-runs all the iterations, and password hashing needs 32).
+ */
+const MAX_ITERATIONS = 10000000;
+const MAX_KEY_LENGTH = 1024;
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -147,13 +162,17 @@ function constantTimeEqual(a, b) {
  * Note that the chain is sequential — U_j depends on U_{j-1} — so all
  * `iterations` HMACs must run in order. This is what makes PBKDF2 slow:
  * an attacker cannot parallelize within a single guess, only across guesses.
+ *
+ * `prf` is HMAC-SHA256 with the password's key state already prepared
+ * (createHmacSha256(password)), so the password is processed once per
+ * derivation instead of once per iteration.
  */
-function deriveBlock(password, salt, iterations, blockIndex) {
+function deriveBlock(prf, salt, iterations, blockIndex) {
     // Seed for U_1: salt with the 4-byte block counter appended.
     const seed = Buffer.concat([salt, int32BE(blockIndex)]);
 
     // U_1 = HMAC(password, seed)
-    let U = hmacSha256(password, seed);
+    let U = prf(seed);
 
     // Initialize the running XOR accumulator with U_1.
     // Buffer.from(U) makes an independent copy — mutating T must not touch U.
@@ -161,7 +180,7 @@ function deriveBlock(password, salt, iterations, blockIndex) {
 
     // Iterations 2..n: chain HMACs and XOR each into T.
     for (let j = 2; j <= iterations; j++) {
-        U = hmacSha256(password, U);
+        U = prf(U);
         for (let k = 0; k < HASH_OUTPUT_BYTES; k++) {
             T[k] ^= U[k];
         }
@@ -176,20 +195,24 @@ function deriveBlock(password, salt, iterations, blockIndex) {
  *
  * @param {string|Buffer} password
  * @param {string|Buffer} salt
- * @param {number}        iterations  — positive integer; how slow is "slow"
- * @param {number}        keyLength   — desired output length in bytes
+ * @param {number}        iterations  — integer in [1, MAX_ITERATIONS]
+ * @param {number}        keyLength   — output bytes, integer in [1, MAX_KEY_LENGTH]
  * @returns {Buffer} `keyLength` bytes of derived key
  */
 function pbkdf2(password, salt, iterations, keyLength) {
-    if (!Number.isInteger(iterations) || iterations < 1) {
-        throw new Error('pbkdf2: iterations must be a positive integer');
+    if (!Number.isInteger(iterations) || iterations < 1 || iterations > MAX_ITERATIONS) {
+        throw new RangeError(`pbkdf2: iterations must be an integer from 1 to ${MAX_ITERATIONS}`);
     }
-    if (!Number.isInteger(keyLength) || keyLength < 1) {
-        throw new Error('pbkdf2: keyLength must be a positive integer');
+    if (!Number.isInteger(keyLength) || keyLength < 1 || keyLength > MAX_KEY_LENGTH) {
+        throw new RangeError(`pbkdf2: keyLength must be an integer from 1 to ${MAX_KEY_LENGTH}`);
     }
 
     const passwordBuf = toBuffer(password, 'password');
     const saltBuf     = toBuffer(salt,     'salt');
+
+    // Prepare the HMAC key state (K' XOR ipad, K' XOR opad) ONCE. Long
+    // passwords are hashed here a single time, not on every iteration.
+    const prf = createHmacSha256(passwordBuf);
 
     // Number of 32-byte chunks needed; we'll truncate the last one if the
     // requested keyLength is not a multiple of HASH_OUTPUT_BYTES.
@@ -199,7 +222,7 @@ function pbkdf2(password, salt, iterations, keyLength) {
     // T_1, T_2, ..., T_l — each block independent of the others (they
     // differ only in the INT32_BE(i) appended to the salt for U_1).
     for (let i = 1; i <= numBlocks; i++) {
-        const T = deriveBlock(passwordBuf, saltBuf, iterations, i);
+        const T = deriveBlock(prf, saltBuf, iterations, i);
         T.copy(output, (i - 1) * HASH_OUTPUT_BYTES);
     }
 
@@ -266,32 +289,36 @@ function verifyPassword(password, stored) {
 
     const iterations = Number.parseInt(parts[1], 10);
     if (iterations < 1)                 return false;
+    if (iterations > MAX_ITERATIONS)    return false;   // also catches 1e21-style overflow
 
     const salt     = Buffer.from(parts[2], 'hex');
     const expected = Buffer.from(parts[3], 'hex');
     if (salt.length === 0)              return false;
     if (expected.length === 0)          return false;
+    if (expected.length > MAX_KEY_LENGTH) return false;
 
     const actual = pbkdf2(password, salt, iterations, expected.length);
     return constantTimeEqual(actual, expected);
 }
 
 
-module.exports = { pbkdf2, hashPassword, verifyPassword };
+module.exports = { pbkdf2, hashPassword, verifyPassword, MAX_ITERATIONS, MAX_KEY_LENGTH };
 
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Self-test — runs only when this file is executed directly:
 //   node pbkdf2.js
-// Two RFC vectors plus a hashPassword/verifyPassword round-trip. Test #2
-// runs 80,000 iterations and is intentionally slow (a few tens of seconds);
-// each test prints a "running..." line first so the terminal does not look
-// frozen.
+// The two RFC 7914 §11 PBKDF2-HMAC-SHA-256 vectors, a hashPassword /
+// verifyPassword round-trip, a long-password cost check and the bounds
+// check. Test #2 runs 80,000 iterations × 2 blocks (about 0.9 s measured on
+// the dev machine, Node 24); each test prints a "running..." line first so
+// the terminal does not look frozen.
 // ─────────────────────────────────────────────────────────────────────────────
 if (require.main === module) {
     let allPass = true;
 
-    // ── Test 1 — RFC 6070-style small-iteration vector ──────────────────
+    // ── Test 1 — RFC 7914 §11 vector (c=1) ──────────────────────────────
+    // (RFC 6070's vectors are for PBKDF2-HMAC-SHA1; these are SHA-256.)
     {
         const password   = 'passwd';
         const salt       = 'salt';
@@ -312,7 +339,7 @@ if (require.main === module) {
         }
     }
 
-    // ── Test 2 — RFC 7914 vector (80,000 iterations, slow) ──────────────
+    // ── Test 2 — RFC 7914 §11 vector (80,000 iterations, slow) ──────────
     {
         const password   = 'Password';
         const salt       = 'NaCl';
@@ -352,6 +379,60 @@ if (require.main === module) {
             console.log(`        accepts correct:  ${acceptCorrect}`);
             console.log(`        rejects wrong:    ${rejectWrong}`);
         }
+    }
+
+    // ── Test 4 — long passwords cost (almost) the same as short ones ────
+    {
+        // HMAC hashes any key longer than 64 bytes down to sha256(key). If
+        // that key preparation is redone for every one of the `iterations`
+        // HMAC calls, a 64 KiB password costs ~250× a short one. With the
+        // key state prepared once per derivation, the extra cost is a
+        // single 64 KiB hash.
+        //
+        // Correctness check without an external reference: for |P| > 64,
+        // HMAC(P, ·) == HMAC(sha256(P), ·), hence
+        // PBKDF2(P) == PBKDF2(sha256(P)) — a known PBKDF2-HMAC property.
+        process.stdout.write('  running Test 4 (64 KiB password vs 8-byte password, 2,000 iterations)... ');
+        const { sha256 } = require('./sha256');
+        const longPw  = Buffer.alloc(64 * 1024, 0x61);
+        const shortPw = 'hunter22';
+        const time = (fn) => { const t0 = process.hrtime.bigint(); const out = fn(); return [out, Number(process.hrtime.bigint() - t0) / 1e6]; };
+        const [, shortMs]   = time(() => pbkdf2(shortPw, 'NaCl', 2000, 32));
+        const [dkLong, longMs] = time(() => pbkdf2(longPw, 'NaCl', 2000, 32));
+        const dkHashed = pbkdf2(sha256(longPw), 'NaCl', 2000, 32);
+        const sameAsHashed = Buffer.compare(dkLong, dkHashed) === 0;
+        // Generous bound: the fixed cost is one 64 KiB hash (~1–2 ms here).
+        const fastEnough = longMs < 3 * shortMs + 25;
+        const pass = sameAsHashed && fastEnough;
+        if (!pass) allPass = false;
+        console.log(`${pass ? 'PASS' : 'FAIL'} (short ${shortMs.toFixed(0)} ms, long ${longMs.toFixed(0)} ms)`);
+        if (!pass) console.log(`        sameAsHashed=${sameAsHashed} fastEnough=${fastEnough}`);
+    }
+
+    // ── Test 5 — iteration count and output length are bounded ──────────
+    {
+        process.stdout.write('  running Test 5 (iteration / output-length bounds)... ');
+        const throws = (fn) => { try { fn(); return false; } catch { return true; } };
+        const salt16 = '00112233445566778899aabbccddeeff';
+        const dk32   = '00'.repeat(32);
+        const checks = {
+            // output length: MAX_KEY_LENGTH accepted (1 iteration keeps it fast), +1 rejected
+            maxKeyLenOk:      !throws(() => pbkdf2('pw', 'salt', 1, MAX_KEY_LENGTH)),
+            keyLenTooBig:     throws(() => pbkdf2('pw', 'salt', 1, MAX_KEY_LENGTH + 1)),
+            // stored hash with an oversized derived key → false, no derivation
+            verifyHugeDk:     verifyPassword('pw', `pbkdf2-sha256$1$${salt16}$${'00'.repeat(MAX_KEY_LENGTH + 1)}`) === false,
+            // iterations: MAX_ITERATIONS + 1 rejected before any work is done
+            itersTooBig:      throws(() => pbkdf2('pw', 'salt', MAX_ITERATIONS + 1, 32)),
+            itersUnsafeInt:   throws(() => pbkdf2('pw', 'salt', 2 ** 53, 32)),
+            // stored hash with an absurd iteration count → false immediately
+            verifyHugeIters:  verifyPassword('pw', `pbkdf2-sha256$${MAX_ITERATIONS + 1}$${salt16}$${dk32}`) === false,
+            verifyHugeIters2: verifyPassword('pw', `pbkdf2-sha256$999999999999999999999$${salt16}$${dk32}`) === false
+        };
+        const failed = Object.entries(checks).filter(([, ok]) => !ok).map(([k]) => k);
+        const pass = failed.length === 0;
+        if (!pass) allPass = false;
+        console.log(pass ? `PASS (MAX_ITERATIONS=${MAX_ITERATIONS}, MAX_KEY_LENGTH=${MAX_KEY_LENGTH})` : 'FAIL');
+        if (!pass) console.log(`        failed: ${failed.join(', ')}`);
     }
 
     process.exit(allPass ? 0 : 1);

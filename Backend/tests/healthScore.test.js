@@ -17,8 +17,13 @@ const {
 const DAY = 86_400_000;
 
 describe('savingsRateFactor (w30)', () => {
-    test('no income → null (excluded, never punished)', () => {
-        expect(savingsRateFactor(0, 100).score).toBeNull();
+    test('no income AND no spending → null (nothing to measure, excluded)', () => {
+        expect(savingsRateFactor(0, 0).score).toBeNull();
+    });
+    test('spending with zero income → 0 (a deficit, not missing data)', () => {
+        const f = savingsRateFactor(0, 100);
+        expect(f.score).toBe(0);
+        expect(f.detail).toMatch(/no income/i);
     });
     test('boundary mappings', () => {
         expect(savingsRateFactor(1000, 800).score).toBe(100); // rate 0.20
@@ -81,8 +86,11 @@ describe('spendingStabilityFactor (w15)', () => {
 });
 
 describe('expenseIncomeRatioFactor (w10)', () => {
-    test('no income → null', () => {
-        expect(expenseIncomeRatioFactor(0, 100).score).toBeNull();
+    test('no income AND no spending → null', () => {
+        expect(expenseIncomeRatioFactor(0, 0).score).toBeNull();
+    });
+    test('spending with zero income → 0 (ratio is effectively infinite)', () => {
+        expect(expenseIncomeRatioFactor(0, 100).score).toBe(0);
     });
     test('boundary mappings', () => {
         expect(expenseIncomeRatioFactor(1000, 500).score).toBe(100); // r 0.5
@@ -138,12 +146,24 @@ describe('computeHealthScore — composite & renormalization', () => {
         expect(r.score).toBe(62);
     });
 
-    test('no income but expenses → income-based factors excluded, not a stuck 20', () => {
-        // only stability is measurable here
+    test('G6: no income but steady spending → deficit drags the score down (NOT 100/Excellent)', () => {
         const r = computeHealthScore({ income: 0, expense: 300, budgets: [], goals: [], weeklySpends: [100, 100, 100] });
         expect(r.status).toBe('ok');
-        expect(r.score).toBe(100); // stability only
+        // savings 0 (w30) + stability 100 (w15) + ratio 0 (w10); budget/goal null
+        // (0*30 + 100*15 + 0*10) / (30+15+10) = 1500/55 = 27.3 → 27
+        expect(r.score).toBe(27);
+        expect(r.band).toBe('Needs attention');
+        expect(r.factors.find((f) => f.label === 'Savings rate').score).toBe(0);
+        expect(r.factors.find((f) => f.label === 'Expense-to-income').score).toBe(0);
+        expect(r.detractor.label).toBe('Savings rate');
+    });
+
+    test('no income and no spending in the window → income factors stay excluded', () => {
+        const r = computeHealthScore({ income: 0, expense: 0, budgets: [{ limit: 100, spent: 0 }], goals: [], weeklySpends: [] });
+        expect(r.status).toBe('ok');
+        expect(r.score).toBe(100); // budget adherence only
         expect(r.factors.find((f) => f.label === 'Savings rate').score).toBeNull();
+        expect(r.factors.find((f) => f.label === 'Expense-to-income').score).toBeNull();
     });
 
     test('blended realistic scenario → band + contributor/detractor', () => {

@@ -17,14 +17,17 @@
  *   secure:          true in production, false in dev (allows http://localhost)
  *   path:            '/'
  *
- * Rotation policy (refresh):
- *   On every successful /auth/refresh:
- *     1. Look up RefreshToken by sha256(cookie value).
- *     2. Reject if not found, or revokedAt set, or expiresAt past.
- *     3. Mark old row revokedAt = now.
- *     4. Mint a new plaintext token + insert a new RefreshToken row.
- *     5. Replace the fa_refresh cookie with the new plaintext.
- *     6. Mint a new fa_access cookie.
+ * Rotation policy (refresh), per OAuth 2.0 Security BCP §4.14:
+ *   1. Atomically claim the live row for sha256(cookie value): one
+ *      findOneAndUpdate sets revokedAt, so two parallel refreshes can't both
+ *      win the same row.
+ *   2. Mint a new token in the same family, carrying "remember me".
+ *   3. If the row was already rotated:
+ *        - within ROTATION_GRACE_MS, a parallel tab raced us: issue it a
+ *          sibling token in the same family;
+ *        - after that, the token is being replayed (likely stolen): revoke the
+ *          whole family and report reuse.
+ *      Tokens revoked by logout or password change are never revived.
  */
 
 const crypto = require('node:crypto');
@@ -35,12 +38,20 @@ const ACCESS_TTL          = process.env.ACCESS_TOKEN_TTL || '15m';
 const REFRESH_TTL_DAYS         = 7;    // default session
 const REFRESH_TTL_DAYS_REMEMBER = 30;  // "remember me" session
 const TEMP_2FA_TTL        = '5m';
+const ROTATION_GRACE_MS   = 10 * 1000; // parallel tabs refreshing at once
 
 const COOKIE_ACCESS  = 'fa_access';
 const COOKIE_REFRESH = 'fa_refresh';
 const COOKIE_TEMP    = 'fa_temp';
 
 function _isProd() { return process.env.NODE_ENV === 'production'; }
+
+// Secrets a session JWT may be signed with: the current one, plus the previous
+// one while a JWT_SECRET rotation is rolling out. New tokens always use the
+// current secret.
+function jwtSecrets() {
+    return [process.env.JWT_SECRET, process.env.JWT_SECRET_PREVIOUS].filter(Boolean);
+}
 
 function _cookieOpts(maxAgeMs) {
     return {
@@ -66,47 +77,69 @@ function mintTempToken(userId) {
     return native.signJwt({ id: userId.toString(), type: 'temp_2fa' }, process.env.JWT_SECRET, TEMP_2FA_TTL);
 }
 
-async function mintRefreshToken(userId, rememberMe = false) {
+async function mintRefreshToken(userId, rememberMe = false, familyId = crypto.randomUUID()) {
     const plaintext = crypto.randomBytes(32).toString('base64url');
     const tokenHash = _hashRefreshToken(plaintext);
     const days = rememberMe ? REFRESH_TTL_DAYS_REMEMBER : REFRESH_TTL_DAYS;
     const expiresAt = new Date(Date.now() + days * 24 * 3600 * 1000);
-    await RefreshToken.create({ userId, tokenHash, expiresAt });
+    await RefreshToken.create({ userId, tokenHash, familyId, rememberMe: !!rememberMe, expiresAt });
     return { plaintext, expiresAt };
 }
 
 // ── Rotate / revoke ─────────────────────────────────────────────────────────
 
-// Returns null if the provided refresh-cookie value does not correspond to a
-// live (not-revoked, not-expired) refresh token. Otherwise: revokes the old
-// row, mints a fresh access+refresh pair, returns the userId and new tokens.
+async function _issueRotated(row) {
+    // Rows from before families existed join a fresh family on first rotation.
+    const fresh = await mintRefreshToken(row.userId, row.rememberMe, row.familyId || crypto.randomUUID());
+    return {
+        userId: row.userId,
+        accessToken: mintAccessToken(row.userId),
+        refreshToken: fresh.plaintext,
+        refreshExpiresAt: fresh.expiresAt,
+    };
+}
+
+// Returns:
+//   { userId, accessToken, refreshToken, refreshExpiresAt }  on success
+//   { reuseDetected: true, userId }                          on replay
+//   null                                                     otherwise
 async function rotateRefreshToken(plaintextRefresh) {
     if (typeof plaintextRefresh !== 'string' || plaintextRefresh.length === 0) return null;
 
     const tokenHash = _hashRefreshToken(plaintextRefresh);
+    const now = new Date();
+
+    const claimed = await RefreshToken.findOneAndUpdate(
+        { tokenHash, revokedAt: null, expiresAt: { $gt: now } },
+        { $set: { revokedAt: now, revokedReason: 'rotated' } },
+    );
+    if (claimed) return _issueRotated(claimed);
+
+    // Only a token retired by rotation can be a parallel-tab race or a replay;
+    // one revoked by logout or a password change simply stays dead.
     const row = await RefreshToken.findOne({ tokenHash });
-    if (!row) return null;
-    if (row.revokedAt) return null;
-    if (row.expiresAt.getTime() <= Date.now()) return null;
+    if (!row || !row.revokedAt || row.revokedReason !== 'rotated') return null;
+    if (row.expiresAt.getTime() <= now.getTime()) return null;
 
-    row.revokedAt = new Date();
-    await row.save();
+    if (now.getTime() - row.revokedAt.getTime() <= ROTATION_GRACE_MS) return _issueRotated(row);
 
-    const fresh = await mintRefreshToken(row.userId);
-    const accessToken = mintAccessToken(row.userId);
-    return { userId: row.userId, accessToken, refreshToken: fresh.plaintext, refreshExpiresAt: fresh.expiresAt };
+    // Replay of a rotated token: whoever holds the newer token may be an
+    // attacker or the user — we can't tell, so the whole family signs out.
+    const filter = row.familyId ? { familyId: row.familyId } : { userId: row.userId };
+    await RefreshToken.updateMany({ ...filter, revokedAt: null }, { $set: { revokedAt: now, revokedReason: 'reuse' } });
+    return { reuseDetected: true, userId: row.userId };
 }
 
 async function revokeRefreshToken(plaintextRefresh) {
     if (typeof plaintextRefresh !== 'string' || plaintextRefresh.length === 0) return;
     const tokenHash = _hashRefreshToken(plaintextRefresh);
-    await RefreshToken.updateOne({ tokenHash, revokedAt: null }, { $set: { revokedAt: new Date() } });
+    await RefreshToken.updateOne({ tokenHash, revokedAt: null }, { $set: { revokedAt: new Date(), revokedReason: 'logout' } });
 }
 
-// Revoke every live refresh token for a user — used after a password reset so
-// any other/old sessions (including an attacker's) are forced to re-auth.
+// Revoke every live refresh token for a user — used after a password change
+// or reset so any other/old sessions (including an attacker's) re-authenticate.
 async function revokeAllForUser(userId) {
-    await RefreshToken.updateMany({ userId, revokedAt: null }, { $set: { revokedAt: new Date() } });
+    await RefreshToken.updateMany({ userId, revokedAt: null }, { $set: { revokedAt: new Date(), revokedReason: 'revoke_all' } });
 }
 
 // ── Cookie set / clear ──────────────────────────────────────────────────────
@@ -149,6 +182,7 @@ async function establishSession(res, userId, { rememberMe = false } = {}) {
 
 module.exports = {
     COOKIE_ACCESS, COOKIE_REFRESH, COOKIE_TEMP,
+    jwtSecrets,
     mintAccessToken, mintTempToken, mintRefreshToken,
     rotateRefreshToken, revokeRefreshToken, revokeAllForUser,
     setAccessCookie, setRefreshCookie, setTempCookie,

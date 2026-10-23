@@ -18,7 +18,14 @@
  *
  *   B. Node SIGN → scratch VERIFY
  *      crypto.createSign('SHA256').sign(privateKey) returns a DER-encoded
- *      ECDSA signature. Our verifyECDSADER must accept it.
+ *      ECDSA signature. OpenSSL does NOT normalize S, so about half of
+ *      these are "high-S" (s > n/2). The scratch verifier enforces the
+ *      low-S rule by default, so for each Node signature we check:
+ *        - low-S:  verifyECDSADER accepts it as-is;
+ *        - high-S: verifyECDSADER REJECTS it by default, accepts it with
+ *                  { allowHighS: true }, and accepts the canonical twin
+ *                  (r, n − s) re-encoded as DER.
+ *      Direction A additionally asserts every scratch signature is low-S.
  *
  * Each iteration uses a fresh random message (length 1–100 bytes). On any
  * failure we print all inputs in hex and exit 1.
@@ -29,11 +36,17 @@
 
 const crypto = require('crypto');
 const {
+    CURVE,
     bigIntFromBuffer,
     generateECCKeyPair,
     signECDSADER,
-    verifyECDSADER
+    verifyECDSADER,
+    signatureFromDER,
+    signatureToDER
 } = require('./ecdsaP256');
+
+const HALF_N = CURVE.n >> 1n;
+let highSSeen = 0;
 
 const N = 20;
 
@@ -110,17 +123,33 @@ for (let i = 0; i < N; i++) {
                 msgLen, message, scratchSig
             });
         }
+        if (signatureFromDER(scratchSig).s > HALF_N) {
+            fail(i, 'A: scratch emitted a high-S signature', { msgLen, message, scratchSig });
+        }
 
         // ── Direction B: Node sign → scratch verify ─────────────────────
         const nodeSigDer = crypto.createSign('SHA256')
             .update(message)
             .sign(nodePrivateKey);
 
-        const scratchOk = verifyECDSADER(message, nodeSigDer, scratchPub);
-        if (!scratchOk) {
-            fail(i, 'B: scratch rejected Node-signed DER signature', {
-                msgLen, message, nodeSigDer
-            });
+        const nodeSig = signatureFromDER(nodeSigDer);   // strict DER parse
+        if (nodeSig.s <= HALF_N) {
+            if (!verifyECDSADER(message, nodeSigDer, scratchPub)) {
+                fail(i, 'B: scratch rejected low-S Node-signed DER signature', {
+                    msgLen, message, nodeSigDer
+                });
+            }
+        } else {
+            highSSeen++;
+            const twinDer = signatureToDER({ r: nodeSig.r, s: CURVE.n - nodeSig.s });
+            const rejectedByDefault = !verifyECDSADER(message, nodeSigDer, scratchPub);
+            const acceptedOptIn     = verifyECDSADER(message, nodeSigDer, scratchPub, { allowHighS: true });
+            const twinAccepted      = verifyECDSADER(message, twinDer, scratchPub);
+            if (!rejectedByDefault || !acceptedOptIn || !twinAccepted) {
+                fail(i, 'B: high-S Node signature handled incorrectly', {
+                    msgLen, message, nodeSigDer, rejectedByDefault, acceptedOptIn, twinAccepted
+                });
+            }
         }
     } else {
         // ── Fallback: scratch self-consistency ──────────────────────────
@@ -134,5 +163,7 @@ for (let i = 0; i < N; i++) {
     pass++;
 }
 
-const suffix = interopMode ? '' : ' (self-consistency only — JWK interop unavailable)';
+const suffix = interopMode
+    ? ` (${highSSeen} of the Node signatures were high-S)`
+    : ' (self-consistency only — JWK interop unavailable)';
 console.log(`${pass}/${N} PASS${suffix}`);

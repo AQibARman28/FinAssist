@@ -50,7 +50,7 @@ from sha256 import sha256_hex                                   # noqa: E402
 from hmac_sha256 import hmac_sha256_hex                         # noqa: E402
 from aes256gcm import aes256_gcm_encrypt, aes256_gcm_decrypt    # noqa: E402
 from pbkdf2 import hash_password, verify_password, pbkdf2 as pbkdf2_derive_raw  # noqa: E402
-from jwt_hs256 import jwt_sign, jwt_verify                      # noqa: E402
+from jwt_hs256 import jwt_sign, jwt_verify, JWTError            # noqa: E402
 from totp import (                                              # noqa: E402
     generate_secret as totp_generate_secret_bytes,
     base32_encode, base32_decode,
@@ -194,13 +194,18 @@ def op_jwt_sign(args):
 
 
 def op_jwt_verify(args):
+    """Verify an HS256 JWT. `exp` is required unless the request passes
+    "allow_missing_exp": true (see jwt_hs256.jwt_verify)."""
     token = args['token']
     secret = args['secret']
     if not isinstance(token, str):
         raise TypeError("jwt_verify: token must be a string")
     if not isinstance(secret, str):
         raise TypeError("jwt_verify: secret must be a string")
-    payload = jwt_verify(token, secret)
+    allow_missing_exp = args.get('allow_missing_exp', False)
+    if not isinstance(allow_missing_exp, bool):
+        raise TypeError("jwt_verify: allow_missing_exp must be a boolean")
+    payload = jwt_verify(token, secret, {"allowMissingExp": allow_missing_exp})
     return {"payload": payload}
 
 
@@ -458,10 +463,18 @@ def _selftest():
             "payload": {"sub": "u1", "role": "admin"},
             "secret": "shared-secret",
         })['token']
-        decoded = dispatch('jwt_verify', {"token": token, "secret": "shared-secret"})
+        # No expires_in -> no exp claim: rejected by default...
+        try:
+            dispatch('jwt_verify', {"token": token, "secret": "shared-secret"})
+            raise AssertionError("token without exp was accepted by default")
+        except JWTError:
+            pass
+        # ...accepted only with the explicit opt-in.
+        decoded = dispatch('jwt_verify', {"token": token, "secret": "shared-secret",
+                                          "allow_missing_exp": True})
         assert decoded['payload']['sub'] == 'u1'
         assert decoded['payload']['role'] == 'admin'
-    check("jwt_sign + jwt_verify round-trip", t_jwt)
+    check("jwt_sign + jwt_verify round-trip (no exp: rejected unless allow_missing_exp)", t_jwt)
 
     def t_jwt_expires():
         token = dispatch('jwt_sign', {

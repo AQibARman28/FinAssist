@@ -1,5 +1,7 @@
 node_modules/
 .env
+.env.*
+!.env.example
 *.log
 
 # Python bytecode (only appears under legacy_crypto/scratch_python/ — the

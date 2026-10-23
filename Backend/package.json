@@ -5,13 +5,19 @@
     "main": "index.js",
     "scripts": {
         "start": "node index.js",
-        "dev": "nodemon index.js",
+        "dev": "node --watch index.js",
         "test": "jest",
-        "seed": "node scripts/seed.js",
-        "security:audit": "npm audit --audit-level=high",
+        "security:audit": "npm audit --omit=dev --audit-level=high",
+        "check:legacy-crypto": "node legacy_crypto/check-no-imports.js",
+        "migrate:wrap-legacy-passwords": "node scripts/wrap-legacy-password-hashes.js",
+        "migrate:field-encryption": "node scripts/upgrade-field-encryption.js",
+        "migrate:reattest": "node scripts/reattest-records.js",
+        "migrate:audit-retention": "node scripts/migrate-audit-retention.js",
+        "rotate:master-key": "node scripts/rotate-master-key.js",
         "migrate:email-hash": "node scripts/migrate-email-hash.js",
         "migrate:existing-users": "node scripts/migrate-existing-users.js",
-        "migrate:expense-categories": "node scripts/migrate-expense-categories.js"
+        "migrate:expense-categories": "node scripts/migrate-expense-categories.js",
+        "migrate:budget-categories": "node scripts/migrate-budget-categories.js"
     },
     "keywords": [
         "fintech",
@@ -35,19 +41,17 @@
         "jsonwebtoken": "^9.0.3",
         "mongoose": "^7.5.0",
         "morgan": "^1.10.0",
-        "nodemailer": "^8.0.7",
+        "nodemailer": "^10.1.7",
         "qrcode": "^1.5.4",
         "speakeasy": "^2.0.0",
-        "validator": "^13.11.0",
         "zod": "^4.4.3"
     },
     "devDependencies": {
-        "jest": "^29.6.4",
+        "jest": "^30.5.2",
         "mongodb-memory-server": "^11.1.0",
-        "nodemon": "^3.0.1",
-        "supertest": "^6.3.3"
+        "supertest": "^7.3.1"
     },
     "engines": {
-        "node": ">=16.0.0"
+        "node": ">=22.0.0"
     }
 }

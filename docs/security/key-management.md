@@ -1,128 +1,88 @@
 # Key management
 
-**Status:** current — env-var-only.
-**Phase that wrote this:** SEC-1 Phase 5.
-**Not blocking rollout.** KMS migration is a documented follow-up.
-
-This doc covers every long-lived secret the request path needs, where it
-lives today, and what we want it to look like once we move off
-`process.env` to a managed key service.
+**Status:** current — env-var secrets with key ids and zero-downtime rotation.
+**Last revised:** 2026-10-20 (data-at-rest hardening; see `HARDENING-2026-10.md`).
+**Follow-up:** a managed key service (KMS / Vault) — see the end of this doc.
 
 ## Inventory
 
-| Secret | Purpose | Bytes | Where it is now |
+| Secret | Purpose | Format | Rotation |
 |---|---|---|---|
-| `JWT_SECRET` | HS256 signs access tokens (15-min TTL) | ≥32 | `Backend/.env` |
-| `MASTER_ENCRYPTION_KEY` | AES-256-GCM wraps every user's per-user dataKey | 32 | `Backend/.env` |
-| `EMAIL_HASH_SECRET` | HMAC-SHA256 keys the `User.emailHash` lookup | ≥32 | `Backend/.env` |
-| `SMTP_PASS` | SMTP auth for the verification mailer | — | `Backend/.env` (optional) |
-| `MONGO_URI` | DB connection (contains the cluster password) | — | `Backend/.env` |
+| `MASTER_ENCRYPTION_KEY` | AES-256-GCM wraps every user's data key | exactly 64 hex | `_PREVIOUS` + `rotate:master-key` |
+| `MASTER_ENCRYPTION_KEY_PREVIOUS` | still unwraps keys during a rotation | exactly 64 hex | removed after the job |
+| `JWT_SECRET` | HS256 signs access and 2FA-gate tokens | ≥ 32 bytes | `_PREVIOUS` for one access TTL |
+| `JWT_SECRET_PREVIOUS` | still verifies tokens during a rotation | ≥ 32 bytes | removed after 15 min |
+| `EMAIL_HASH_SECRET` | keyed HMAC-SHA256 blind index on email | exactly 64 hex | `migrate:email-hash` |
+| `PROXY_SHARED_SECRET` | proves an API call came through the Next proxy | any long random | change on both hosts together |
+| `RESEND_API_KEY` / `SMTP_PASS` | outbound email | provider format | at the provider |
+| `MONGO_URI` | database connection (contains the DB password) | URI | at Atlas |
 
-Refresh tokens are NOT signed — they are 32 random bytes per session, the
-plaintext lives only in the `fa_refresh` cookie, and the DB stores
-sha256(plaintext) in `RefreshToken.tokenHash`. There is no
-`REFRESH_TOKEN_SECRET`.
+`utils/config.js` checks every one of these at boot and the API refuses to start on a
+missing or malformed value — the format rules match what the crypto layer actually
+needs, so a key that passes the check can't fail on the first request.
 
-Per-user RSA-2048 and ECC P-256 private keys are AES-encrypted by the
-user's dataKey and stored inside the User document. They derive their
-secrecy from `MASTER_ENCRYPTION_KEY` — there is no separate per-user
-KEK in env.
+Refresh tokens are not signed: they are 32 random bytes per session, the plaintext
+lives only in the `fa_refresh` cookie and the database stores its SHA-256.
 
-## What env-only buys us
+## Ciphertext formats
 
-- Simple. No external dependency.
-- Reproducible local dev (each developer has their own `.env`).
-- Boot-time validation (added in Phase 5): the server refuses to start
-  if `JWT_SECRET`, `MASTER_ENCRYPTION_KEY`, or `EMAIL_HASH_SECRET` is
-  missing or shorter than 32 bytes (`Backend/index.js`).
+| Prefix | What | Key | AAD |
+|---|---|---|---|
+| `mk2:<kid>:` | a user's data key, wrapped | master key with id `<kid>` (first 8 hex of its SHA-256) | `finassist/mk2/<kid>` |
+| *(none)* | legacy wrapped data key | current, then previous master key | — |
+| `v2:` | a field value (name, email, 2FA secret, private keys, descriptions, titles, notes) | the user's data key | `finassist/v2/<field>/<userId>` |
+| *(none)* | v1 field value written before 2026-10 | the user's data key | — |
 
-## What env-only does NOT buy us
+The AAD binds each field ciphertext to its owner and its field, so a blob copied onto
+another user or into another field fails authentication. Decryption failure is never
+papered over: the old `safeDecrypt` returned the stored value when decryption failed,
+which let anyone with database write access plant text that displayed as real data.
+Now a failed value reads as empty and is logged. `npm run migrate:field-encryption`
+upgrades v1 values (and RSA-OAEP notes) to v2.
 
-- **Rotation without a redeploy.** Changing `JWT_SECRET` invalidates
-  every live access cookie immediately (refresh tokens survive because
-  they aren't signed). Changing `MASTER_ENCRYPTION_KEY` is far harder
-  — see [rotation procedure](#rotation-procedure-master_encryption_key)
-  below.
-- **Audit of who-read-what.** `.env` is a file; anyone with shell or
-  filesystem access to the server can read every secret. No audit trail.
-- **Separation of duties.** The same process that does encrypted
-  business logic also holds the master key in its memory. A future
-  KMS-backed design keeps the master key in the KMS and only ever
-  exchanges per-user dataKeys with the API.
+Per-user RSA-2048 and P-256 private keys are sealed under the user's data key in the
+same way. P-256 signs record attestations; RSA only decrypts notes written before
+notes moved to AES (RSA-OAEP-SHA256 holds at most 190 bytes).
+
+## Rotation procedures
+
+### MASTER_ENCRYPTION_KEY (no downtime)
+1. Set `MASTER_ENCRYPTION_KEY_PREVIOUS` to the current key and `MASTER_ENCRYPTION_KEY`
+   to a new one. Deploy. Both keys now unwrap; new wraps use the new key.
+2. `npm run rotate:master-key` (dry run) then `npm run rotate:master-key -- --apply`:
+   every data key is re-wrapped under the new master key. Field ciphertexts don't
+   change — they're under the per-user data keys, which stay the same.
+3. When the dry run reports 0 left, remove `MASTER_ENCRYPTION_KEY_PREVIOUS` and deploy.
+
+### JWT_SECRET (nobody is signed out)
+1. Set `JWT_SECRET_PREVIOUS` to the current secret and `JWT_SECRET` to a new one. Deploy.
+   New tokens use the new secret; tokens signed with either verify.
+2. After one access-token lifetime (15 minutes), remove `JWT_SECRET_PREVIOUS`.
+
+### EMAIL_HASH_SECRET
+Deploy with the new secret, run `node scripts/migrate-email-hash.js` (idempotent).
+
+### PROXY_SHARED_SECRET
+Change it on Vercel and Render in the same window; requests in flight during the switch
+get a 403 and the client retries.
+
+## What env-only still doesn't buy us
+
+- **Audit of who read what.** Anyone with shell access to the server can read the env.
+- **Separation of duties.** The API process holds the master key in memory.
 
 ## Target: AWS KMS or HashiCorp Vault
 
-The migration target is a managed key service. Recommended shape:
-
-- `MASTER_ENCRYPTION_KEY` becomes a **CMK in KMS**. The Node process holds
-  only an IAM/role credential that authorizes `Encrypt`/`Decrypt` on
-  that CMK. On boot, the process does NOT pull the raw key into memory.
-- Per-user `encryptedDataKey` blobs become KMS-wrapped: every call to
-  decrypt a user's dataKey is a `kms.Decrypt(encryptedDataKey)` API call
-  rather than a local `aes-256-gcm` decrypt under the env var.
-- `JWT_SECRET` and `EMAIL_HASH_SECRET` move to Vault / AWS Secrets
-  Manager with short-lived dynamic creds. Rotation becomes
-  configuration, not redeploy.
-- KMS request volume cost: 1 KMS call per `protect` middleware run is
-  expensive. Mitigation: the existing per-user-dataKey design already
-  caches the decrypted dataKey on `req.dataKey` for the duration of one
-  HTTP request, so the only extra cost is one KMS call per request.
-  Acceptable at our scale (≤O(100) RPS); revisit at higher volume with
-  a short-TTL in-process cache of the unwrapped dataKey.
-
-## Rotation procedure (MASTER_ENCRYPTION_KEY)
-
-Already scaffolded — `utils/keyManagement.rotateUserDataKey(user, oldMasterDecrypt, newMasterEncrypt)`.
-
-Procedure (offline window of ~minutes for a small user base; for a large
-user base, the loop is incremental and online):
-
-1. Generate the new master key: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
-2. Stand up the new key alongside the old one. Two env vars:
-   `MASTER_ENCRYPTION_KEY` (new) and `MASTER_ENCRYPTION_KEY_OLD` (old).
-3. Add a one-shot script `Backend/scripts/rotate-master-key.js` (NOT
-   yet written — separate ticket) that:
-   - Reads every user.
-   - For each, calls `rotateUserDataKey(user, oldDecrypt, newEncrypt)`.
-   - Sets `encryptedDataKey` and bumps `keyVersion`.
-4. Once the script finishes, drop `MASTER_ENCRYPTION_KEY_OLD` from env
-   and redeploy.
-
-Note: rotation re-wraps the dataKey only; it does NOT re-encrypt every
-ciphertext (descriptions, notes, 2FA secrets) — those are still under
-the same dataKey, which hasn't changed.
-
-## Rotation procedure (EMAIL_HASH_SECRET)
-
-`Backend/scripts/migrate-email-hash.js` already exists from Phase 2.
-Same playbook as a key rotation: deploy with the new secret, run the
-script, deploy. The migration is idempotent.
-
-## Rotation procedure (JWT_SECRET)
-
-Disruptive — every fa_access cookie becomes invalid immediately. Users
-re-authenticate via the refresh-token path (which doesn't sign with
-JWT_SECRET); if the access fails 401, the axios refresh interceptor on
-the frontend kicks in and a new fa_access is minted with the new
-secret. Net effect: a transparent re-auth blip for active users.
-
-For a smoother rotation: support BOTH old and new secret on
-`verifyJwt` for one access-token TTL (15 min), then drop the old.
-Not implemented today; a small change in `nativeCrypto.verifyJwt` would
-suffice.
+- `MASTER_ENCRYPTION_KEY` becomes a CMK in KMS. The API holds only a role credential
+  allowed to `Encrypt`/`Decrypt` with it and never sees the raw key.
+- `encryptedDataKey` becomes a KMS-wrapped blob; the `mk2:<kid>:` prefix already gives
+  each wrapped key a key id, so KMS-wrapped keys can coexist with env-wrapped ones and
+  migrate lazily.
+- Every unwrap becomes an auditable KMS call.
 
 ## Operational checks
 
-- `npm run security:audit` — fails the build on `--audit-level=high`
-  npm advisories.
-- Boot-time secret presence + length validation — see
-  `Backend/index.js` `_checkSecrets()`.
-- The dev `.env.example` enumerates every required secret.
-
-## Out of scope here
-
-- mTLS between API and Mongo (Atlas handles this).
-- Code signing / supply-chain integrity (`npm audit` is what we have;
-  consider Sigstore, npm-provenance for v2).
-- HSM-backed CMK (overkill at our threat model; KMS-backed CMK is
-  enough).
+- CI runs `npm audit --omit=dev --audit-level=high` in both workspaces on every push.
+- CI runs `node legacy_crypto/check-no-imports.js`: the from-scratch crypto lab must
+  never be imported by the request path.
+- The startup check (`utils/config.js`) covers every secret above.

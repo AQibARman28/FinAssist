@@ -41,7 +41,17 @@ const goalSchema = new mongoose.Schema({
 
     // Top-level private note, RSA-2048-OAEP encrypted with the user's RSA public key (optional)
     note: { type: String },
+
+    // G3: deleting a goal archives it instead of removing it. The
+    // contributions stay (so past months' balances don't change) and
+    // `releasedAmount` — the money that was still set aside — returns to the
+    // wallet as of `deletedAt` (services/balance.js). Archived goals are
+    // hidden from every goal view; `deletedAt: null` ⇔ live goal.
+    deletedAt:      { type: Date, default: null },
+    releasedAmount: { type: Number, default: 0, min: 0 },
 }, { timestamps: true });
+
+goalSchema.index({ user: 1, deletedAt: 1, status: 1 });
 
 goalSchema.pre('save', function (next) {
     this.currentAmount = this.contributions.reduce((t, c) => t + c.amount, 0);

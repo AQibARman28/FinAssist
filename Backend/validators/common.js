@@ -1,4 +1,5 @@
 const { z } = require('zod');
+const { isCommonPassword } = require('../utils/passwordStrength');
 
 // 24-char hex Mongo ObjectId. Validated at the controller boundary so
 // mismatched IDs land as 400 instead of CastError 500s downstream.
@@ -20,16 +21,22 @@ const currencyEnum = z.enum([
     'BDT', 'USD', 'EUR', 'GBP', 'INR', 'CAD', 'AUD', 'SGD', 'AED',
 ]);
 
-// Password policy: minimum 6 characters (relaxed from the earlier 12-char +
-// upper/lower/digit rule at the owner's request, for a lighter sign-up).
+// Password policy (NIST SP 800-63B §5.1.1): at least 8 characters, no
+// composition rules, and never one of the most common passwords. Controllers
+// add the breached-password screen (utils/passwordStrength.isBreachedPassword),
+// which needs a network call and so can't live in a synchronous schema.
 const passwordPolicy = z
     .string()
-    .min(6, 'Password must be at least 6 characters')
-    .max(256, 'Password too long');
+    .min(8, 'Password must be at least 8 characters')
+    .max(256, 'Password too long')
+    .refine((p) => !isCommonPassword(p), 'This password is too common. Choose something less guessable.');
 
 // 6-digit numeric TOTP code as a string. We use `.string()` not `.number()`
 // because the wire format is a string and leading zeros matter.
 const totpCode = z.string().regex(/^\d{6}$/, 'TOTP code must be 6 digits');
+
+// One-time 2FA recovery code: two groups of five base32 characters.
+const recoveryCode = z.string().regex(/^[A-Za-z2-7]{5}-[A-Za-z2-7]{5}$/, 'Recovery code looks like ABCDE-FGHIJ');
 
 const idParams = z.object({ id: objectId }).strict();
 
@@ -41,5 +48,6 @@ module.exports = {
     currencyEnum,
     passwordPolicy,
     totpCode,
+    recoveryCode,
     idParams,
 };

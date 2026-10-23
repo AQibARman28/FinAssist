@@ -77,7 +77,7 @@ if (typeof process.env.MASTER_ENCRYPTION_KEY !== 'string' || process.env.MASTER_
 }
 
 const User = require('../models/User');
-const { masterDecrypt, safeDecrypt, hashEmail } = require('../utils/encryption');
+const { masterDecrypt, FIELDS, openField, hashEmail } = require('../utils/encryption');
 
 const DRY_RUN = process.argv.includes('--dry-run');
 
@@ -100,7 +100,7 @@ async function main() {
             } else {
                 const rawKey  = await masterDecrypt(user.encryptedDataKey);
                 const dataKey = Buffer.from(rawKey, 'hex');
-                plaintextEmail = await safeDecrypt(user.email, dataKey);
+                plaintextEmail = await openField(user.email, dataKey, FIELDS.userEmail, user._id);
             }
         } catch (err) {
             console.error(`migrate-email-hash: user ${user._id} — could not recover plaintext email: ${err.message}`);

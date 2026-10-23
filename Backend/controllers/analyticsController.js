@@ -5,7 +5,7 @@ const Category = require('../models/Category');
 const Goal = require('../models/Goal');
 const SavingsEntry = require('../models/SavingsEntry');
 const { getBalance } = require('../services/balance');
-const { safeDecrypt } = require('../utils/encryption');
+const { FIELDS, openField } = require('../utils/encryption');
 const {
     expenseTotalForPeriod,
     incomeTotalForPeriod,
@@ -124,23 +124,9 @@ const highSpendingCategories = async (req, res) => {
     }
 };
 
-// GET /api/analytics/recurring-expenses (deprecated, kept for back-compat)
-//
-// Originally grouped Expense by `description` to surface duplicates. Since
-// SEC-1 Phase 2 the description field is AES-GCM encrypted with a fresh
-// IV per row, so two semantically-identical expenses have different
-// ciphertexts and never $group together. The endpoint is left in place
-// returning an empty array so old clients don't break; the new
-// /api/analytics/recurring-income endpoint is what the dashboard should
-// consume.
-const recurringExpenses = async (_req, res) => {
-    res.json({
-        success: true,
-        data: [],
-        deprecated: true,
-        replacedBy: '/api/analytics/recurring-income',
-    });
-};
+// (GET /api/analytics/recurring-expenses was removed in G5: since expense
+// descriptions became AES-GCM encrypted it could only ever return [].
+// /api/analytics/recurring-income is the replacement.)
 
 // GET /api/analytics/recurring-income
 //
@@ -391,7 +377,7 @@ const spendingTimeline = async (req, res) => {
                 return {
                     _id:           e._id.toString(),
                     amount:        e.amount,
-                    description:   await safeDecrypt(e.description, req.dataKey),
+                    description:   await openField(e.description, req.dataKey, FIELDS.expenseDescription, req.user._id),
                     categoryId:    e.categoryId ? e.categoryId.toString() : null,
                     categoryName:  cat?.name  ?? 'Uncategorized',
                     categoryColor: cat?.color ?? '#6B7280',
@@ -448,7 +434,6 @@ const balance = async (req, res) => {
 
 module.exports = {
     monthlyAnalytics,
-    recurringExpenses,
     recurringIncome,
     highSpendingCategories,
     expenseIncomeRatio,

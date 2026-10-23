@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     ChevronDown, Plus, Check, AlertCircle, Loader2,
     Pencil, Trash2, Archive, Search, Eye, EyeOff, Sparkles,
@@ -8,9 +8,10 @@ import {
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
-    CATEGORY_ICONS, CATEGORY_COLOR_SWATCHES, ICON_NAMES, iconFor,
+    CATEGORY_ICONS, CATEGORY_COLOR_SWATCHES, ICON_NAMES,
     type IconName,
 } from "@/lib/categoryIcons";
+import { CategoryIcon } from "@/components/CategoryIcon";
 
 interface Category {
     _id: string;
@@ -71,9 +72,17 @@ export function CategoryPicker({
     const autoSelectedRef = useRef(false);
 
     // ── Load categories (incl. archived; the picker gates visibility itself) ──
+    // `loading` starts true; when `type` changes it is switched back on here,
+    // during render (React's "store the previous prop" pattern), rather than
+    // synchronously inside the fetch effect below.
+    const [prevType, setPrevType] = useState(type);
+    if (type !== prevType) {
+        setPrevType(type);
+        setLoading(true);
+    }
+
     useEffect(() => {
         let cancelled = false;
-        setLoading(true);
         api.get(`/categories?type=${type}&includeArchived=true`)
             .then((res) => { if (!cancelled) setCats(res.data?.data || []); })
             .catch((err) => { if (!cancelled) console.error("CategoryPicker: load failed", err); })
@@ -119,6 +128,15 @@ export function CategoryPicker({
         onChange(mostUsedId);
     }, [autoSelectDefault, value, mostUsedId, cats, onChange]);
 
+    // Only touches state setters, so it is stable across renders.
+    const closeDropdown = useCallback(() => {
+        setOpen(false);
+        setMode("list");
+        setQuery("");
+        setDeletingId(null);
+        setRowError(null);
+    }, []);
+
     // ── Click-outside-to-close ────────────────────────────────────────────────
     useEffect(() => {
         if (!open) return;
@@ -127,15 +145,7 @@ export function CategoryPicker({
         };
         document.addEventListener("mousedown", onDown);
         return () => document.removeEventListener("mousedown", onDown);
-    }, [open]);
-
-    const closeDropdown = () => {
-        setOpen(false);
-        setMode("list");
-        setQuery("");
-        setDeletingId(null);
-        setRowError(null);
-    };
+    }, [open, closeDropdown]);
 
     const selected = value ? cats.find((c) => c._id === value) : null;
 
@@ -216,8 +226,6 @@ export function CategoryPicker({
         } finally { setRowBusy(null); }
     };
 
-    const TriggerIcon = selected ? iconFor(selected.icon) : ChevronDown;
-
     return (
         <div ref={rootRef} className="relative">
             <button
@@ -234,7 +242,7 @@ export function CategoryPicker({
                 {selected ? (
                     <>
                         <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: selected.color }} />
-                        <TriggerIcon className="w-4 h-4 text-zinc-400 shrink-0" />
+                        <CategoryIcon icon={selected.icon} className="w-4 h-4 text-zinc-400 shrink-0" />
                         <span className="text-white font-medium truncate">{selected.name}</span>
                     </>
                 ) : (
@@ -368,8 +376,6 @@ function CategoryRow({
     cat, selected, suggested, deleting, busy, error,
     onSelect, onEdit, onAskDelete, onCancelDelete, onArchive, onForceDelete, onUnarchive,
 }: CategoryRowProps) {
-    const Icon = iconFor(cat.icon);
-
     if (deleting) {
         return (
             <div className="px-4 py-2.5 bg-white/5">
@@ -411,7 +417,7 @@ function CategoryRow({
                 )}
             >
                 <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: cat.color }} />
-                <Icon className="w-4 h-4 shrink-0" />
+                <CategoryIcon icon={cat.icon} className="w-4 h-4 shrink-0" />
                 <span className="font-medium truncate">{cat.name}</span>
                 {suggested && (
                     <span className="flex items-center gap-1 text-[10px] text-amber-300/90 bg-amber-400/10 px-1.5 py-0.5 rounded-full shrink-0">

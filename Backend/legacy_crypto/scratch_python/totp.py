@@ -283,6 +283,19 @@ def hotp(key, counter, digits=6):
 # TOTP entry points
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Allowed code lengths. RFC 4226 §5.3 requires at least 6 digits. The
+# dynamic-truncation value is a 31-bit integer (< 2^31 ~ 2.1e9), so any
+# length past 10 digits only adds leading zeros. generate_totp raises and
+# verify_totp returns False for anything outside 6..10.
+MIN_DIGITS = 6
+MAX_DIGITS = 10
+
+
+def _valid_digits(digits):
+    return (isinstance(digits, int) and not isinstance(digits, bool)
+            and MIN_DIGITS <= digits <= MAX_DIGITS)
+
+
 def generate_totp(secret, period=30, digits=6, timestamp=None):
     """Generate a TOTP code for the current time (or a specified timestamp).
 
@@ -298,6 +311,8 @@ def generate_totp(secret, period=30, digits=6, timestamp=None):
     """
     if not isinstance(period, (int, float)) or period <= 0:
         raise ValueError("generate_totp: period must be a positive number")
+    if not _valid_digits(digits):
+        raise ValueError(f"generate_totp: digits must be an integer from {MIN_DIGITS} to {MAX_DIGITS}")
     if timestamp is None:
         timestamp = time.time()
 
@@ -326,6 +341,8 @@ def verify_totp(token, secret, period=30, digits=6, window=1, timestamp=None):
         bool.
     """
     if not isinstance(token, str):
+        return False
+    if not _valid_digits(digits):
         return False
     if len(token) != digits:
         return False
@@ -468,6 +485,26 @@ if __name__ == "__main__":
         rejects_short and rejects_long,
         f"reject_short={rejects_short} reject_long={rejects_long}",
     )
+
+    # ── Test 8: digits restricted to 6-10 ───────────────────────────────
+    test_secret = generate_secret()
+    t8_failures = []
+    for d in (6, 8, 10):
+        c = generate_totp(test_secret, digits=d, timestamp=59)
+        if len(c) != d or not verify_totp(c, test_secret, digits=d, timestamp=59):
+            t8_failures.append(f"digits={d} should work")
+    for d in (0, 4, 5, 11, 12, True):
+        try:
+            generate_totp(test_secret, digits=d, timestamp=59)
+            gen_raised = False
+        except ValueError:
+            gen_raised = True
+        length = d if isinstance(d, int) and not isinstance(d, bool) and d > 0 else 6
+        verified = verify_totp("1" * length, test_secret, digits=d, timestamp=59)
+        if not gen_raised or verified:
+            t8_failures.append(f"digits={d!r}: generate_raised={gen_raised} verified={verified}")
+    record("Test 8: digits outside 6-10 rejected by generate_totp and verify_totp",
+           not t8_failures, "; ".join(t8_failures))
 
     if not all_pass:
         sys.exit(1)

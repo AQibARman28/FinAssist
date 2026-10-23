@@ -24,21 +24,27 @@ export function VerifyCode({ email, onVerified, autoResend = false, onBack }: Ve
     const [info, setInfo] = useState<string | null>(null);
     const [cooldown, setCooldown] = useState(0);
 
-    const resend = useCallback(async () => {
-        setError(null);
-        try {
-            await api.post("/auth/resend-code", { email });
+    // Ask the server for a fresh code. State is only touched once the request
+    // settles; success and failure look the same because the server stays
+    // generic about whether the address exists, and we mirror it.
+    const requestCode = useCallback(() => {
+        const onSettled = () => {
             setInfo(`We sent a new code to ${email}.`);
             setCooldown(RESEND_COOLDOWN);
-        } catch {
-            setInfo(`We sent a new code to ${email}.`); // server stays generic; mirror it
-            setCooldown(RESEND_COOLDOWN);
-        }
+        };
+        return api.post("/auth/resend-code", { email }).then(onSettled, onSettled);
     }, [email]);
 
-    // Optional auto-resend on first mount.
+    // "Resend code" button: clear any previous error, then request.
+    const resend = () => {
+        setError(null);
+        return requestCode();
+    };
+
+    // Optional auto-resend on first mount (`error` is still null then, so
+    // there's nothing to clear).
     useEffect(() => {
-        if (autoResend) resend();
+        if (autoResend) requestCode();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 

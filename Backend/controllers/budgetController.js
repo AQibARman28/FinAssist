@@ -1,54 +1,70 @@
 const Budget = require('../models/Budget');
-const Expense = require('../models/Expense');
-const { signRecord, verifyRecord } = require('../utils/signing');
+const Category = require('../models/Category');
+const { signRecord } = require('../utils/signing');
+const { checkRecords, flag } = require('../utils/integrity');
+const { logAudit } = require('../utils/audit');
+const { assertCategoryOwnedAndTyped } = require('../utils/categoryGuard');
+const { withSpent, isObjectIdValue } = require('../services/budgetSpend');
 
-function attestationPayload(b) {
-    return { category: b.category, limit: b.limit, month: b.month, year: b.year };
-}
+// G1: Budget.category is the user's Category ObjectId (same id as
+// Expense.category). `spent` and the derived figures (remaining,
+// usagePercentage, isOverLimit, isNearLimit) are computed on read by
+// services/budgetSpend.withSpent — nothing is stored, so nothing drifts.
 
-// POST /api/budgets
+// Payload shapes (including the legacy name-signed fallback for rows migrated
+// from the String-enum era) live in utils/attestationPayloads.js.
+const { budget: attestationPayload, budgetCandidates } = require('../utils/attestationPayloads');
+
+const checkBudgets = (req, budgets) => checkRecords(req, 'budget', budgets, budgetCandidates);
+
+const signBudget = (b, req) => signRecord(attestationPayload(b), req.user, req.dataKey);
+
+const byPeriodThenName = (a, b) =>
+    (b.year - a.year) || (b.month - a.month) || a.categoryName.localeCompare(b.categoryName);
+
+// POST /api/budgets — create, or update the existing (category, month, year) slot.
 const createBudget = async (req, res) => {
     try {
         const { category, limit, month, year, alertThreshold } = req.body;
 
-        let budget = await Budget.findOne({ user: req.user._id, category, month, year });
+        const guard = await assertCategoryOwnedAndTyped(req.user._id, category, 'expense');
+        if (!guard.ok) {
+            return res.status(guard.status).json({ success: false, message: guard.message });
+        }
+        const categoryId = guard.category._id;
+        const slot = { user: req.user._id, category: categoryId, month, year };
 
-        const startDate = new Date(year, month - 1, 1);
-        const endDate   = new Date(year, month, 0, 23, 59, 59);
-        const spentResult = await Expense.aggregate([
-            { $match: { user: req.user._id, category, date: { $gte: startDate, $lte: endDate } } },
-            { $group: { _id: null, total: { $sum: '$amount' } } }
-        ]);
-        const spent = spentResult.length > 0 ? spentResult[0].total : 0;
-
+        let budget = await Budget.findOne(slot);
         let isNew = false;
-        if (budget) {
+        if (!budget) {
+            try {
+                const serverAttestation = await signRecord(
+                    attestationPayload({ category: categoryId, limit, month, year }), req.user, req.dataKey
+                );
+                budget = await Budget.create({ ...slot, limit, alertThreshold: alertThreshold ?? 80, serverAttestation });
+                isNew = true;
+            } catch (err) {
+                // A parallel create won the unique {user, category, month, year}
+                // slot — fall through and update that row instead.
+                if (err?.code !== 11000) throw err;
+                budget = await Budget.findOne(slot);
+            }
+        }
+        if (!isNew) {
             budget.limit = limit;
-            budget.spent = spent;
-            if (alertThreshold) budget.alertThreshold = alertThreshold;
-            // serverAttestation is not regenerated on update — see
-            // docs/decisions/SEC-1-ecdsa.md
+            if (alertThreshold !== undefined) budget.alertThreshold = alertThreshold;
+            budget.isActive = true;
+            // Re-signed so an edit made in the app never reads as tampering.
+            budget.serverAttestation = await signBudget(budget, req);
+            budget.legacyCategory = undefined;
             await budget.save();
-        } else {
-            isNew = true;
-            const serverAttestation = await signRecord(
-                attestationPayload({ category, limit, month, year }), req.user, req.dataKey
-            );
-            budget = await Budget.create({
-                user: req.user._id,
-                category,
-                limit,
-                spent,
-                month,
-                year,
-                alertThreshold: alertThreshold || 80,
-                serverAttestation
-            });
         }
 
+        logAudit(req, isNew ? 'budget.create' : 'budget.update', req.user._id, { budgetId: budget._id.toString(), limit });
+        const [row] = await withSpent(req.user._id, [budget]);
         res.status(isNew ? 201 : 200).json({
             success: true,
-            data: budget,
+            data: row,
             message: isNew ? 'Budget created' : 'Budget updated'
         });
     } catch (error) {
@@ -67,15 +83,11 @@ const getBudgets = async (req, res) => {
         if (year)     query.year     = parseInt(year);
         if (category) query.category = category;
 
-        const budgets = await Budget.find(query).sort({ category: 1 });
+        const budgets = await Budget.find(query);
+        const issues = await checkBudgets(req, budgets);
 
-        for (const b of budgets) {
-            if (b.serverAttestation && !(await verifyRecord(attestationPayload(b), b.serverAttestation, req.user))) {
-                console.warn(`serverAttestation failed verification on budget ${b._id} (user ${req.user._id})`);
-            }
-        }
-
-        res.json({ success: true, data: budgets });
+        const rows = (await withSpent(req.user._id, budgets)).sort(byPeriodThenName).map((r) => flag(r, issues));
+        res.json({ success: true, data: rows });
     } catch (error) {
         console.error('Get budgets error:', error);
         res.status(500).json({ success: false, message: 'Server error fetching budgets' });
@@ -88,11 +100,10 @@ const getBudgetById = async (req, res) => {
         const budget = await Budget.findOne({ _id: req.params.id, user: req.user._id });
         if (!budget) return res.status(404).json({ success: false, message: 'Budget not found' });
 
-        if (budget.serverAttestation && !(await verifyRecord(attestationPayload(budget), budget.serverAttestation, req.user))) {
-            console.warn(`serverAttestation failed verification on budget ${budget._id} (user ${req.user._id})`);
-        }
+        const issues = await checkBudgets(req, [budget]);
 
-        res.json({ success: true, data: budget });
+        const [row] = await withSpent(req.user._id, [budget]);
+        res.json({ success: true, data: flag(row, issues) });
     } catch (error) {
         console.error('Get budget error:', error);
         res.status(500).json({ success: false, message: 'Server error fetching budget' });
@@ -102,23 +113,29 @@ const getBudgetById = async (req, res) => {
 // PUT /api/budgets/:id
 const updateBudget = async (req, res) => {
     try {
+        // Compound filter prevents IDOR.
+        const current = await Budget.findOne({ _id: req.params.id, user: req.user._id });
+        if (!current) return res.status(404).json({ success: false, message: 'Budget not found' });
+
         const updates = {};
         if (req.body.limit          !== undefined) updates.limit          = req.body.limit;
         if (req.body.alertThreshold !== undefined) updates.alertThreshold = req.body.alertThreshold;
         if (req.body.isActive       !== undefined) updates.isActive       = req.body.isActive;
 
-        // serverAttestation is set on creation and NOT regenerated on update —
-        // see docs/decisions/SEC-1-ecdsa.md.
+        // Re-sign over the values the budget will hold after this update
+        // (supersedes the create-only rule in docs/decisions/SEC-1-ecdsa.md).
+        updates.serverAttestation = await signBudget({ category: current.category, limit: updates.limit ?? current.limit, month: current.month, year: current.year }, req);
 
-        // Compound filter on the mutation prevents IDOR.
         const updatedBudget = await Budget.findOneAndUpdate(
             { _id: req.params.id, user: req.user._id },
-            updates,
+            { $set: updates, $unset: { legacyCategory: 1 } },
             { new: true, runValidators: true }
         );
         if (!updatedBudget) return res.status(404).json({ success: false, message: 'Budget not found' });
 
-        res.json({ success: true, data: updatedBudget });
+        logAudit(req, 'budget.update', req.user._id, { budgetId: updatedBudget._id.toString(), fields: Object.keys(updates).filter((k) => k !== 'serverAttestation') });
+        const [row] = await withSpent(req.user._id, [updatedBudget]);
+        res.json({ success: true, data: row });
     } catch (error) {
         console.error('Update budget error:', error);
         res.status(500).json({ success: false, message: 'Server error updating budget' });
@@ -131,6 +148,7 @@ const deleteBudget = async (req, res) => {
         const deleted = await Budget.findOneAndDelete({ _id: req.params.id, user: req.user._id });
         if (!deleted) return res.status(404).json({ success: false, message: 'Budget not found' });
 
+        logAudit(req, 'budget.delete', req.user._id, { budgetId: deleted._id.toString() });
         res.json({ success: true, message: 'Budget deleted successfully' });
     } catch (error) {
         console.error('Delete budget error:', error);
@@ -145,18 +163,26 @@ const getBudgetTracking = async (req, res) => {
         const month = parseInt(req.params.month);
 
         const budgets = await Budget.find({ user: req.user._id, month, year, isActive: true });
-
-        const trackingData = budgets.map(budget => ({
-            _id:             budget._id,
-            category:        budget.category,
-            limit:           budget.limit,
-            spent:           budget.spent,
-            remaining:       budget.remainingAmount,
-            usagePercentage: budget.usagePercentage,
-            isOverLimit:     budget.isOverLimit,
-            isNearLimit:     budget.isNearLimit,
-            alertThreshold:  budget.alertThreshold
-        }));
+        const trackingData = (await withSpent(req.user._id, budgets))
+            .sort(byPeriodThenName)
+            .map((b) => ({
+                _id:              b._id,
+                category:         b.category,
+                categoryName:     b.categoryName,
+                categoryColor:    b.categoryColor,
+                categoryIcon:     b.categoryIcon,
+                categoryArchived: b.categoryArchived,
+                limit:            b.limit,
+                spent:            b.spent,
+                remaining:        b.remaining,
+                usagePercentage:  b.usagePercentage,
+                isOverLimit:      b.isOverLimit,
+                isNearLimit:      b.isNearLimit,
+                alertThreshold:   b.alertThreshold,
+                month:            b.month,
+                year:             b.year,
+                isActive:         b.isActive,
+            }));
 
         res.json({
             success: true,
@@ -173,12 +199,12 @@ const getBudgetTracking = async (req, res) => {
     }
 };
 
-// GET /api/budgets/alerts
+// GET /api/budgets/alerts — the current (UTC) month, live spend.
 const getBudgetAlerts = async (req, res) => {
     try {
         const now          = new Date();
-        const currentMonth = now.getMonth() + 1;
-        const currentYear  = now.getFullYear();
+        const currentMonth = now.getUTCMonth() + 1;
+        const currentYear  = now.getUTCFullYear();
 
         const budgets = await Budget.find({
             user: req.user._id,
@@ -188,23 +214,24 @@ const getBudgetAlerts = async (req, res) => {
         });
 
         const alerts = [];
-        budgets.forEach(budget => {
+        for (const budget of await withSpent(req.user._id, budgets)) {
+            const name = budget.categoryName;
             if (budget.isOverLimit) {
                 alerts.push({
                     type: 'over_limit', severity: 'high',
-                    category: budget.category,
-                    message: `You have exceeded your ${budget.category} budget by ${budget.spent - budget.limit}`,
+                    category: name, categoryId: budget.category,
+                    message: `You have exceeded your ${name} budget by ${budget.spent - budget.limit}`,
                     budget
                 });
             } else if (budget.isNearLimit) {
                 alerts.push({
                     type: 'near_limit', severity: 'medium',
-                    category: budget.category,
-                    message: `You have used ${budget.usagePercentage}% of your ${budget.category} budget`,
+                    category: name, categoryId: budget.category,
+                    message: `You have used ${budget.usagePercentage}% of your ${name} budget`,
                     budget
                 });
             }
-        });
+        }
 
         res.json({ success: true, data: alerts });
     } catch (error) {
@@ -213,40 +240,48 @@ const getBudgetAlerts = async (req, res) => {
     }
 };
 
-// POST /api/budgets/reset
+// POST /api/budgets/reset — copy one month's active budgets into another.
+// Skips slots that already exist and categories that are gone or archived.
 const resetBudgets = async (req, res) => {
     try {
         const { fromMonth, fromYear, toMonth, toYear } = req.body;
 
-        const previousBudgets = await Budget.find({
+        const previousBudgets = (await Budget.find({
             user: req.user._id, month: fromMonth, year: fromYear, isActive: true
-        });
+        })).filter((b) => isObjectIdValue(b.category));
+
+        const liveCats = await Category.find({
+            user: req.user._id,
+            _id: { $in: previousBudgets.map((b) => b.category) },
+            isArchived: { $ne: true },
+            type: { $in: ['expense', 'both'] },
+        }).select('_id').lean();
+        const live = new Set(liveCats.map((c) => c._id.toHexString()));
 
         const newBudgets = [];
         for (const budget of previousBudgets) {
-            const existing = await Budget.findOne({
-                user: req.user._id, category: budget.category, month: toMonth, year: toYear
-            });
-            if (!existing) {
-                const payload           = attestationPayload({ category: budget.category, limit: budget.limit, month: toMonth, year: toYear });
-                const serverAttestation = await signRecord(payload, req.user, req.dataKey);
-                const newBudget = await Budget.create({
-                    user: req.user._id,
-                    category: budget.category,
+            if (!live.has(budget.category.toHexString())) continue;
+            const slot = { user: req.user._id, category: budget.category, month: toMonth, year: toYear };
+            if (await Budget.exists(slot)) continue;
+
+            const payload           = attestationPayload({ category: budget.category, limit: budget.limit, month: toMonth, year: toYear });
+            const serverAttestation = await signRecord(payload, req.user, req.dataKey);
+            try {
+                newBudgets.push(await Budget.create({
+                    ...slot,
                     limit: budget.limit,
-                    spent: 0,
-                    month: toMonth,
-                    year: toYear,
                     alertThreshold: budget.alertThreshold,
                     serverAttestation
-                });
-                newBudgets.push(newBudget);
+                }));
+            } catch (err) {
+                if (err?.code !== 11000) throw err; // created concurrently — fine
             }
         }
 
+        logAudit(req, 'budget.reset', req.user._id, { fromMonth, fromYear, toMonth, toYear, created: newBudgets.length });
         res.json({
             success: true,
-            data: newBudgets,
+            data: await withSpent(req.user._id, newBudgets),
             message: `Created ${newBudgets.length} budgets for ${toMonth}/${toYear}`
         });
     } catch (error) {

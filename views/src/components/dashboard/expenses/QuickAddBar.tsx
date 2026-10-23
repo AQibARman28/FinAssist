@@ -25,7 +25,7 @@ export function QuickAddBar({ onAdd, onUseForm }: QuickAddBarProps) {
     const { format: fmtMoney } = useCurrency();
     const [text, setText]                   = useState("");
     const [cats, setCats]                   = useState<CategoryOption[]>([]);
-    const [selectedCat, setSelectedCat]     = useState("");
+    const [pickedCat, setPickedCat]         = useState("");   // the user's explicit choice
     const [userTouchedCat, setUserTouched]  = useState(false);
     const [committing, setCommitting]       = useState(false);
     const [error, setError]                 = useState<string | null>(null);
@@ -74,15 +74,13 @@ export function QuickAddBar({ onAdd, onUseForm }: QuickAddBarProps) {
     const detectedId = parsed.category?._id ?? null;
 
     // Mirror the suggested category into the picker until the user overrides it.
-    useEffect(() => {
-        if (!userTouchedCat) setSelectedCat(detectedId ?? "");
-    }, [detectedId, userTouchedCat]);
+    const selectedCat = userTouchedCat ? pickedCat : (detectedId ?? "");
 
     const canCommit = parsed.amount !== null && selectedCat !== "" && !committing;
 
     const reset = () => {
         setText("");
-        setSelectedCat("");
+        setPickedCat("");
         setUserTouched(false);
         setError(null);
     };
@@ -171,7 +169,7 @@ export function QuickAddBar({ onAdd, onUseForm }: QuickAddBarProps) {
                                 <CategoryPicker
                                     type="expense"
                                     value={selectedCat || null}
-                                    onChange={(id) => { setSelectedCat(id); setUserTouched(true); }}
+                                    onChange={(id) => { setPickedCat(id); setUserTouched(true); }}
                                     placeholder="Pick category"
                                 />
                             </div>

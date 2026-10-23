@@ -20,6 +20,10 @@
  *      doesn't auto-add an `iat` field, which would make the round-trip
  *      payload-comparison spuriously fail.
  *
+ *      These payloads carry no `exp`, and the scratch verifier requires
+ *      `exp` by default. So each B iteration also asserts that the default
+ *      call REJECTS the token, then verifies with { allowMissingExp: true }.
+ *
  * If jsonwebtoken isn't installed (e.g., we're in a fresh checkout), the
  * test falls back to scratch sign + scratch verify and asserts payload
  * round-tripping against itself for 100 iterations. That's strictly weaker
@@ -105,7 +109,7 @@ if (!jsonwebtoken) {
         const payload = randomPayload();
 
         const token   = jwtSign(payload, secret);
-        const decoded = jwtVerify(token, secret);
+        const decoded = jwtVerify(token, secret, { allowMissingExp: true });
 
         if (!deepEqual(payload, decoded)) {
             fail(i, 'self-consistency mismatch', { secret, payload, decoded, token });
@@ -139,9 +143,14 @@ if (!jsonwebtoken) {
             algorithm:   'HS256',
             noTimestamp: true       // suppress the library's auto-added `iat`
         });
+        let rejectedWithoutExp = false;
+        try { jwtVerify(libToken, secret); } catch { rejectedWithoutExp = true; }
+        if (!rejectedWithoutExp) {
+            fail(i, 'B: scratch accepted a token without exp by default', { secret, payload, libToken });
+        }
         let scratchDecoded;
         try {
-            scratchDecoded = jwtVerify(libToken, secret);
+            scratchDecoded = jwtVerify(libToken, secret, { allowMissingExp: true });
         } catch (err) {
             fail(i, 'B: scratch rejected library-signed token', {
                 secret, payload, libToken, error: err.message

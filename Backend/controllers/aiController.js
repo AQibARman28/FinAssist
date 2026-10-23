@@ -1,7 +1,7 @@
 const Expense = require('../models/Expense');
 const Budget = require('../models/Budget');
 const Goal = require('../models/Goal');
-const Category = require('../models/Category');
+const { isObjectIdValue } = require('../services/budgetSpend');
 const {
     expenseTotalForPeriod,
     incomeTotalForPeriod,
@@ -183,12 +183,11 @@ const financialHealthScore = async (req, res) => {
             expenseTotalForPeriod(userId, windowStart, now),
         ]);
 
-        // Budget adherence inputs: resolve each budget's String-enum category
-        // name to the user's Category ObjectId, then match window expenses by
-        // that id + the budget's month. The stale Budget.spent is ignored.
-        const [allBudgets, expenseCats, perCatMonth, weekAgg, goalDocs] = await Promise.all([
+        // Budget adherence inputs: Budget.category is the user's Category
+        // ObjectId (G1) — the same id Expense.category stores — so window
+        // expenses are matched by that id + the budget's (UTC) month.
+        const [allBudgets, perCatMonth, weekAgg, goalDocs] = await Promise.all([
             Budget.find({ user: userId, isActive: true }).lean(),
-            Category.find({ user: userId, type: { $in: ['expense', 'both'] } }).select('name').lean(),
             Expense.aggregate([
                 { $match: { user: userId, date: { $gte: windowStart, $lte: now } } },
                 { $group: {
@@ -201,10 +200,9 @@ const financialHealthScore = async (req, res) => {
                 { $group: { _id: { $dateTrunc: { date: '$date', unit: 'week', startOfWeek: 'monday', timezone: 'UTC' } }, total: { $sum: '$amount' } } },
                 { $sort: { _id: 1 } },
             ]),
-            Goal.find({ user: userId, status: 'Active' }).select('currentAmount targetAmount targetDate createdAt').lean(),
+            Goal.find({ user: userId, status: 'Active', deletedAt: null }).select('currentAmount targetAmount targetDate createdAt').lean(),
         ]);
 
-        const nameToId = new Map(expenseCats.map((c) => [c.name, c._id.toString()]));
         const spendKey = (cat, y, m) => `${cat}-${y}-${m}`;
         const spendMap = new Map(perCatMonth.map((r) => [spendKey(r._id.cat?.toString(), r._id.y, r._id.m), r.total]));
 
@@ -214,8 +212,10 @@ const financialHealthScore = async (req, res) => {
             const mStart = new Date(Date.UTC(b.year, b.month - 1, 1, 0, 0, 0, 0));
             const mEnd   = new Date(Date.UTC(b.year, b.month, 0, 23, 59, 59, 999));
             if (mEnd < windowStart || mStart > now) continue;
-            const catId = nameToId.get(b.category);
-            if (!catId || b.limit <= 0) continue; // unattributable / zero-limit → exclude
+            // Legacy un-migrated rows (category still a name string) can't be
+            // attributed; zero-limit budgets can't be scored → exclude both.
+            const catId = isObjectIdValue(b.category) ? b.category.toHexString() : null;
+            if (!catId || b.limit <= 0) continue;
             const spent = spendMap.get(spendKey(catId, b.year, b.month)) || 0;
             budgets.push({ limit: b.limit, spent });
         }

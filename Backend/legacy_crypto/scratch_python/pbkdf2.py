@@ -17,9 +17,13 @@ runs the underlying primitive (HMAC-SHA256 in our case) `iterations`
 times in a tight chain — 100,000 iterations means each guess costs the
 attacker 100,000 HMAC calls instead of one. That drags brute-forcing
 from billions/sec down to thousands/sec on the same hardware. The user
-sees the same single verification at login time (still well under a
-second on JS / a couple of seconds in pure Python), but the attacker
-sees a five-orders-of-magnitude tax on every guess.
+sees one verification at login time, but the attacker sees a
+five-orders-of-magnitude tax on every guess. (Measured cost of one
+100,000-iteration hash on an Intel i9-11900H: about 0.5 s for the
+pure-JS version, but roughly 55-60 s for THIS pure-Python version on
+CPython 3.12 — every SHA-256 round runs in bytecode. That is fine for
+a teaching lab and unusable for a real login path; hashlib.pbkdf2_hmac
+or argon2 are the production choices.)
 
 The cost factor is configurable, which is the whole point: as hardware
 gets faster, you bump `iterations` up to keep the verification time
@@ -74,7 +78,7 @@ crypto.randomBytes, OS-CSPRNG-backed and explicitly permitted.
 
 import secrets
 
-from hmac_sha256 import hmac_sha256
+from hmac_sha256 import create_hmac_sha256
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -91,6 +95,17 @@ HASH_OUTPUT_BYTES = 32
 HASH_PASSWORD_ITERATIONS  = 100000
 HASH_PASSWORD_KEY_LENGTH  = 32
 HASH_PASSWORD_SALT_LENGTH = 16
+
+# Upper bounds. verify_password reads the iteration count and the
+# derived-key length out of the stored string, so without a cap a
+# corrupted or hostile record ("pbkdf2-sha256$999999999999$...") turns
+# one login into hours of CPU. The caps are far above any sane setting:
+#   - MAX_ITERATIONS = 10,000,000 (~16x OWASP 2023's 600,000 for
+#     PBKDF2-HMAC-SHA256);
+#   - MAX_KEY_LENGTH = 1024 bytes (32 output blocks; every extra 32-byte
+#     block re-runs all the iterations, and password hashing needs 32).
+MAX_ITERATIONS = 10_000_000
+MAX_KEY_LENGTH = 1024
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -147,7 +162,7 @@ def _constant_time_equal(a, b):
 # Core derivation
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _derive_block(password, salt, iterations, block_index):
+def _derive_block(prf, salt, iterations, block_index):
     """Compute one 32-byte output block T_i of PBKDF2 — RFC 8018 §5.2 step 3.
 
       U_1     = HMAC(password, salt || INT32_BE(block_index))
@@ -157,12 +172,16 @@ def _derive_block(password, salt, iterations, block_index):
     Note that the chain is sequential — U_j depends on U_{j-1} — so all
     `iterations` HMACs must run in order. This is what makes PBKDF2 slow:
     an attacker cannot parallelize within a single guess, only across guesses.
+
+    `prf` is HMAC-SHA256 with the password's key state already prepared
+    (create_hmac_sha256(password)), so the password is processed once per
+    derivation instead of once per iteration.
     """
     # Seed for U_1: salt with the 4-byte block counter appended.
     seed = salt + _int32_be(block_index)
 
     # U_1 = HMAC(password, seed)
-    u = hmac_sha256(password, seed)
+    u = prf(seed)
 
     # Initialize the running XOR accumulator with U_1.
     # bytearray gives us in-place XOR; the source bytes from `u` stay
@@ -171,7 +190,7 @@ def _derive_block(password, salt, iterations, block_index):
 
     # Iterations 2..n: chain HMACs and XOR each into T.
     for _ in range(2, iterations + 1):
-        u = hmac_sha256(password, u)
+        u = prf(u)
         for k in range(HASH_OUTPUT_BYTES):
             t[k] ^= u[k]
 
@@ -185,19 +204,25 @@ def pbkdf2(password, salt, iterations, key_length):
     Args:
         password:    str, bytes, or bytearray.
         salt:        str, bytes, or bytearray.
-        iterations:  positive integer; how slow is "slow".
-        key_length:  desired output length in bytes (positive integer).
+        iterations:  integer in [1, MAX_ITERATIONS]; how slow is "slow".
+        key_length:  output length in bytes, integer in [1, MAX_KEY_LENGTH].
 
     Returns:
         bytes of length `key_length`.
     """
-    if not isinstance(iterations, int) or iterations < 1:
-        raise ValueError("pbkdf2: iterations must be a positive integer")
-    if not isinstance(key_length, int) or key_length < 1:
-        raise ValueError("pbkdf2: key_length must be a positive integer")
+    if (not isinstance(iterations, int) or isinstance(iterations, bool)
+            or not 1 <= iterations <= MAX_ITERATIONS):
+        raise ValueError(f"pbkdf2: iterations must be an integer from 1 to {MAX_ITERATIONS}")
+    if (not isinstance(key_length, int) or isinstance(key_length, bool)
+            or not 1 <= key_length <= MAX_KEY_LENGTH):
+        raise ValueError(f"pbkdf2: key_length must be an integer from 1 to {MAX_KEY_LENGTH}")
 
     password_buf = _to_bytes(password, 'password')
     salt_buf     = _to_bytes(salt,     'salt')
+
+    # Prepare the HMAC key state (K' XOR ipad, K' XOR opad) ONCE. Long
+    # passwords are hashed here a single time, not on every iteration.
+    prf = create_hmac_sha256(password_buf)
 
     # Number of 32-byte chunks needed; we'll truncate the last one if the
     # requested key_length is not a multiple of HASH_OUTPUT_BYTES.
@@ -208,7 +233,7 @@ def pbkdf2(password, salt, iterations, key_length):
     # T_1, T_2, ..., T_l — each block independent of the others (they
     # differ only in the INT32_BE(i) appended to the salt for U_1).
     for i in range(1, num_blocks + 1):
-        t = _derive_block(password_buf, salt_buf, iterations, i)
+        t = _derive_block(prf, salt_buf, iterations, i)
         output[(i - 1) * HASH_OUTPUT_BYTES : i * HASH_OUTPUT_BYTES] = t
 
     # Truncate to the requested length.
@@ -270,10 +295,14 @@ def verify_password(password, stored):
         return False
 
     # Parse iteration count strictly: only decimal digits, at least one.
-    if not parts[1].isdigit():
+    if not (parts[1].isascii() and parts[1].isdigit()):
+        return False
+    # Check the digit count before int() so an absurd value is rejected
+    # without converting it, then apply the numeric bound.
+    if len(parts[1]) > len(str(MAX_ITERATIONS)):
         return False
     iterations = int(parts[1])
-    if iterations < 1:
+    if iterations < 1 or iterations > MAX_ITERATIONS:
         return False
 
     # Decode the hex salt and stored derived key. bytes.fromhex raises on
@@ -286,6 +315,8 @@ def verify_password(password, stored):
 
     if len(salt) == 0 or len(expected_dk) == 0:
         return False
+    if len(expected_dk) > MAX_KEY_LENGTH:
+        return False
 
     actual_dk = pbkdf2(password, salt, iterations, len(expected_dk))
     return _constant_time_equal(actual_dk, expected_dk)
@@ -294,9 +325,12 @@ def verify_password(password, stored):
 # ─────────────────────────────────────────────────────────────────────────────
 # Self-test — runs only when this file is executed directly:
 #   python pbkdf2.py
-# Two RFC vectors + hash_password/verify_password round-trip + 20-iteration
-# cross-check vs hashlib.pbkdf2_hmac. Test 2 runs 80,000 iterations and is
-# intentionally slow (a couple of seconds in pure Python).
+# The two RFC 7914 §11 vectors + hash_password/verify_password round-trip +
+# long-password cost check + bounds check + 20-iteration cross-check vs
+# hashlib.pbkdf2_hmac. Slow in pure Python (measured on an i9-11900H,
+# CPython 3.12): Test 2 (80,000 iterations x 2 blocks) about 90 s, Test 3
+# (three 100,000-iteration derivations) about 165-180 s; the whole run
+# about 5 minutes.
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import sys
@@ -304,7 +338,8 @@ if __name__ == "__main__":
 
     all_pass = True
 
-    # ── Test 1 — RFC 6070-style small-iteration vector ──────────────────
+    # ── Test 1 — RFC 7914 §11 vector (c=1) ──────────────────────────────
+    # (RFC 6070's vectors are for PBKDF2-HMAC-SHA1; these are SHA-256.)
     {
         # (Python doesn't have block-scoped statements; using a dict-or-comment
         # marker to indicate the test groupings is just visual aid.)
@@ -324,7 +359,7 @@ if __name__ == "__main__":
         print(f"      expected: {expected_t1}")
         print(f"      got:      {got}")
 
-    # ── Test 2 — RFC 7914 large-iteration vector (slow) ─────────────────
+    # ── Test 2 — RFC 7914 §11 vector (c=80,000, slow) ───────────────────
     print("  running Test 2 (80,000 iterations, 64 bytes — slow)... ", end='', flush=True)
     t0 = time.time()
     got = pbkdf2("Password", "NaCl", 80000, 64).hex()
@@ -358,6 +393,65 @@ if __name__ == "__main__":
         print(f"      accept right:  {accept_correct}")
         print(f"      reject wrong:  {reject_wrong}")
         print(f"      format prefix: {starts_right}")
+
+    # ── Test 4 — long passwords cost (almost) the same as short ones ────
+    # HMAC hashes any key longer than 64 bytes down to sha256(key). If that
+    # key preparation is redone for every one of the `iterations` HMAC
+    # calls, a 16 KiB password costs dozens of times more than a short
+    # one. With the key state prepared once per derivation, the extra cost
+    # is a single 16 KiB hash. Correctness without an external reference:
+    # for |P| > 64, PBKDF2(P) == PBKDF2(sha256(P)).
+    print("  running Test 4 (16 KiB password vs 8-byte password, 200 iterations)... ", end='', flush=True)
+    from sha256 import sha256 as _sha256
+    long_pw = b"a" * (16 * 1024)
+    t0 = time.perf_counter()
+    pbkdf2("hunter22", "NaCl", 200, 32)
+    short_s = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    dk_long = pbkdf2(long_pw, "NaCl", 200, 32)
+    long_s = time.perf_counter() - t0
+    same_as_hashed = dk_long == pbkdf2(_sha256(long_pw), "NaCl", 200, 32)
+    # Generous bound: the fixed extra cost is one 16 KiB hash.
+    fast_enough = long_s < 3 * short_s + 0.25
+    if same_as_hashed and fast_enough:
+        print(f"PASS (short {short_s * 1000:.0f} ms, long {long_s * 1000:.0f} ms)")
+    else:
+        all_pass = False
+        print(f"FAIL (short {short_s * 1000:.0f} ms, long {long_s * 1000:.0f} ms)")
+        print(f"      same_as_hashed={same_as_hashed} fast_enough={fast_enough}")
+
+    # ── Test 5 — iteration count and output length are bounded ──────────
+    print("  running Test 5 (iteration / output-length bounds)... ", end='', flush=True)
+
+    def _raises(fn):
+        try:
+            fn()
+            return False
+        except ValueError:
+            return True
+
+    salt16 = "00112233445566778899aabbccddeeff"
+    dk32 = "00" * 32
+    try:
+        checks = {
+            # output length: MAX_KEY_LENGTH accepted (1 iteration keeps it fast), +1 rejected
+            "max_key_len_ok":     not _raises(lambda: pbkdf2("pw", "salt", 1, MAX_KEY_LENGTH)),
+            "key_len_too_big":    _raises(lambda: pbkdf2("pw", "salt", 1, MAX_KEY_LENGTH + 1)),
+            "verify_huge_dk":     verify_password("pw", f"pbkdf2-sha256$1${salt16}${'00' * (MAX_KEY_LENGTH + 1)}") is False,
+            # iterations: MAX_ITERATIONS + 1 rejected before any work is done
+            "iters_too_big":      _raises(lambda: pbkdf2("pw", "salt", MAX_ITERATIONS + 1, 32)),
+            "verify_huge_iters":  verify_password("pw", f"pbkdf2-sha256${MAX_ITERATIONS + 1}${salt16}${dk32}") is False,
+            "verify_huge_iters2": verify_password("pw", f"pbkdf2-sha256$999999999999999999999${salt16}${dk32}") is False,
+        }
+        failed = [k for k, ok in checks.items() if not ok]
+    except Exception as exc:                          # noqa: BLE001
+        failed = [f"raised {type(exc).__name__}: {exc}"]
+    if not failed:
+        print(f"PASS (MAX_ITERATIONS={MAX_ITERATIONS}, MAX_KEY_LENGTH={MAX_KEY_LENGTH})")
+    else:
+        all_pass = False
+        print("FAIL")
+        print(f"      failed: {', '.join(failed)}")
 
     if not all_pass:
         sys.exit(1)

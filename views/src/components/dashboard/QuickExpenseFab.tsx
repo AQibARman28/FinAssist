@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, X, Zap, Check, Loader2, CornerDownLeft } from "lucide-react";
+import { X, Zap, Check, Loader2, CornerDownLeft } from "lucide-react";
 import { format, isToday, isYesterday, isTomorrow } from "date-fns";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -20,7 +20,7 @@ export function QuickExpenseFab() {
     const [open, setOpen] = useState(false);
     const [text, setText] = useState("");
     const [cats, setCats] = useState<CategoryOption[]>([]);
-    const [selectedCat, setSelectedCat] = useState("");
+    const [pickedCat, setPickedCat] = useState("");   // the user's explicit choice
     const [touchedCat, setTouchedCat] = useState(false);
     const [committing, setCommitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -45,12 +45,13 @@ export function QuickExpenseFab() {
 
     const parsed = useMemo(() => parseExpenseInput(text, cats), [text, cats]);
     const detectedId = parsed.category?._id ?? null;
-    useEffect(() => { if (!touchedCat) setSelectedCat(detectedId ?? ""); }, [detectedId, touchedCat]);
+    // Follow the detected category until the user picks one themselves.
+    const selectedCat = touchedCat ? pickedCat : (detectedId ?? "");
 
     const canCommit = parsed.amount !== null && selectedCat !== "" && !committing;
     const dateLabel = isToday(parsed.date) ? "today" : isYesterday(parsed.date) ? "yesterday" : isTomorrow(parsed.date) ? "tomorrow" : format(parsed.date, "MMM d");
 
-    const reset = () => { setText(""); setSelectedCat(""); setTouchedCat(false); setError(null); };
+    const reset = () => { setText(""); setPickedCat(""); setTouchedCat(false); setError(null); };
 
     const commit = async () => {
         if (parsed.amount === null) { setError("Add an amount"); return; }
@@ -130,7 +131,7 @@ export function QuickExpenseFab() {
                             {/* Category (native select — reliable on mobile) */}
                             <select
                                 value={selectedCat}
-                                onChange={(e) => { setSelectedCat(e.target.value); setTouchedCat(true); }}
+                                onChange={(e) => { setPickedCat(e.target.value); setTouchedCat(true); }}
                                 className="w-full mt-3 bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-zinc-200 focus:outline-none focus:border-purple-500/50"
                             >
                                 <option value="" disabled>Pick a category</option>

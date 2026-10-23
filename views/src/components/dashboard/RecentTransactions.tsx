@@ -4,7 +4,7 @@ import { CreditCard } from "lucide-react";
 import { format } from "date-fns";
 import { useCurrency } from "@/lib/useCurrency";
 
-interface Transaction {
+export interface Transaction {
     _id: string;
     description: string;        // backend field (was previously misread as `title`)
     amount: number;

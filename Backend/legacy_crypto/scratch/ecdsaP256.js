@@ -1,3 +1,4 @@
+// WARNING: NOT CONSTANT-TIME — double-and-add scalar multiplication and BigInt arithmetic leak the nonce k / key d through timing; teaching code only, never use with real secrets (see legacy_crypto/README.md "Known limitations").
 'use strict';
 
 /*
@@ -74,10 +75,12 @@
  *   - Pick a fresh random ephemeral scalar k in [1, n-1]
  *   - Compute kG. Set r = (kG.x) mod n.
  *   - Set s = k⁻¹ · (z + r·d) mod n,  where d is the private scalar
+ *   - If s > n/2, replace it with n − s ("low-S" normalization)
  *   - Signature is (r, s)
  *
  * Verify:
- *   - Range-check r and s in [1, n-1]; check publicKey is a valid curve point
+ *   - Range-check r and s in [1, n-1]; reject s > n/2 (low-S rule);
+ *     check publicKey is a valid curve point with coordinates in [0, p)
  *   - z = SHA-256(message)
  *   - w = s⁻¹ mod n; u1 = z·w mod n; u2 = r·w mod n
  *   - Compute the point u1·G + u2·Q
@@ -345,9 +348,18 @@ function pointEquals(P, Q) {
  *
  * Used to validate public keys before using them in verification — the
  * defense against invalid-curve attacks.
+ *
+ * Both coordinates must also be CANONICAL field elements, 0 ≤ x, y < p.
+ * Without that range check, (x + p, y) would pass — the field helpers
+ * reduce mod p, so the curve equation still holds — and the same public
+ * key would have many byte-different encodings (and pointAdd's raw ===
+ * comparisons on coordinates would misbehave).
  */
 function isOnCurve(P) {
     if (P === null) return true;
+    if (typeof P !== 'object') return false;
+    if (typeof P.x !== 'bigint' || typeof P.y !== 'bigint') return false;
+    if (P.x < 0n || P.x >= p || P.y < 0n || P.y >= p) return false;
 
     const lhs = fSquare(P.y);
     const xCubed = fMul(fSquare(P.x), P.x);
@@ -455,6 +467,22 @@ function modInverseN(value) {
     return modInverse(value, n);
 }
 
+/*
+ * HALF_N = floor(n / 2). The "low-S" rule (BIP-62 / BIP-146 style, also
+ * what libsecp256k1 enforces) says a canonical signature has s ≤ n/2.
+ *
+ * Why it exists: if (r, s) is a valid ECDSA signature then so is (r, n − s)
+ * — negating k flips the sign of s but gives a point with the same x, so
+ * the same r. Without a canonical form, anyone can turn one valid signature
+ * into a second, byte-different valid signature without the private key
+ * ("signature malleability"). That breaks any system that uses the
+ * signature bytes as an identifier or a replay-protection key. We
+ * normalize on sign and, by default, reject s > n/2 on verify.
+ *
+ * Because n is odd, "s > n/2" is exactly "s > HALF_N".
+ */
+const HALF_N = n >> 1n;
+
 /**
  * Generate a fresh ECDSA keypair.
  *
@@ -491,6 +519,10 @@ function hashMessage(message) {
  *
  * IMPORTANT: a fresh random k must be generated for each signature — see
  * the file header on the Sony PS3 incident.
+ *
+ * The returned s is always LOW-S (s ≤ n/2): if the computed s is in the
+ * upper half we return n − s instead, which is the other valid signature
+ * for the same r. See HALF_N above for why.
  */
 function signECDSA(message, privateKey) {
     if (typeof privateKey !== 'bigint') {
@@ -511,8 +543,12 @@ function signECDSA(message, privateKey) {
         if (r === 0n) continue;
 
         const kInv = modInverseN(k);
-        const s    = (kInv * (z + r * privateKey)) % n;
+        let s      = (kInv * (z + r * privateKey)) % n;
         if (s === 0n) continue;
+
+        // Low-S normalization: (r, s) and (r, n − s) both verify; emit the
+        // canonical one.
+        if (s > HALF_N) s = n - s;
 
         return { r, s };
     }
@@ -523,12 +559,20 @@ function signECDSA(message, privateKey) {
  *
  * Returns boolean. Performs all the standard mandatory checks:
  *   - r and s are integers in [1, n-1]
- *   - Q is well-formed and lies on the curve
+ *   - s ≤ n/2 (low-S rule; see HALF_N) unless options.allowHighS is true
+ *   - Q is well-formed, has canonical coordinates in [0, p), and lies on
+ *     the curve
  *   - Q is not the point at infinity
  * before doing any signature math. This is the invalid-curve-attack
  * defense referenced in the file header.
+ *
+ * @param {object}  [options]
+ * @param {boolean} [options.allowHighS=false] — accept s > n/2. Only for
+ *        checking signatures from signers that do not normalize S (OpenSSL /
+ *        Node's crypto.sign, the RFC 6979 test vectors). Leave it off
+ *        anywhere signature bytes must be unique.
  */
-function verifyECDSA(message, signature, publicKey) {
+function verifyECDSA(message, signature, publicKey, options = {}) {
     // Argument shape checks — fail closed on any malformed input.
     if (!signature || typeof signature !== 'object') return false;
     const { r, s } = signature;
@@ -537,6 +581,10 @@ function verifyECDSA(message, signature, publicKey) {
     // Range checks: r, s in [1, n-1]
     if (r < 1n || r >= n) return false;
     if (s < 1n || s >= n) return false;
+
+    // Low-S rule: reject the malleable upper-half twin unless the caller
+    // explicitly opted in.
+    if (s > HALF_N && options.allowHighS !== true) return false;
 
     // Public key validity
     if (publicKey === null || typeof publicKey !== 'object') return false;
@@ -608,15 +656,35 @@ function encodeDERInteger(value) {
 }
 
 /**
- * Read a DER INTEGER (tag + length + bytes) and return [value, totalConsumed].
+ * Read a DER INTEGER (tag + length + bytes) that must end at or before
+ * `end`, and return [value, totalConsumed].
+ *
+ * STRICT: DER has exactly one valid encoding per value, and we accept only
+ * that one. Anything else is a different byte string for the "same"
+ * signature (malleability) or a parser-differential hazard, so we reject:
+ *   - a long-form length byte (0x8X). Every length in a P-256 signature is
+ *     < 128, and DER requires short form for those, so long form is always
+ *     non-minimal here;
+ *   - a zero-length INTEGER;
+ *   - a length that runs past the end of the enclosing SEQUENCE;
+ *   - a negative INTEGER (first content byte has its high bit set);
+ *   - a non-minimal INTEGER (leading 0x00 that is not needed to keep the
+ *     next byte's high bit clear).
  */
-function decodeDERInteger(buf, offset) {
-    if (buf[offset] !== 0x02) throw new Error('DER: expected INTEGER tag (0x02)');
+function decodeDERInteger(buf, offset, end) {
+    if (offset + 2 > end)       throw new Error('DER: truncated INTEGER');
+    if (buf[offset] !== 0x02)   throw new Error('DER: expected INTEGER tag (0x02)');
     const len = buf[offset + 1];
-    if (len & 0x80) throw new Error('DER: long-form length not supported (signature too large)');
+    if (len & 0x80)             throw new Error('DER: long-form length is non-minimal here');
+    if (len === 0)              throw new Error('DER: zero-length INTEGER');
+    if (offset + 2 + len > end) throw new Error('DER: INTEGER length exceeds SEQUENCE');
+
     const bytes = buf.subarray(offset + 2, offset + 2 + len);
-    const value = bigIntFromBuffer(bytes);
-    return [value, 2 + len];
+    if (bytes[0] & 0x80)        throw new Error('DER: negative INTEGER');
+    if (bytes.length > 1 && bytes[0] === 0x00 && (bytes[1] & 0x80) === 0) {
+        throw new Error('DER: non-minimal INTEGER encoding');
+    }
+    return [bigIntFromBuffer(bytes), 2 + len];
 }
 
 /**
@@ -636,6 +704,10 @@ function signatureToDER(signature) {
 
 /**
  * Decode an ASN.1 DER ECDSA signature into {r, s}.
+ *
+ * Strict DER only (see decodeDERInteger): short-form SEQUENCE length that
+ * matches the buffer exactly, exactly two minimal non-negative INTEGERs,
+ * and no bytes before or after them.
  */
 function signatureFromDER(buf) {
     if (!Buffer.isBuffer(buf)) {
@@ -645,12 +717,12 @@ function signatureFromDER(buf) {
         throw new Error('DER: expected SEQUENCE tag (0x30)');
     }
     const seqLen = buf[1];
-    if (seqLen & 0x80) throw new Error('DER: long-form length not supported');
+    if (seqLen & 0x80) throw new Error('DER: long-form length is non-minimal here');
     if (seqLen + 2 !== buf.length) throw new Error('DER: SEQUENCE length mismatch');
 
     let i = 2;
-    const [r, rConsumed] = decodeDERInteger(buf, i); i += rConsumed;
-    const [s, sConsumed] = decodeDERInteger(buf, i); i += sConsumed;
+    const [r, rConsumed] = decodeDERInteger(buf, i, buf.length); i += rConsumed;
+    const [s, sConsumed] = decodeDERInteger(buf, i, buf.length); i += sConsumed;
 
     if (i !== buf.length) throw new Error('DER: trailing bytes after s');
 
@@ -665,13 +737,14 @@ function signECDSADER(message, privateKey) {
 }
 
 /**
- * Convenience: verify a DER-encoded ECDSA signature Buffer.
+ * Convenience: verify a DER-encoded ECDSA signature Buffer. `options` is
+ * passed through to verifyECDSA (see allowHighS there).
  */
-function verifyECDSADER(message, derBuf, publicKey) {
+function verifyECDSADER(message, derBuf, publicKey, options = {}) {
     let signature;
     try { signature = signatureFromDER(derBuf); }
     catch { return false; }
-    return verifyECDSA(message, signature, publicKey);
+    return verifyECDSA(message, signature, publicKey, options);
 }
 
 
@@ -821,6 +894,133 @@ if (require.main === module) {
         record('Test 7: verify rejects public key not on the curve',
             offCurveConfirmed && rejected,
             `offCurveConfirmed=${offCurveConfirmed} rejected=${rejected}`);
+    }
+
+    // ── RFC 6979 Appendix A.2.5 known-answer vectors (P-256 + SHA-256) ──
+    // Source: https://www.rfc-editor.org/rfc/rfc6979.txt — Appendix A.2.5
+    // "ECDSA, 256 Bits (Prime Field)": private key x, public key U = xG,
+    // and the "With SHA-256" signatures for messages "sample" and "test".
+    // RFC 6979 derives k deterministically; this lab signs with a random k,
+    // so these are used as VERIFY vectors plus a key-derivation check.
+    const RFC6979_P256 = {
+        x:  0xC9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721n,
+        Ux: 0x60FED4BA255A9D31C961EB74C6356D68C049B8923B61FA6CE669622E60F29FB6n,
+        Uy: 0x7903FE1008B8BC99A41AE9E95628BC64F2F1B20C2D7E9F5177A3C294D4462299n,
+        // SHA-256, message = "sample" (note: s > n/2, i.e. a HIGH-S signature)
+        sample: {
+            r: 0xEFD48B2AACB6A8FD1140DD9CD45E81D69D2C877B56AAF991C34D0EA84EAF3716n,
+            s: 0xF7CB1C942D657C41D436C7A1B6E29F65F3E900DBB9AFF4064DC4AB2F843ACDA8n
+        },
+        // SHA-256, message = "test" (s < n/2, already low-S)
+        test: {
+            r: 0xF1ABB023518351CD71D881567B1EA663ED3EFCF6C5132B354F28D3B0B7D38367n,
+            s: 0x019F4113742A2B14BD25926B49C649155F267E60D3814B4C0CC84250E46F0083n
+        }
+    };
+    const rfcU    = { x: RFC6979_P256.Ux, y: RFC6979_P256.Uy };
+    const halfN   = n >> 1n;   // n is odd, so "s > n/2" ⇔ "s > floor(n/2)"
+
+    // ── Test 8: RFC 6979 public-key derivation x·G == U ─────────────────
+    {
+        const derived = scalarMultiply(RFC6979_P256.x, G);
+        const ok = pointEquals(derived, rfcU) && isOnCurve(rfcU);
+        record('Test 8: RFC 6979 A.2.5 public key derivation x·G == (Ux, Uy)', ok,
+            derived ? `got x=${derived.x.toString(16)} y=${derived.y.toString(16)}` : 'got ∞');
+    }
+
+    // ── Test 9: RFC 6979 "test" signature verifies (raw and DER) ────────
+    {
+        const sig       = RFC6979_P256.test;
+        const isLowS    = sig.s <= halfN;
+        const accept    = verifyECDSA('test', sig, rfcU);
+        const acceptDer = verifyECDSADER('test', signatureToDER(sig), rfcU);
+        const rejectMsg = !verifyECDSA('sample', sig, rfcU);
+        record('Test 9: RFC 6979 A.2.5 SHA-256 "test" signature verifies (raw + DER), wrong msg rejected',
+            isLowS && accept && acceptDer && rejectMsg,
+            `lowS=${isLowS} accept=${accept} acceptDer=${acceptDer} rejectMsg=${rejectMsg}`);
+    }
+
+    // ── Test 10: RFC 6979 "sample" signature is high-S → low-S policy ───
+    {
+        const sig        = RFC6979_P256.sample;
+        const isHighS    = sig.s > halfN;
+        // The published vector is mathematically valid ECDSA...
+        const validMath  = verifyECDSA('sample', sig, rfcU, { allowHighS: true });
+        // ...but this verifier enforces low-S by default (malleability fix),
+        const rejected   = !verifyECDSA('sample', sig, rfcU);
+        const rejectedDer = !verifyECDSADER('sample', signatureToDER(sig), rfcU);
+        // ...and accepts the canonical low-S twin (r, n − s).
+        const lowTwinOk  = verifyECDSA('sample', { r: sig.r, s: n - sig.s }, rfcU);
+        record('Test 10: RFC 6979 "sample" sig (high-S): valid with allowHighS, rejected by default, (r, n−s) accepted',
+            isHighS && validMath && rejected && rejectedDer && lowTwinOk,
+            `highS=${isHighS} validMath=${validMath} rejected=${rejected} rejectedDer=${rejectedDer} lowTwin=${lowTwinOk}`);
+    }
+
+    // ── Test 11: sign() always emits low-S; the high-S twin is rejected ─
+    {
+        let allLow = true, allVerify = true, twinRejected = true;
+        for (let i = 0; i < 16; i++) {
+            const sig = signECDSA(`low-s ${i}`, keypair.d);
+            if (sig.s > halfN) allLow = false;
+            if (!verifyECDSA(`low-s ${i}`, sig, keypair.Q)) allVerify = false;
+            if (verifyECDSA(`low-s ${i}`, { r: sig.r, s: n - sig.s }, keypair.Q)) twinRejected = false;
+        }
+        record('Test 11: 16 fresh signatures are all low-S and verify; each high-S twin (r, n−s) rejected',
+            allLow && allVerify && twinRejected,
+            `allLow=${allLow} allVerify=${allVerify} twinRejected=${twinRejected}`);
+    }
+
+    // ── Test 12: strict DER — reject non-canonical encodings ────────────
+    {
+        const sig   = RFC6979_P256.test;          // r has high bit set, s does not
+        const rRaw  = bigIntToBuffer(sig.r);      // 32 bytes, first byte 0xF1
+        const sRaw  = bigIntToBuffer(sig.s);      // 32 bytes, first byte 0x01
+        const B     = (...xs) => Buffer.concat(xs.map((x) => Buffer.isBuffer(x) ? x : Buffer.from(x)));
+        const int   = (body) => B([0x02, body.length], body);
+        const seq   = (inner) => B([0x30, inner.length], inner);
+        const rMin  = int(B([0x00], rRaw));       // canonical r: 0x00 pad needed
+        const sMin  = int(sRaw);                  // canonical s: no pad needed
+
+        const canonical = seq(B(rMin, sMin));
+        const canonicalOk = Buffer.compare(canonical, signatureToDER(sig)) === 0 &&
+                            verifyECDSADER('test', canonical, rfcU);
+
+        const bad = {
+            'non-minimal INTEGER (extra leading 0x00 on s)': seq(B(rMin, int(B([0x00], sRaw)))),
+            'negative INTEGER (r high bit set, no 0x00 pad)': seq(B(int(rRaw), sMin)),
+            'non-minimal SEQUENCE length (long form 0x81)':   (() => { const inner = B(rMin, sMin); return B([0x30, 0x81, inner.length], inner); })(),
+            'non-minimal INTEGER length (long form 0x81)':    seq(B([0x02, 0x81, 0x21], B([0x00], rRaw), sMin)),
+            'extra byte after SEQUENCE':                      B(canonical, [0x00]),
+            'extra byte inside SEQUENCE after s':             seq(B(rMin, sMin, [0x00])),
+            'zero-length INTEGER':                            seq(B([0x02, 0x00], rMin, sMin)),
+            'INTEGER length overruns SEQUENCE':               seq(B(rMin, [0x02, 0x40], sRaw))
+        };
+        const failures = [];
+        for (const [label, der] of Object.entries(bad)) {
+            let threw = false;
+            try { signatureFromDER(der); } catch { threw = true; }
+            const verifyRejects = !verifyECDSADER('test', der, rfcU);
+            if (!threw || !verifyRejects) failures.push(`${label}: threw=${threw} verifyRejects=${verifyRejects}`);
+        }
+        record(`Test 12: strict DER — canonical accepted, ${Object.keys(bad).length} non-canonical encodings rejected`,
+            canonicalOk && failures.length === 0,
+            `canonicalOk=${canonicalOk}; ${failures.join('; ')}`);
+    }
+
+    // ── Test 13: isOnCurve range check 0 ≤ x, y < p ─────────────────────
+    {
+        // (x + p, y) satisfies the curve equation mod p, but is not a
+        // canonical field element and must be rejected as a public key.
+        const shiftedX  = { x: rfcU.x + p, y: rfcU.y };
+        const shiftedY  = { x: rfcU.x, y: rfcU.y + p };
+        const negative  = { x: -1n, y: rfcU.y };
+        const rejectsX  = !isOnCurve(shiftedX) && !verifyECDSA('test', RFC6979_P256.test, shiftedX);
+        const rejectsY  = !isOnCurve(shiftedY) && !verifyECDSA('test', RFC6979_P256.test, shiftedY);
+        const rejectsNeg = !isOnCurve(negative);
+        const stillAcceptsU = isOnCurve(rfcU);
+        record('Test 13: isOnCurve rejects (x+p, y), (x, y+p) and negative coords; verify rejects them as keys',
+            rejectsX && rejectsY && rejectsNeg && stillAcceptsU,
+            `rejectsX=${rejectsX} rejectsY=${rejectsY} rejectsNeg=${rejectsNeg} acceptsU=${stillAcceptsU}`);
     }
 
     process.exit(allPass ? 0 : 1);

@@ -1,23 +1,38 @@
-version: "3.9"
+# Self-host stack (VPS). Only the web app is published; the API and MongoDB
+# are reachable only on the internal compose network.
+#
+#   cp .env.example .env    # fill in every secret
+#   docker compose up --build -d
+#
+# Topology: browser -> frontend (Next proxy, :3000) -> backend (:5000) -> mongo
+# The frontend proxy adds PROXY_SHARED_SECRET to every API call and the
+# backend refuses requests without it.
 
 services:
   backend:
     build: ./Backend
     container_name: finassist-api
     restart: unless-stopped
-    ports:
-      - "5000:5000"
+    expose:
+      - "5000"            # internal only — not published to the host
     environment:
       NODE_ENV: production
       PORT: 5000
-      MONGO_URI: ${MONGO_URI}
-      JWT_SECRET: ${JWT_SECRET}
+      # One proxy hop: the Next container.
+      TRUST_PROXY: 1
+      # Least-privilege app user (readWrite on finassist only), created by
+      # docker/mongo-init.js on first start.
+      MONGO_URI: mongodb://${MONGO_APP_USER:?set MONGO_APP_USER}:${MONGO_APP_PASSWORD:?set MONGO_APP_PASSWORD}@mongo:27017/finassist?authSource=finassist
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
       ACCESS_TOKEN_TTL: ${ACCESS_TOKEN_TTL:-15m}
-      # Required — the backend refuses to start without these (64 hex chars each).
-      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY}
-      EMAIL_HASH_SECRET: ${EMAIL_HASH_SECRET}
+      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:?set MASTER_ENCRYPTION_KEY}
+      EMAIL_HASH_SECRET: ${EMAIL_HASH_SECRET:?set EMAIL_HASH_SECRET}
+      PROXY_SHARED_SECRET: ${PROXY_SHARED_SECRET:?set PROXY_SHARED_SECRET}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
-      # Optional outbound SMTP (unset → verification emails log to the console).
+      # Email verification is on in production; the API refuses to start
+      # without a mail provider unless REQUIRE_EMAIL_VERIFICATION=false.
+      REQUIRE_EMAIL_VERIFICATION: ${REQUIRE_EMAIL_VERIFICATION:-true}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
@@ -30,13 +45,15 @@ services:
     build:
       context: ./views
       args:
-        # Baked into the Next.js rewrite at build time so /api proxies to the
-        # backend service (same-origin in the browser → SameSite cookies work).
+        # Baked into the fallback rewrite at build time.
         BACKEND_ORIGIN: http://backend:5000
     container_name: finassist-web
     restart: unless-stopped
     ports:
       - "3000:3000"
+    environment:
+      BACKEND_ORIGIN: http://backend:5000
+      PROXY_SHARED_SECRET: ${PROXY_SHARED_SECRET:?set PROXY_SHARED_SECRET}
     depends_on:
       - backend
 
@@ -44,12 +61,17 @@ services:
     image: mongo:8
     container_name: finassist-mongo
     restart: unless-stopped
-    ports:
-      - "27017:27017"
+    # No `ports:` — MongoDB is never exposed to the host or the internet.
     volumes:
       - mongo_data:/data/db
+      - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/init.js:ro
     environment:
+      # Authentication is on whenever a root user is defined.
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:?set MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD}
       MONGO_INITDB_DATABASE: finassist
+      MONGO_APP_USER: ${MONGO_APP_USER:?set MONGO_APP_USER}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?set MONGO_APP_PASSWORD}
 
 volumes:
   mongo_data:

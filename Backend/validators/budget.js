@@ -1,12 +1,15 @@
 const { z } = require('zod');
-const { expenseCategoryEnum } = require('./common');
+const { objectId } = require('./common');
 
 const year  = z.coerce.number().int().min(2020).max(2100);
 const month = z.coerce.number().int().min(1).max(12);
 
+// G1: category is the id of one of the user's Category rows (type expense or
+// both) — the same id an Expense stores. The controller runs
+// utils/categoryGuard for existence / ownership / archive / type.
 const create = z
     .object({
-        category:       expenseCategoryEnum,
+        category:       objectId,
         limit:          z.number().nonnegative().max(1e12),
         month:          z.number().int().min(1).max(12),
         year:           z.number().int().min(2020).max(2100),
@@ -14,6 +17,8 @@ const create = z
     })
     .strict();
 
+// Category is deliberately not editable: the budget row IS the
+// (category, month, year) slot. Delete + re-create to move a limit.
 const update = z
     .object({
         limit:          z.number().nonnegative().max(1e12).optional(),
@@ -27,7 +32,7 @@ const list = z
     .object({
         month:    month.optional(),
         year:     year.optional(),
-        category: expenseCategoryEnum.optional(),
+        category: objectId.optional(),
     })
     .strict();
 

@@ -1,0 +1,16 @@
+# Keep the build context minimal and never bake local state into the image.
+node_modules
+npm-debug.log
+.env
+.env.*
+!.env.example
+*.log
+tests
+# The from-scratch crypto lab is teaching code the API never loads.
+legacy_crypto
+__pycache__
+coverage
+.git
+.gitignore
+Dockerfile
+.dockerignore

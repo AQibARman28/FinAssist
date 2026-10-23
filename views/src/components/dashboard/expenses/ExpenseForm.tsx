@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Plus, Loader2, AlertCircle } from "lucide-react";
 import { api } from "@/lib/api";
+import { apiErrorMessage, apiFieldErrors } from "@/lib/apiError";
 import { CategoryPicker } from "@/components/CategoryPicker";
 import { useCurrency } from "@/lib/useCurrency";
 import { parseAmount } from "@/lib/parseAmount";
@@ -64,14 +65,10 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
             });
             setFormData({ ...formData, title: "", amount: "", note: "" });
             onAdd();
-        } catch (err: any) {
-            const errs = err.response?.data?.errors;
-            if (errs?.category) setCategoryError(errs.category);
-            setServerError(
-                err.response?.data?.message
-                || (errs && Object.values(errs).join(", "))
-                || "Failed to add expense"
-            );
+        } catch (err: unknown) {
+            const errs = apiFieldErrors(err);
+            if (errs.category) setCategoryError(errs.category);
+            setServerError(apiErrorMessage(err, "Failed to add expense"));
         } finally {
             setIsLoading(false);
         }

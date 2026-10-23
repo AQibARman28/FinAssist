@@ -21,32 +21,31 @@ export default function ExpensesPage() {
         saved: 0,   // saved into goals this month — set aside, not spent
     });
 
-    const fetchStats = async () => {
-        try {
-            const now = new Date();
-            const year = now.getFullYear();
-            const month = now.getMonth() + 1;
-
-            const [sumRes, balRes] = await Promise.all([
-                api.get(`/expenses/summary/${year}/${month}`),
-                api.get(`/analytics/balance`),
-            ]);
-            const total = sumRes.data.data.totalSpent || 0;
-            const saved = balRes.data?.data?.monthly?.saved || 0;
-
-            setStats({
-                totalSpent: total,
-                dailyAverage: total / new Date().getDate(), // Average so far today
-                month: format(now, "MMMM"),
-                saved,
-            });
-        } catch (err) {
-            console.error("Failed to fetch stats", err);
-        }
-    };
-
+    // Re-fetch the stat tiles whenever something on the page adds, edits or
+    // deletes an expense (state is only set from the async callback).
     useEffect(() => {
-        fetchStats();
+        let cancelled = false;
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = now.getMonth() + 1;
+
+        Promise.all([
+            api.get(`/expenses/summary/${year}/${month}`),
+            api.get(`/analytics/balance`),
+        ])
+            .then(([sumRes, balRes]) => {
+                if (cancelled) return;
+                const total = sumRes.data.data.totalSpent || 0;
+                const saved = balRes.data?.data?.monthly?.saved || 0;
+                setStats({
+                    totalSpent: total,
+                    dailyAverage: total / new Date().getDate(), // Average so far today
+                    month: format(now, "MMMM"),
+                    saved,
+                });
+            })
+            .catch((err) => console.error("Failed to fetch stats", err));
+        return () => { cancelled = true; };
     }, [refreshTrigger]);
 
     const handleRefresh = () => {
@@ -120,7 +119,7 @@ export default function ExpensesPage() {
                 <div id="expense-detail-form">
                     <ExpenseForm onAdd={handleRefresh} />
                 </div>
-                <ExpenseList refreshTrigger={refreshTrigger} />
+                <ExpenseList refreshTrigger={refreshTrigger} onChange={handleRefresh} />
             </div>
         </div>
     );

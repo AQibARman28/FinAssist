@@ -6,9 +6,9 @@
 
 const native = require('../utils/nativeCrypto');
 const User = require('../models/User');
-const { masterDecrypt, safeDecrypt } = require('../utils/encryption');
+const { masterDecrypt, FIELDS, openField } = require('../utils/encryption');
 const { hasLegacyKeyBundle, regenerateUserKeyBundle } = require('../utils/keyManagement');
-const { COOKIE_ACCESS } = require('../utils/sessions');
+const { COOKIE_ACCESS, jwtSecrets } = require('../utils/sessions');
 
 const protect = async (req, res, next) => {
     try {
@@ -19,7 +19,7 @@ const protect = async (req, res, next) => {
 
         let decoded;
         try {
-            decoded = native.verifyJwt(token, process.env.JWT_SECRET);
+            decoded = native.verifyJwt(token, jwtSecrets());
         } catch {
             return res.status(401).json({ success: false, message: 'Session expired or invalid.' });
         }
@@ -49,8 +49,8 @@ const protect = async (req, res, next) => {
             }
 
             req.user = user;
-            req.user._name  = await safeDecrypt(user.name, req.dataKey);
-            req.user._email = await safeDecrypt(user.email, req.dataKey);
+            req.user._name  = await openField(user.name, req.dataKey, FIELDS.userName, user._id);
+            req.user._email = await openField(user.email, req.dataKey, FIELDS.userEmail, user._id);
         } else {
             // Legacy user without encryption at all
             req.dataKey = null;

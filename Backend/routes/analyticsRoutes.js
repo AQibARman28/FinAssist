@@ -1,7 +1,6 @@
 const express = require('express');
 const {
     monthlyAnalytics,
-    recurringExpenses,
     recurringIncome,
     highSpendingCategories,
     expenseIncomeRatio,
@@ -19,7 +18,6 @@ const router = express.Router();
 router.use(protect);
 
 router.get('/monthly-analytics',    monthlyAnalytics);
-router.get('/recurring-expenses',   recurringExpenses);     // deprecated, returns []
 router.get('/recurring-income',     recurringIncome);
 router.get('/high-spending',        highSpendingCategories);
 router.get('/expense-income-ratio', expenseIncomeRatio);

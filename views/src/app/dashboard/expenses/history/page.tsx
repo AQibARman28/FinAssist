@@ -6,20 +6,15 @@ import { format } from "date-fns";
 import { ArrowLeft, Search, Loader2, Receipt, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { useCurrency } from "@/lib/useCurrency";
-import { iconFor, type IconName } from "@/lib/categoryIcons";
+import { ExpenseRow, type ExpenseItem, type ExpenseCategory } from "@/components/dashboard/expenses/ExpenseRow";
 
-interface Expense {
-    _id: string;
-    description: string;
-    amount: number;
-    category: string; // ObjectId
-    date: string;
-}
-interface Category {
-    _id: string;
-    name: string;
-    color: string;
-    icon: IconName;
+type Expense = ExpenseItem;
+type Category = ExpenseCategory;
+
+interface Loaded {
+    key: string;                       // which period this data belongs to
+    expenses: Expense[];
+    catMap: Record<string, Category>;
 }
 
 type Mode = "month" | "year";
@@ -45,18 +40,23 @@ async function fetchAllExpenses(startDate: string, endDate: string): Promise<Exp
 }
 
 export default function ExpenseHistoryPage() {
-    const { format: fmt, formatExpense } = useCurrency();
-    const now = new Date();
+    const { format: fmt } = useCurrency();
+    const [now] = useState(() => new Date());
 
     // Period selection
     const [mode, setMode] = useState<Mode>("month");
     const [year, setYear] = useState<number>(now.getFullYear());
     const [month, setMonth] = useState<number>(now.getMonth()); // 0-11
 
-    // Data
-    const [expenses, setExpenses] = useState<Expense[]>([]);
-    const [catMap, setCatMap] = useState<Record<string, Category>>({});
-    const [loading, setLoading] = useState(true);
+    // Data — tagged with the period it was fetched for, so "loading" is simply
+    // "the data on hand belongs to a different period". `reloadKey` re-fetches
+    // the same period in the background after an edit/delete.
+    const periodKey = `${mode}|${year}|${month}`;
+    const [loaded, setLoaded] = useState<Loaded | null>(null);
+    const [reloadKey, setReloadKey] = useState(0);
+    const loading = loaded?.key !== periodKey;
+    const expenses = useMemo(() => loaded?.expenses ?? [], [loaded]);
+    const catMap = useMemo(() => loaded?.catMap ?? {}, [loaded]);
 
     // Search / filter / sort
     const [search, setSearch] = useState("");
@@ -71,7 +71,7 @@ export default function ExpenseHistoryPage() {
 
     useEffect(() => {
         let cancelled = false;
-        setLoading(true);
+        const key = `${mode}|${year}|${month}`;
         const start = mode === "month"
             ? new Date(Date.UTC(year, month, 1, 0, 0, 0, 0))
             : new Date(Date.UTC(year, 0, 1, 0, 0, 0, 0));
@@ -87,13 +87,25 @@ export default function ExpenseHistoryPage() {
                 if (cancelled) return;
                 const map: Record<string, Category> = {};
                 for (const c of catsRes.data?.data ?? []) map[c._id] = c;
-                setCatMap(map);
-                setExpenses(exp);
+                setLoaded({ key, expenses: exp, catMap: map });
             })
-            .catch((err) => { if (!cancelled) { console.error(err); setExpenses([]); } })
-            .finally(() => { if (!cancelled) setLoading(false); });
+            .catch((err) => {
+                if (cancelled) return;
+                console.error(err);
+                setLoaded({ key, expenses: [], catMap: {} });
+            });
         return () => { cancelled = true; };
-    }, [mode, year, month]);
+    }, [mode, year, month, reloadKey]);
+
+    // Optimistic local update, then a background re-fetch (picks up a newly
+    // created category, or drops a row whose date moved out of the period).
+    const handleUpdated = (updated: Expense) => {
+        setLoaded((prev) => prev && { ...prev, expenses: prev.expenses.map((e) => (e._id === updated._id ? updated : e)) });
+        setReloadKey((k) => k + 1);
+    };
+    const handleDeleted = (id: string) => {
+        setLoaded((prev) => prev && { ...prev, expenses: prev.expenses.filter((e) => e._id !== id) });
+    };
 
     // Client-side search + amount filter + sort (descriptions are encrypted at
     // rest, so text search can only happen after decryption on the client).
@@ -265,28 +277,15 @@ export default function ExpenseHistoryPage() {
                     </div>
                 ) : (
                     <div className="space-y-2">
-                        {visible.map((e) => {
-                            const cat = catMap[e.category];
-                            const Icon = iconFor(cat?.icon);
-                            return (
-                                <div key={e._id} className="flex items-center justify-between p-4 rounded-2xl bg-black/20 hover:bg-white/5 border border-transparent hover:border-white/5 transition-all">
-                                    <div className="flex items-center gap-4 min-w-0">
-                                        <div className="p-3 rounded-xl shrink-0" style={{ backgroundColor: cat ? `${cat.color}22` : "rgba(255,255,255,0.05)" }}>
-                                            <Icon className="w-5 h-5" style={cat ? { color: cat.color } : undefined} />
-                                        </div>
-                                        <div className="min-w-0">
-                                            <h4 className="text-white font-medium text-sm truncate" title={e.description}>{e.description}</h4>
-                                            <div className="flex gap-2 text-xs text-zinc-500 mt-0.5">
-                                                <span>{cat?.name ?? "Uncategorized"}</span>
-                                                <span>•</span>
-                                                <span className="tabular-nums">{format(new Date(e.date), "MMM d, yyyy")}</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <span className="text-white font-medium text-sm tabular-nums shrink-0 ml-3">{formatExpense(e.amount)}</span>
-                                </div>
-                            );
-                        })}
+                        {visible.map((e) => (
+                            <ExpenseRow
+                                key={e._id}
+                                expense={e}
+                                category={catMap[e.category]}
+                                onUpdated={handleUpdated}
+                                onDeleted={handleDeleted}
+                            />
+                        ))}
                     </div>
                 )}
             </div>

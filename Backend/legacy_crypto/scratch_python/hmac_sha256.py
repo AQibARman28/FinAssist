@@ -42,13 +42,23 @@ Both XOR steps need a key that is exactly one block of the hash function
 Why ipad = 0x36 and opad = 0x5C specifically
 ─────────────────────────────────────────────────────────────────────────────
 The two pad bytes are 0x36 = 0011_0110 and 0x5C = 0101_1100. Their
-bitwise XOR is 0110_1010 — exactly 4 of 8 bits differ, the maximum
-possible "spread" between two byte values. That means K' XOR ipad and
-K' XOR opad differ in *half* of all bit positions of the prepared key,
-so the inner and outer hash inputs are well separated even when the
-underlying key is the same. This is what gives HMAC its security proof
-and what makes it resistant to related-key attacks even when the
-underlying hash function isn't.
+bitwise XOR is 0110_1010 = 0x6A, so they differ in 4 of the 8 bit
+positions. That is NOT the maximum possible — two bytes can differ in
+all 8 bits (0x00 vs 0xFF). And the bit count is not what HMAC's
+security rests on: the proofs (Bellare-Canetti-Krawczyk 1996; Bellare
+2006) need the inner and outer keys K' XOR ipad and K' XOR opad to be
+DIFFERENT, i.e. ipad != opad, plus an assumption about the compression
+function keyed with that fixed pair of related keys. Any two distinct
+constants give distinct keys; 0x36/0x5C are simply the values the
+designers fixed, with a comfortable Hamming distance between them.
+
+Reusing the prepared key
+─────────────────────────────────────────────────────────────────────────────
+K' XOR ipad and K' XOR opad depend only on the key, so a caller that
+MACs many messages under one key (PBKDF2 does it `iterations` times)
+should prepare them once: create_hmac_sha256(key) returns a function
+that reuses them. That matters most for keys longer than 64 bytes, which
+would otherwise be re-hashed on every call.
 
 Allowed dependencies
 ─────────────────────────────────────────────────────────────────────────────
@@ -77,8 +87,9 @@ BLOCK_SIZE = 64
 IPAD_BYTE = 0x36
 
 # OPAD_BYTE — the byte value the prepared key gets XORed with for the
-# outer hash. 0x5C = 0101_1100. As noted above, ipad and opad were
-# chosen to differ in 4 of 8 bit positions for maximum separation.
+# outer hash. 0x5C = 0101_1100. As noted above, what matters is that it
+# differs from IPAD_BYTE (they differ in 4 of 8 bit positions), so the
+# inner and outer hashes are keyed differently.
 OPAD_BYTE = 0x5C
 
 
@@ -139,20 +150,16 @@ def _xor_with_byte(buf, byte_value):
 # Main HMAC routine
 # ─────────────────────────────────────────────────────────────────────────────
 
-def hmac_sha256(key, message):
-    """Compute HMAC-SHA256 of `message` under shared secret `key`.
+def create_hmac_sha256(key):
+    """Prepare the HMAC key state for `key` ONCE and return a function
+    that computes HMAC-SHA256(key, message) for any message.
 
-      HMAC(K, m) = sha256( (K' XOR opad) || sha256( (K' XOR ipad) || m ) )
+        mac = create_hmac_sha256(key)
+        mac(m1); mac(m2)        # no per-call key preparation
 
-    Args:
-        key:     str, bytes, or bytearray — the shared secret.
-        message: str, bytes, or bytearray — the message to authenticate.
-
-    Returns:
-        bytes of length 32 — the authentication tag.
+    The returned function holds K' XOR ipad and K' XOR opad (64 bytes
+    each).
     """
-    msg_buf = _to_bytes(message, 'message')
-
     # Bring the key to exactly one hash block (64 bytes).
     k = _prepare_key(key)
 
@@ -161,16 +168,39 @@ def hmac_sha256(key, message):
     k_ipad = _xor_with_byte(k, IPAD_BYTE)
     k_opad = _xor_with_byte(k, OPAD_BYTE)
 
-    # Inner hash: takes the message itself, prefixed with the ipad-key.
-    # Length-extension attacks against this inner output are possible,
-    # but that's fine — only the outer hash is ever published.
-    inner_input = k_ipad + msg_buf
-    inner_hash = sha256(inner_input)
+    def hmac_with_prepared_key(message):
+        msg_buf = _to_bytes(message, 'message')
 
-    # Outer hash: a fixed 64+32 = 96 byte input — opad-key concatenated
-    # with the inner digest. This is what we return as the HMAC.
-    outer_input = k_opad + inner_hash
-    return sha256(outer_input)
+        # Inner hash: takes the message itself, prefixed with the
+        # ipad-key. Length-extension attacks against this inner output
+        # are possible, but that's fine — only the outer hash is ever
+        # published.
+        inner_hash = sha256(k_ipad + msg_buf)
+
+        # Outer hash: a fixed 64+32 = 96 byte input — opad-key
+        # concatenated with the inner digest. This is the HMAC.
+        return sha256(k_opad + inner_hash)
+
+    return hmac_with_prepared_key
+
+
+def hmac_sha256(key, message):
+    """Compute HMAC-SHA256 of `message` under shared secret `key`.
+
+      HMAC(K, m) = sha256( (K' XOR opad) || sha256( (K' XOR ipad) || m ) )
+
+    One-shot convenience over create_hmac_sha256 (prepares the key on
+    every call).
+
+    Args:
+        key:     str, bytes, or bytearray — the shared secret.
+        message: str, bytes, or bytearray — the message to authenticate.
+
+    Returns:
+        bytes of length 32 — the authentication tag.
+    """
+    _to_bytes(message, 'message')        # type-check the message first, as before
+    return create_hmac_sha256(key)(message)
 
 
 def hmac_sha256_hex(key, message):
@@ -220,6 +250,28 @@ if __name__ == "__main__":
             print(f'FAIL  {v["name"]}')
             print(f'      got      = {got}')
             print(f'      expected = {v["expected"]}')
+
+    # Prepared-key reuse: one create_hmac_sha256(key) instance, called
+    # repeatedly on different messages, must match the one-shot function,
+    # including for a key longer than the 64-byte block (hashed first).
+    try:
+        reuse_ok = True
+        keys = [v["key"] for v in vectors] + [b"\x5a" * 200]
+        messages = [v["message"] for v in vectors] + [b"", b"\x01" * 1000]
+        for key in keys:
+            mac = create_hmac_sha256(key)
+            for m in messages + messages:            # each message twice
+                if mac(m) != hmac_sha256(key, m):
+                    reuse_ok = False
+        for v in vectors:
+            if create_hmac_sha256(v["key"])(v["message"]).hex() != v["expected"]:
+                reuse_ok = False
+    except Exception as exc:                          # noqa: BLE001
+        reuse_ok = False
+        print(f"      raised {type(exc).__name__}: {exc}")
+    if not reuse_ok:
+        all_pass = False
+    print(f"{'PASS' if reuse_ok else 'FAIL'}  create_hmac_sha256 reuse matches one-shot (RFC 4231 #1-#3 + 200-byte key)")
 
     if not all_pass:
         sys.exit(1)

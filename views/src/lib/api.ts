@@ -68,6 +68,7 @@ api.interceptors.response.use(
                 useAuthStore.getState().setUser(null);
             } catch { /* swallow — we're already bouncing */ }
             if (typeof window !== "undefined") {
+                // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- axios interceptor runs outside React (no router here); a full reload to /login is intended, to drop all client state once the session is unrecoverable
                 window.location.href = "/login";
             }
             return Promise.reject(refreshErr);

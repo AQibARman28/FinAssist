@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 
 // Mirror the server password policy (Backend/validators/common.js).
 const PASSWORD_RULES = [
-    { id: "len", label: "At least 6 characters", test: (s: string) => s.length >= 6 },
+    { id: "len", label: "At least 8 characters", test: (s: string) => s.length >= 8 },
 ] as const;
 
 const RESEND_COOLDOWN = 30;

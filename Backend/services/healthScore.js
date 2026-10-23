@@ -9,6 +9,8 @@
  * score means "no data to measure this" — it is EXCLUDED from the composite and
  * the remaining weights are renormalized. We never fabricate a number or
  * default-punish (that was the old bug: missing data → a misleading 20).
+ * Exception (G6): spending with zero income is NOT missing data — the
+ * savings-rate and expense-to-income factors score 0 so the deficit counts.
  */
 
 const HEALTH_WINDOW_DAYS = 90;
@@ -23,10 +25,19 @@ const WEIGHTS = Object.freeze({
 
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 
+// Zero income in the window is only "missing data" when there is no spending
+// either. Spending with no income is a deficit, so the income-based factors
+// score 0 instead of dropping out (G6). Otherwise a user with steady spending
+// and no income was rated on stability alone and showed 100/"Excellent".
+const hasSpending = (expense) => typeof expense === 'number' && expense > 0;
+
 // ── Factor 1: savings rate (weight 30) ───────────────────────────────────────
 function savingsRateFactor(income, expense) {
     const base = { weight: WEIGHTS.savings, label: 'Savings rate' };
-    if (!income || income <= 0) return { ...base, score: null, detail: 'No income logged yet' };
+    if (!income || income <= 0) {
+        if (hasSpending(expense)) return { ...base, score: 0, detail: 'Spending with no income logged' };
+        return { ...base, score: null, detail: 'No income logged yet' };
+    }
 
     const rate = (income - expense) / income;
     let score;
@@ -108,7 +119,10 @@ function spendingStabilityFactor(weeklySpends) {
 // ── Factor 5: expense-to-income ratio (weight 10) ────────────────────────────
 function expenseIncomeRatioFactor(income, expense) {
     const base = { weight: WEIGHTS.ratio, label: 'Expense-to-income' };
-    if (!income || income <= 0) return { ...base, score: null, detail: 'No income logged yet' };
+    if (!income || income <= 0) {
+        if (hasSpending(expense)) return { ...base, score: 0, detail: 'Spending with no income logged' };
+        return { ...base, score: null, detail: 'No income logged yet' };
+    }
 
     const r = expense / income;
     let score;

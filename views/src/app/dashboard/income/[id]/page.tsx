@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { Loader2, AlertCircle } from "lucide-react";
 import { api } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/apiError";
 import { IncomeForm } from "@/components/dashboard/income/IncomeForm";
 
 interface IncomeApi {
@@ -32,8 +33,8 @@ export default function EditIncomePage() {
             try {
                 const res = await api.get(`/incomes/${id}`);
                 if (!cancelled) setLoaded(res.data?.data ?? null);
-            } catch (err: any) {
-                if (!cancelled) setError(err.response?.data?.message || "Failed to load income");
+            } catch (err: unknown) {
+                if (!cancelled) setError(apiErrorMessage(err, "Failed to load income"));
             } finally {
                 if (!cancelled) setLoading(false);
             }

@@ -6,15 +6,17 @@ import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
+import { apiErrorBody } from "@/lib/apiError";
 import { useAuthStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { VerifyCode } from "@/components/auth/VerifyCode";
 
 // Mirrors the server's password policy (Backend/validators/common.js).
 // Showing it client-side stops users from staring at a generic
-// "Invalid request" while wondering which rule they broke.
+// "Invalid request" while wondering which rule they broke. The server also
+// refuses very common and breached passwords, and says so in its message.
 const PASSWORD_RULES = [
-    { id: "len", label: "At least 6 characters", test: (s: string) => s.length >= 6 },
+    { id: "len", label: "At least 8 characters", test: (s: string) => s.length >= 8 },
 ] as const;
 
 export default function RegisterPage() {
@@ -73,13 +75,13 @@ export default function RegisterPage() {
                 setUser(res.data.data);
                 router.push("/dashboard");
             }
-        } catch (err: any) {
-            const data = err.response?.data;
+        } catch (err: unknown) {
+            const data = apiErrorBody(err);
             if (data?.errors && typeof data.errors === "object") {
                 setFieldErrors(data.errors);
                 // Surface the first field-specific message as the banner too
                 // so the user sees what's wrong without having to look down.
-                const first = Object.values(data.errors as Record<string, string>)[0];
+                const first = Object.values(data.errors)[0];
                 setError(first || data.message || "Registration failed.");
             } else {
                 setError(data?.message || "Registration failed. Please try again.");

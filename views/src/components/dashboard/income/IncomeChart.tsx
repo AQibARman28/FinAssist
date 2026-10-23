@@ -23,9 +23,17 @@ export function IncomeChart({ granularity }: { granularity: IncomeGranularity })
     const [data, setData] = useState<TimelineData | null>(null);
     const [loading, setLoading] = useState(true);
 
+    // `loading` starts true; on a granularity switch it is turned back on
+    // during render (React's "store the previous prop" pattern) instead of
+    // synchronously inside the fetch effect.
+    const [prevGranularity, setPrevGranularity] = useState(granularity);
+    if (granularity !== prevGranularity) {
+        setPrevGranularity(granularity);
+        setLoading(true);
+    }
+
     useEffect(() => {
         let cancelled = false;
-        setLoading(true);
         api.get(`/incomes/timeline?granularity=${granularity}`)
             .then((res) => { if (!cancelled) setData(res.data?.data ?? null); })
             .catch((err) => { if (!cancelled) { console.error("income timeline fetch failed", err); setData(null); } })

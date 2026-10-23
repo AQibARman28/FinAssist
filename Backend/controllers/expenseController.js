@@ -1,9 +1,13 @@
 const Expense = require('../models/Expense');
-const Budget = require('../models/Budget');
-const { encrypt, safeDecrypt } = require('../utils/encryption');
-const { signRecord, verifyRecord, encryptNote, decryptNote } = require('../utils/signing');
+const { FIELDS, sealField, openField } = require('../utils/encryption');
+const { signRecord, encryptNote, decryptNote } = require('../utils/signing');
+const { checkRecords, flag } = require('../utils/integrity');
+const { logAudit } = require('../utils/audit');
 const { assertCategoryOwnedAndTyped } = require('../utils/categoryGuard');
 const { materializeRecurring } = require('../utils/recurring');
+
+// The plaintext fields the ECDSA attestation covers.
+const { expense: attestationPayload } = require('../utils/attestationPayloads');
 
 // Default materialization window when the client doesn't pass a date filter.
 function _defaultWindow() {
@@ -24,8 +28,8 @@ function _defaultWindow() {
 
 async function decryptExpense(expense, user, dataKey) {
     const obj = expense.toObject ? expense.toObject({ virtuals: true }) : { ...expense };
-    obj.description = await safeDecrypt(expense.description, dataKey);
-    obj.note = expense.note ? await decryptNote(expense.note, user, dataKey) : null;
+    obj.description = await openField(expense.description, dataKey, FIELDS.expenseDescription, user._id);
+    obj.note = expense.note ? await decryptNote(expense.note, user, dataKey, FIELDS.expenseNote) : null;
     return obj;
 }
 
@@ -40,9 +44,9 @@ const createExpense = async (req, res) => {
         }
 
         const expDate           = date ? new Date(date) : new Date();
-        const encDesc           = description ? (await encrypt(description, req.dataKey)) : undefined;
+        const encDesc           = description ? (await sealField(description, req.dataKey, FIELDS.expenseDescription, req.user._id)) : undefined;
         const serverAttestation = await signRecord({ amount, category }, req.user, req.dataKey);
-        const encNote           = req.body.note ? (await encryptNote(req.body.note, req.user)) : undefined;
+        const encNote           = req.body.note ? (await encryptNote(req.body.note, req.user, req.dataKey, FIELDS.expenseNote)) : undefined;
 
         const expense = await Expense.create({
             user:        req.user._id,
@@ -54,8 +58,10 @@ const createExpense = async (req, res) => {
             note:        encNote,
         });
 
-        await updateBudgetSpent(req.user._id, category, expDate.getMonth() + 1, expDate.getFullYear());
+        // Budget spend is computed on read (services/budgetSpend.js) — no
+        // stored Budget.spent to keep in sync here.
 
+        logAudit(req, 'expense.create', req.user._id, { expenseId: expense._id.toString(), amount });
         res.status(201).json({ success: true, data: await decryptExpense(expense, req.user, req.dataKey) });
     } catch (error) {
         console.error('Create expense error:', error);
@@ -95,13 +101,9 @@ const getExpenses = async (req, res) => {
             .limit(limit * 1)
             .skip((page - 1) * limit);
 
+        const issues = await checkRecords(req, 'expense', expenses, attestationPayload);
         const items = [];
-        for (const e of expenses) {
-            if (e.serverAttestation && !(await verifyRecord({ amount: e.amount, category: e.category }, e.serverAttestation, req.user))) {
-                console.warn(`serverAttestation failed verification on expense ${e._id} (user ${req.user._id})`);
-            }
-            items.push(await decryptExpense(e, req.user, req.dataKey));
-        }
+        for (const e of expenses) items.push(flag(await decryptExpense(e, req.user, req.dataKey), issues));
 
         const total = await Expense.countDocuments(query);
 
@@ -127,11 +129,8 @@ const getExpenseById = async (req, res) => {
         const expense = await Expense.findOne({ _id: req.params.id, user: req.user._id });
         if (!expense) return res.status(404).json({ success: false, message: 'Expense not found' });
 
-        if (expense.serverAttestation && !(await verifyRecord({ amount: expense.amount, category: expense.category }, expense.serverAttestation, req.user))) {
-            console.warn(`serverAttestation failed verification on expense ${expense._id} (user ${req.user._id})`);
-        }
-
-        res.json({ success: true, data: await decryptExpense(expense, req.user, req.dataKey) });
+        const issues = await checkRecords(req, 'expense', [expense], attestationPayload);
+        res.json({ success: true, data: flag(await decryptExpense(expense, req.user, req.dataKey), issues) });
     } catch (error) {
         console.error('Get expense error:', error);
         res.status(500).json({ success: false, message: 'Server error fetching expense' });
@@ -151,35 +150,40 @@ const updateExpense = async (req, res) => {
             }
         }
 
+        // Compound filter prevents IDOR.
+        const current = await Expense.findOne({ _id: req.params.id, user: req.user._id });
+        if (!current) return res.status(404).json({ success: false, message: 'Expense not found' });
+
         const updates = {};
         if (req.body.amount      !== undefined) updates.amount      = req.body.amount;
         if (req.body.category    !== undefined) updates.category    = req.body.category;
-        if (req.body.description !== undefined) updates.description = await encrypt(req.body.description, req.dataKey);
+        if (req.body.description !== undefined) updates.description = await sealField(req.body.description, req.dataKey, FIELDS.expenseDescription, req.user._id);
         if (req.body.date        !== undefined) updates.date        = req.body.date;
         if (req.body.note        !== undefined) {
             updates.note = (req.body.note === null || req.body.note === '')
                 ? null
-                : (await encryptNote(req.body.note, req.user));
+                : (await encryptNote(req.body.note, req.user, req.dataKey, FIELDS.expenseNote));
         }
+        // Re-sign over the values the record will hold after this update, so
+        // an edit made through the app never reads as tampering and one made
+        // behind its back always does (supersedes the create-only rule in
+        // docs/decisions/SEC-1-ecdsa.md).
+        updates.serverAttestation = await signRecord(
+            attestationPayload({ amount: updates.amount ?? current.amount, category: updates.category ?? current.category }),
+            req.user, req.dataKey,
+        );
 
-        // serverAttestation is set on creation and NOT regenerated on update —
-        // see docs/decisions/SEC-1-ecdsa.md.
-
-        // Compound filter prevents IDOR.
-        const before = await Expense.findOneAndUpdate(
+        const updated = await Expense.findOneAndUpdate(
             { _id: req.params.id, user: req.user._id },
             updates,
-            { runValidators: true }   // returns the pre-update document
+            { runValidators: true, new: true },
         );
-        if (!before) return res.status(404).json({ success: false, message: 'Expense not found' });
+        if (!updated) return res.status(404).json({ success: false, message: 'Expense not found' });
 
-        const updated = await Expense.findOne({ _id: req.params.id, user: req.user._id });
+        // Budget spend is computed on read — moving an expense between
+        // categories or months is reflected automatically.
 
-        const oldDate = new Date(before.date);
-        const newDate = new Date(updated.date);
-        await updateBudgetSpent(req.user._id, before.category,  oldDate.getMonth() + 1, oldDate.getFullYear());
-        await updateBudgetSpent(req.user._id, updated.category, newDate.getMonth() + 1, newDate.getFullYear());
-
+        logAudit(req, 'expense.update', req.user._id, { expenseId: updated._id.toString(), fields: Object.keys(updates).filter((k) => k !== 'serverAttestation') });
         res.json({ success: true, data: await decryptExpense(updated, req.user, req.dataKey) });
     } catch (error) {
         console.error('Update expense error:', error);
@@ -193,9 +197,7 @@ const deleteExpense = async (req, res) => {
         const deleted = await Expense.findOneAndDelete({ _id: req.params.id, user: req.user._id });
         if (!deleted) return res.status(404).json({ success: false, message: 'Expense not found' });
 
-        const d = new Date(deleted.date);
-        await updateBudgetSpent(req.user._id, deleted.category, d.getMonth() + 1, d.getFullYear());
-
+        logAudit(req, 'expense.delete', req.user._id, { expenseId: deleted._id.toString(), amount: deleted.amount });
         res.json({ success: true, message: 'Expense deleted successfully' });
     } catch (error) {
         console.error('Delete expense error:', error);
@@ -258,32 +260,9 @@ const getMonthlySummary = async (req, res) => {
     }
 };
 
-// updateBudgetSpent — recompute the Budget row's `spent` field for the
-// affected month/category after an expense write.
-//
-// PART 3 NOTE — this path is a temporary no-op for newly-created expenses.
-// Expense.category is now an ObjectId (this commit); Budget.category is
-// still a String enum (Part 4 changes it). Mongoose schema-casts the
-// ObjectId filter to a hex string against Budget.category — no budget
-// matches — so spent stops being recalculated until Part 4 lands the
-// matching Budget refactor. The function is kept in place so Part 4 only
-// has to touch the Budget side, not re-wire the call sites.
-const updateBudgetSpent = async (userId, category, month, year) => {
-    try {
-        const startDate = new Date(year, month - 1, 1);
-        const endDate   = new Date(year, month, 0, 23, 59, 59);
-        const result = await Expense.aggregate([
-            { $match: { user: userId, category, date: { $gte: startDate, $lte: endDate } } },
-            { $group: { _id: null, total: { $sum: '$amount' } } }
-        ]);
-        await Budget.findOneAndUpdate(
-            { user: userId, category, month, year },
-            { spent: result.length > 0 ? result[0].total : 0 },
-            { upsert: false }
-        );
-    } catch (error) {
-        console.error('Update budget spent error:', error);
-    }
-};
+// G1: the old updateBudgetSpent (a stored Budget.spent recomputed after each
+// expense write) is gone. Budget.category is now the same Category ObjectId
+// as Expense.category and spend is computed on read in
+// services/budgetSpend.js, so it can't drift from the expenses.
 
 module.exports = { createExpense, getExpenses, getExpenseById, updateExpense, deleteExpense, getMonthlySummary };

@@ -39,7 +39,9 @@ const update = z
 const allocate = z
     .object({
         allocations: z.array(z.object({ goalId: objectId, amount: z.number().positive().max(1e12) }).strict()).min(1),
-        date:        isoDate.optional(),
+        // No `date`: allocations are recorded as of now. A client-chosen date
+        // could backdate contributions into closed months and rewrite their
+        // closing balances.
         note:        z.string().max(500).optional(),
     })
     .strict();

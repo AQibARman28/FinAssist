@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { headers } from "next/headers";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ServiceWorkerRegister } from "@/components/ServiceWorkerRegister";
@@ -35,11 +36,15 @@ export const viewport: Viewport = {
   viewportFit: "cover",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // Reading the request headers opts every page into dynamic rendering, which
+  // the per-request CSP nonce set in src/proxy.ts needs: Next stamps that
+  // nonce onto its own scripts only when it renders the page per request.
+  await headers();
   return (
     <html lang="en">
       <body

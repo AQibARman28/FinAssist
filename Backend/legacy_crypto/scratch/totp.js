@@ -196,6 +196,19 @@ function generateSecret(byteLength = 20) {
     return crypto.randomBytes(byteLength);
 }
 
+/*
+ * Allowed code lengths. RFC 4226 §5.3 requires at least 6 digits. The
+ * dynamic-truncation value is a 31-bit integer (< 2^31 ≈ 2.1 × 10^9), so
+ * any length past 10 digits only adds leading zeros — no extra security.
+ * Anything outside 6..10 is rejected by generateTOTP and verifyTOTP.
+ */
+const MIN_DIGITS = 6;
+const MAX_DIGITS = 10;
+
+function isValidDigits(digits) {
+    return Number.isInteger(digits) && digits >= MIN_DIGITS && digits <= MAX_DIGITS;
+}
+
 /**
  * Convert a Unix-timestamp-in-seconds and a `period` (seconds per code)
  * into the integer counter that HOTP consumes.
@@ -298,8 +311,8 @@ function generateTOTP(secret, options = {}) {
     if (typeof algorithm !== 'string' || algorithm.toUpperCase() !== 'SHA256') {
         throw new Error(`generateTOTP: algorithm "${algorithm}" not supported (this implementation uses SHA256 only)`);
     }
-    if (!Number.isInteger(digits) || digits < 1) {
-        throw new Error('generateTOTP: digits must be a positive integer');
+    if (!isValidDigits(digits)) {
+        throw new Error(`generateTOTP: digits must be an integer from ${MIN_DIGITS} to ${MAX_DIGITS}`);
     }
     if (!Number.isFinite(period) || period <= 0) {
         throw new Error('generateTOTP: period must be a positive number');
@@ -317,7 +330,7 @@ function generateTOTP(secret, options = {}) {
  * @param {string|Buffer} secret    — same secret used to generate
  * @param {object}        [options]
  * @param {number}        [options.window=1]  — accept codes from ±window steps
- * @param {number}        [options.digits=6]
+ * @param {number}        [options.digits=6]  — 6..10
  * @param {number}        [options.period=30]
  * @param {number}        [options.timestamp] — seconds since epoch; defaults to now
  * @param {string}        [options.algorithm='SHA256']
@@ -334,20 +347,23 @@ function verifyTOTP(code, secret, options = {}) {
 
     if (typeof algorithm !== 'string' || algorithm.toUpperCase() !== 'SHA256') return false;
     if (!Number.isInteger(window) || window < 0) return false;
+    if (!isValidDigits(digits)) return false;
     if (code.length !== digits) return false;
 
     const currentCounter = counterFromTime(timestamp, period);
 
-    // Try each counter in [current - window, current + window]. If any
-    // matches, the code is valid. We use constant-time comparison on each
-    // candidate so an attacker can't use timing to determine which step
-    // matched (or how many leading digits they got right).
+    // Compute EVERY counter in [current - window, current + window] and
+    // OR the constant-time comparison results together; decide only after
+    // the loop. Returning on the first match would make the response time
+    // depend on which step matched (and whether any did), which is exactly
+    // what the constant-time compare is trying to hide.
+    let matched = 0;
     for (let offset = -window; offset <= window; offset++) {
         const trial = hotp(secret, currentCounter + offset, digits);
-        if (constantTimeStringEqual(trial, code)) return true;
+        matched |= constantTimeStringEqual(trial, code) ? 1 : 0;
     }
 
-    return false;
+    return matched === 1;
 }
 
 
@@ -464,6 +480,56 @@ if (require.main === module) {
             }
         }
         record('Test 5: RFC 4648 base32 known vectors', allOk, detail.join('; '));
+    }
+
+    // ── Test 6: verify scans the WHOLE window, even after a match ───────
+    {
+        // Wrap the module's hotp binding to count calls. A code from the
+        // EARLIEST step in the window used to return after 1 call; the
+        // full scan must compute all 2·window + 1 candidates.
+        const realHotp = hotp;
+        let calls = 0;
+        hotp = (...args) => { calls++; return realHotp(...args); };   // eslint-disable-line no-func-assign
+        const failures = [];
+        try {
+            const secret = generateSecret();
+            const T = 1_000_000;
+            for (const window of [1, 2, 3]) {
+                const earliest = generateTOTP(secret, { timestamp: T - 30 * window });
+                calls = 0;
+                const ok = verifyTOTP(earliest, secret, { timestamp: T, window });
+                if (!ok || calls !== 2 * window + 1) failures.push(`window=${window}: ok=${ok} hotpCalls=${calls}`);
+                calls = 0;
+                const noMatch = verifyTOTP(earliest === '000000' ? '000001' : '000000', secret, { timestamp: T + 30 * 50, window });
+                if (noMatch || calls !== 2 * window + 1) failures.push(`window=${window} (no match): ok=${noMatch} hotpCalls=${calls}`);
+            }
+        } finally {
+            hotp = realHotp;                                           // eslint-disable-line no-func-assign
+        }
+        record('Test 6: verifyTOTP computes all 2·window+1 steps whether or not (or where) a code matches',
+            failures.length === 0, failures.join('; '));
+    }
+
+    // ── Test 7: digits restricted to 6–10 ───────────────────────────────
+    {
+        const secret = generateSecret();
+        const failures = [];
+        for (const digits of [6, 8, 10]) {
+            const code = generateTOTP(secret, { timestamp: 59, digits });
+            if (code.length !== digits || !verifyTOTP(code, secret, { timestamp: 59, digits })) {
+                failures.push(`digits=${digits} should work`);
+            }
+        }
+        for (const digits of [0, 4, 5, 11, 12, 6.5]) {
+            let threw = false;
+            try { generateTOTP(secret, { timestamp: 59, digits }); } catch { threw = true; }
+            // Even a "matching" code of that length must not verify.
+            const len = Number.isInteger(digits) && digits > 0 ? digits : 6;
+            const verified = verifyTOTP('1'.repeat(len), secret, { timestamp: 59, digits });
+            if (!threw || verified) failures.push(`digits=${digits}: generateThrew=${threw} verified=${verified}`);
+        }
+        record('Test 7: digits outside 6–10 rejected by generateTOTP and verifyTOTP', failures.length === 0,
+            failures.join('; '));
     }
 
     process.exit(allPass ? 0 : 1);

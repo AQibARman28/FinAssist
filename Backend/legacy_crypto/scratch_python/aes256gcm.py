@@ -1,3 +1,4 @@
+# WARNING: NOT CONSTANT-TIME — table-lookup S-box and bit-branching GHASH leak key-dependent timing; teaching code only, never use with real secrets (see legacy_crypto/README.md "Known limitations").
 """
 AES-256-GCM implemented from scratch.
 
@@ -57,8 +58,14 @@ other "treat a buffer as a big number" convention works.
 
 The practical consequence: "multiply by x" in GF(2^128) — which
 mathematically shifts coefficients up by one degree — looks like a
-*right* shift of the byte buffer, with reduction by the magic value 0xE1
-(the bit-reversal of 0x87, the natural form of the AES polynomial). If
+*right* shift of the byte buffer, with reduction by the magic value 0xE1.
+0xE1 = 1110_0001 is the bit-reversal of 0x87 = 1000_0111, and 0x87 is
+the low-order part x^7 + x^2 + x + 1 of GCM's GF(2^128) reduction
+polynomial x^128 + x^7 + x^2 + x + 1, written in ordinary
+most-significant-bit-first order (the same constant appears as Rb in
+CMAC and in XTS's tweak doubling). It is NOT the AES polynomial: AES's
+S-box and MixColumns work in GF(2^8) with x^8 + x^4 + x^3 + x + 1 =
+0x11B (see _gmul below). If
 you write GHASH using the "obvious" left-shift convention you get a
 function that produces the wrong answer on every input. This is the
 single most common GCM implementation bug.

@@ -1,4 +1,21 @@
-const { rsaEncrypt, rsaDecrypt, eccSign, eccVerify, getUserPrivateKeys } = require('./keyManagement');
+/**
+ * signing.js — record attestations and encrypted notes.
+ *
+ * Attestations: the server signs the plaintext fields of a record (amount,
+ * category, …) with the owner's ECDSA P-256 key, at creation and on every
+ * update. attestationStatus() tells apart 'valid', 'missing' (the signature
+ * was stripped, or the record predates signing) and 'invalid' (the fields
+ * were changed outside the app), so controllers can flag the record instead
+ * of quietly serving it.
+ *
+ * Notes: encrypted with the user's AES-256-GCM data key and bound to
+ * owner + field (utils/encryption.js). The previous RSA-OAEP scheme could
+ * hold at most 190 bytes, so longer notes crashed the request; notes written
+ * with it still decrypt.
+ */
+
+const { rsaDecrypt, eccSign, eccVerify, getUserPrivateKeys } = require('./keyManagement');
+const { encrypt, decrypt, fieldContext } = require('./encryption');
 
 // Sort top-level keys so signRecord and verifyRecord agree regardless of
 // payload construction order.
@@ -23,25 +40,35 @@ async function verifyRecord(payload, signature, user) {
     return await eccVerify(canonicalJSON(payload), signature, user.eccPublicKey);
 }
 
-async function encryptNote(plaintext, user) {
-    if (!plaintext || !user?.rsaPublicKey) return null;
-    return await rsaEncrypt(plaintext, user.rsaPublicKey);
+// 'valid' | 'missing' | 'invalid'
+async function attestationStatus(payload, signature, user) {
+    if (!signature) return 'missing';
+    return (await verifyRecord(payload, signature, user)) ? 'valid' : 'invalid';
 }
 
-// Graceful: old notes (encrypted with a pre-migration RSA key) cannot decrypt
-// against the new PEM private key. Catch and return null with a warning so
-// listing a record with a legacy note doesn't surface a 500 to the user.
-// Bounded surface: only applies to notes encrypted before the key migration
-// at login.
-async function decryptNote(ciphertext, user, dataKey) {
-    if (!ciphertext || !user?.encryptedRsaPrivateKey || !dataKey) return null;
+// `field` names the note's home, e.g. 'expense.note' — it becomes part of the
+// AAD so a note can't be moved onto another user's record or another field.
+async function encryptNote(plaintext, user, dataKey, field) {
+    if (!plaintext) return null;
+    if (!user?._id || !dataKey || !field) throw new TypeError('encryptNote: user, dataKey and field are required');
+    return encrypt(plaintext, dataKey, fieldContext(field, user._id));
+}
+
+// Notes that fail authentication read as null with a warning rather than a
+// 500, so one damaged note can't break a whole list.
+async function decryptNote(ciphertext, user, dataKey, field) {
+    if (!ciphertext || !user || !dataKey) return null;
     try {
+        if (typeof ciphertext === 'string' && ciphertext.startsWith('v2:')) {
+            return await decrypt(ciphertext, dataKey, fieldContext(field, user._id));
+        }
+        // Legacy RSA-OAEP note.
         const { rsaPrivateKey } = await getUserPrivateKeys(user, dataKey);
         return await rsaDecrypt(ciphertext, rsaPrivateKey);
     } catch (err) {
-        console.warn(`decryptNote: legacy or corrupt note for user ${user?._id} — ${err.message}`);
+        console.warn(`decryptNote: unreadable note for user ${user?._id} — ${err.message}`);
         return null;
     }
 }
 
-module.exports = { signRecord, verifyRecord, encryptNote, decryptNote };
+module.exports = { signRecord, verifyRecord, attestationStatus, encryptNote, decryptNote, canonicalJSON };

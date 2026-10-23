@@ -1,0 +1,59 @@
+# Runs on every push and pull request: both test suites, type-check, lint,
+# a production build, the dependency audit, and the guard that keeps the
+# from-scratch crypto lab out of the request path.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: API tests and audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: Backend/package-lock.json
+      - run: npm ci
+      - name: Jest (with an in-memory MongoDB)
+        run: npx jest --ci
+      - name: Crypto lab stays out of the request path
+        run: node legacy_crypto/check-no-imports.js
+      - name: Audit shipped dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  frontend:
+    name: Web type-check, lint, tests and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: views
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: views/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - name: Audit shipped dependencies
+        run: npm audit --omit=dev --audit-level=high

@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const crypto = require('node:crypto');
 const native = require('../utils/nativeCrypto');
+const { verifyWrapped } = require('../utils/legacyPasswords');
 
 const userSchema = new mongoose.Schema({
     // PII — stored AES-256-GCM encrypted with per-user dataKey
@@ -12,10 +13,12 @@ const userSchema = new mongoose.Schema({
     emailHash: { type: String, required: true, unique: true },
 
     // Password hash. Format depends on passwordHashScheme:
-    //   'argon2id': argon2.hash() encoded string ($argon2id$v=19$m=…)
-    //   'pbkdf2'  : legacy `pbkdf2-sha256$<iter>$<saltHex>$<dkHex>`
-    password: { type: String, required: [true, 'Password is required'], minlength: 6 },
-    passwordHashScheme: { type: String, enum: ['pbkdf2', 'argon2id'], default: 'argon2id' },
+    //   'argon2id'        : argon2.hash() encoded string ($argon2id$v=19$m=…)
+    //   'pbkdf2'          : legacy `pbkdf2-sha256$<iter>$<saltHex>$<dkHex>`
+    //   'pbkdf2-argon2id' : legacy hash wrapped in Argon2id (utils/legacyPasswords.js)
+    // Length policy is enforced on the plaintext by validators/common.js.
+    password: { type: String, required: [true, 'Password is required'] },
+    passwordHashScheme: { type: String, enum: ['pbkdf2', 'pbkdf2-argon2id', 'argon2id'], default: 'argon2id' },
 
     currency: { type: String, default: 'BDT' },
 
@@ -39,14 +42,18 @@ const userSchema = new mongoose.Schema({
     passwordResetExpiresAt: { type: Date,   default: null },
     passwordResetAttempts:  { type: Number, default: 0 },
 
-    // ── Login lockout (SEC-1 Phase 4) ───────────────────────────────────────
-    // Counters reset on every successful login. After 5 failures inside the
-    // sliding window, lockedUntil is set to (now + 15 min * 2^lockoutCount),
-    // i.e. exponential backoff on repeat lockouts.
-    failedLoginAttempts:       { type: Number, default: 0 },
-    firstFailedLoginAt:        { type: Date,   default: null },
-    lockedUntil:               { type: Date,   default: null },
-    lockoutCount:              { type: Number, default: 0 },
+    // ── Pending email change ────────────────────────────────────────────────
+    // A new email only takes effect once the 6-digit code sent to it is
+    // confirmed. pendingEmail is encrypted like `email`; the code is stored as
+    // sha256, exactly like the verification and reset codes.
+    pendingEmail:         { type: String, default: null },
+    pendingEmailHash:     { type: String, default: null },
+    emailChangeToken:     { type: String, default: null },
+    emailChangeExpiresAt: { type: Date,   default: null },
+    emailChangeAttempts:  { type: Number, default: 0 },
+
+    // Sign-in throttling lives in models/LoginThrottle.js (keyed by emailHash)
+    // so that known and unknown emails are throttled identically.
 
     // ── TOTP rate-limit + replay protection (SEC-1 Phase 4) ─────────────────
     failedTotpAttempts: { type: Number, default: 0 },
@@ -70,6 +77,15 @@ const userSchema = new mongoose.Schema({
     // ── Two-Factor Authentication (TOTP) ────────────────────────────────────
     twoFactorEnabled: { type: Boolean, default: false },
     twoFactorSecret:  { type: String }, // base32 secret, AES-encrypted with dataKey
+    // HMAC algorithm the authenticator app computes. New enrolments use SHA-1
+    // (what Google Authenticator, Authy and Microsoft Authenticator actually
+    // compute); unset means an account enrolled before that, on SHA-256.
+    twoFactorAlgorithm: { type: String, enum: ['sha1', 'sha256'] },
+    // One-time recovery codes, stored as sha256 of the normalized code.
+    twoFactorRecoveryCodes: [{
+        hash:   { type: String, required: true },
+        usedAt: { type: Date,   default: null },
+    }],
 
     // Month-rollover tracking: the "YYYY-MM" the user last handled the
     // first-of-month carry-forward prompt for. Null until the first rollover.
@@ -89,19 +105,16 @@ userSchema.pre('save', async function (next) {
 });
 
 // Verify a candidate password against the stored hash. Returns Boolean.
-// Branches on passwordHashScheme:
-//   'argon2id' (or undefined with an argon2-prefixed hash) → native argon2 verify
-//   'pbkdf2'   (or undefined with the legacy prefix)       → Node PBKDF2 verify
+// The stored format decides the scheme:
+//   $argon2…                → native argon2 verify
+//   wrap$pbkdf2-sha256$…    → PBKDF2 then Argon2id (utils/legacyPasswords.js)
+//   pbkdf2-sha256$…         → Node PBKDF2 verify
 userSchema.methods.comparePassword = async function (candidate) {
-    if (typeof candidate !== 'string') return false;
+    if (typeof candidate !== 'string' || typeof this.password !== 'string') return false;
 
-    const scheme = this.passwordHashScheme
-        || (this.password?.startsWith('$argon2')          ? 'argon2id'
-        :  this.password?.startsWith('pbkdf2-sha256$')    ? 'pbkdf2'
-        :  null);
-
-    if (scheme === 'argon2id') return native.verifyPassword(candidate, this.password);
-    if (scheme === 'pbkdf2')   return _verifyPbkdf2Legacy(candidate, this.password);
+    if (this.password.startsWith('$argon2'))            return native.verifyPassword(candidate, this.password);
+    if (this.password.startsWith('wrap$pbkdf2-sha256$')) return verifyWrapped(candidate, this.password);
+    if (this.password.startsWith('pbkdf2-sha256$'))      return _verifyPbkdf2Legacy(candidate, this.password);
     return false;
 };
 

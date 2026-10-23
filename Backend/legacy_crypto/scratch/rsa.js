@@ -1,3 +1,4 @@
+// WARNING: NOT CONSTANT-TIME — square-and-multiply modPow over BigInt (no blinding) leaks the private exponent through timing; teaching code only, never use with real secrets (see legacy_crypto/README.md "Known limitations").
 'use strict';
 
 /*
@@ -59,12 +60,18 @@
  *
  * Manger's attack: why uniform OAEP errors are mandatory
  * ─────────────────────────────────────────────────────────────────────────────
- * In 2001 James Manger published an attack on PKCS#1 v1.5 (the predecessor
- * to OAEP) that works against any RSA implementation that distinguishes
- * different padding-validation failures. By submitting carefully chosen
- * ciphertexts and watching which error message comes back, the attacker
- * can recover the entire plaintext one bit at a time, in roughly k log(k)
- * decryption queries where k is the bit length of n.
+ * Two classic padding-oracle attacks, one per RSA padding scheme:
+ *   - Bleichenbacher (CRYPTO 1998) attacks PKCS#1 v1.5 encryption padding:
+ *     a server that reveals whether a ciphertext decrypts to something
+ *     starting 0x00 0x02 lets an attacker decrypt any ciphertext with on
+ *     the order of a million adaptive queries.
+ *   - Manger (CRYPTO 2001) attacks OAEP itself (PKCS#1 v2): if an
+ *     implementation lets an attacker tell "the leading byte Y was not
+ *     0x00" apart from the other decoding failures (lHash mismatch,
+ *     missing 0x01 separator) — via different error messages or timing —
+ *     the attacker can recover the plaintext of a target ciphertext in a
+ *     little over log2(n) oracle queries, i.e. about as many queries as n
+ *     has bits. (It recovers the plaintext, not the private key.)
  *
  * OAEP itself is provably IND-CCA2 secure, but only under the assumption
  * that the implementation never reveals which step of decoding failed.
@@ -80,10 +87,15 @@
  *
  * Performance note
  * ─────────────────────────────────────────────────────────────────────────────
- * Pure-BigInt RSA in JavaScript is slow:
- *   - Key generation: ~5–30 seconds (Miller-Rabin × ~1500 candidate primes).
- *   - Encryption: ~10 ms (e=65537 needs only 17 squarings).
- *   - Decryption: ~100–500 ms (d is ~2048 bits, so 2048 squarings).
+ * Pure-BigInt RSA in JavaScript is slow compared with OpenSSL. Measured
+ * figures (Intel i9-11900H, Node 24.16, Windows 11, 2026-10-20; your
+ * machine will differ):
+ *   - Key generation (2048-bit): 0.13–0.82 s, median 0.30 s over 50 runs.
+ *     The spread comes from how many random candidates are rejected
+ *     before two primes pass Miller-Rabin.
+ *   - OAEP encryption: ~0.2 ms (e=65537 needs only 17 multiplications).
+ *   - OAEP decryption: ~10 ms (d is ~2048 bits: ~2048 squarings plus
+ *     ~1024 multiplications, and no CRT).
  *
  * That's fine for a per-request workload but unacceptable for a
  * high-throughput server. Production systems use Node's `crypto` module,
@@ -681,6 +693,10 @@ function rsaDecryptOAEP(ciphertext, privateKey) {
     if (ciphertext.length !== k) throw new Error('OAEP decoding error');
 
     const c  = bigIntFromBuffer(ciphertext);
+    // RFC 8017 §7.1.2 step 2b: a ciphertext representative outside [0, n)
+    // is reported as the same "decryption error" as every other failure,
+    // not as rsaDecryptRaw's distinguishable RangeError.
+    if (c >= privateKey.n) throw new Error('OAEP decoding error');
     const m  = rsaDecryptRaw(c, privateKey);
     const em = bigIntToBuffer(m, k);
     return oaepDecode(em, k);
@@ -708,10 +724,11 @@ module.exports = {
 //   node rsa.js
 //
 // Tests 1–4 are fast (small numbers, no key generation). Test 5 generates
-// a real 2048-bit keypair and runs an OAEP round-trip — that's the slow
-// part, somewhere between 5 and 30 seconds depending on machine speed and
-// how many primality candidates Miller-Rabin needs to reject. Tests 6–7
-// reuse the keypair from Test 5, so they're fast.
+// a real 2048-bit keypair and runs an OAEP round-trip — the slowest part,
+// typically well under a second (0.13–0.82 s measured; see the
+// performance note in the file header). Tests 6–7 reuse the keypair from
+// Test 5. Tests 8–9 decrypt Project Wycheproof vectors with Wycheproof's
+// own fixed key.
 // ─────────────────────────────────────────────────────────────────────────────
 if (require.main === module) {
     let allPass = true;
@@ -780,7 +797,7 @@ if (require.main === module) {
     // ── Test 5: full RSA-2048 OAEP round-trip (SLOW) ────────────────────
     let keys = null;
     {
-        process.stdout.write('  generating RSA-2048 keypair (this takes 5-30 seconds)... ');
+        process.stdout.write('  generating RSA-2048 keypair (typically under 1 second)... ');
         const t0 = Date.now();
         keys     = generateRSAKeyPair(2048);
         const ms = Date.now() - t0;
@@ -836,6 +853,292 @@ if (require.main === module) {
         record('Test 7: oversized message (200 bytes) rejected by OAEP',
             threw && /too long/i.test(msg),
             `threw=${threw} msg="${msg}"`);
+    }
+
+    // ── Project Wycheproof RSA-OAEP vectors ─────────────────────────────
+    // Source: https://raw.githubusercontent.com/C2SP/wycheproof/main/testvectors_v1/rsa_oaep_2048_sha256_mgf1sha256_test.json
+    // (Project Wycheproof, C2SP; file SHA-256 83dce701e3d8640ac56e6d7bf37a5a8f9bd6a336e1e932a1e9bfe4ba9c5ea3a9;
+    //  "algorithm": "RSAES-OAEP", "numberOfTests": 37; testGroups[0]: keySize 2048,
+    //  sha SHA-256, mgf MGF1, mgfSha SHA-256).
+    // Subset: valid tcIds [1, 3, 7, 11, 21, 22], invalid tcIds [12, 13, 17, 19, 23, 24, 26, 27, 28, 29, 32] — all with an empty
+    // label, since this lab's OAEP has no label parameter. Generated by script from
+    // the downloaded JSON: privateKey.modulus / publicExponent / privateExponent and
+    // tests[].{tcId, result, flags, comment, msg, ct} are copied verbatim.
+    const WYCHEPROOF_OAEP = {
+        n: '00a2b451a07d0aa5f96e455671513550514a8a5b462ebef717094fa1fee82224' +
+           'e637f9746d3f7cafd31878d80325b6ef5a1700f65903b469429e89d6eac88450' +
+           '97b5ab393189db92512ed8a7711a1253facd20f79c15e8247f3d3e42e46e48c9' +
+           '8e254a2fe9765313a03eff8f17e1a029397a1fa26a8dce26f490ed81299615d9' +
+           '814c22da610428e09c7d9658594266f5c021d0fceca08d945a12be82de4d1ece' +
+           '6b4c03145b5d3495d4ed5411eb878daf05fd7afc3e09ada0f1126422f590975a' +
+           '1969816f48698bcbba1b4d9cae79d460d8f9f85e7975005d9bc22c4e5ac0f7c1' +
+           'a45d12569a62807d3b9a02e5a530e773066f453d1f5b4c2e9cf7820283f742b9' +
+           'd5',
+        e: '010001',
+        d: '24cdc62317f5d72a6f6ba6cc9632899b01d1ff28867d72f61688995bc855a4e4' +
+           '20a8405250089bdb13cf8e09543827b748b9d27fbb2b4d9e20af8c5a6a862796' +
+           'd1a4cc18ad16ea678bc1bd4a83bbbe9c5e57453b5ce7388e41a3ba4ce2b77b44' +
+           '38a229e954f720dae0353dc088ac8a76b26dc276f8e1b7851ddd6398ad16ff2e' +
+           '78195123b9b036e945c38c9d12434f6df76fe22359eb3e1ac9c011678fc926fa' +
+           'd3ae475a4fffff55feb2d147e9c894f4c0e29a599e762462482d968bf4278094' +
+           '5fc0d2c31c573c4431b8f4fe8b8c67bec815abd44f7a86edca1c2308737358d2' +
+           'c2ae5e2e0e2dadf730980262377e58b13b7d9992060a0bc870ccfdb4a9319ee1',
+        tests: [
+            {
+                tcId: 1, result: 'valid', flags: ["Normal"],
+                comment: "",
+                msg: '',
+                ct: '6e62bf24d95aff6868afec2a92a445b6458f16f688c19fe1212f66a631378316' +
+                    '53cedd359d8cff4dd485d77dfd55812c181373201f54aafd65730d2a304e6234' +
+                    '55d51125d891e65d97fce52341cae45fb64c38a384a1c621e2713ee6794633f0' +
+                    '29a9fd4d774f56551eac2176162e162640f25eab873a3451c475570f19228bce' +
+                    'de4c67c370a75ed7fabccd538c9819eff182481b10d42f1a9f6a05373b8cf9b7' +
+                    '1818d467bd3b8ebacb619e8ad42916e600c043effceb3855bc48a629e60ae886' +
+                    'f51b2a7876b0e623fb2ce68af4b039242f963adb0e4240aed0ed07f65f1ee7c0' +
+                    'cc77d210d0c2d1dc10c81b881aa0c9c9e9499665cf2970d2ccfeeb3191531765'
+            },
+            {
+                tcId: 3, result: 'valid', flags: ["Normal"],
+                comment: "",
+                msg: '54657374',
+                ct: '5eab3f0741e63986ed647d53e1cd71df041986900803d0f99c68355d249a15a4' +
+                    '7dc5b4f70a191477654299e5a2731f3b4eec76dea18262fc696ac794e5f66cbf' +
+                    'cddac4472c578e246c26707598055584540b839836b1404c5611ae558a984cee' +
+                    '8fd036cea924e0be2474a940f61e0acc14fcae95ebdc59942a9ce9af9a9c8199' +
+                    '9f7f6815f057ffdc2533cb15d6391d1e2d95f16f9c04209c889a4c359c7d2926' +
+                    'd28a66e2b030a416b928d2825627998e5191fb4983a6e65024262d94fc09187a' +
+                    '2d78162122433251d1bfcc8e507d06eba2d229c10031261da32ab8ccd15f1c5f' +
+                    '9fbf07ed158483d736a110af4b44d6a4da60d6cb519b4454213cf9f0dc560f2b'
+            },
+            {
+                tcId: 7, result: 'valid', flags: ["Normal"],
+                comment: "",
+                msg: 'e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff',
+                ct: '096958786ee7972050d67a9e4b69d6c6af7db7cc674386df725770dd29129b82' +
+                    '6e39552330104c8d71e6cc3a3014dd2f61b54153af51b0438d447ee939f9e3c1' +
+                    '3bb8b00a37dea6a068f6c9d27e848b1be7a1eeeb3ee50b78036fba95ae46948c' +
+                    'a5b13f356ea24db10f60dc09e4b8bad8f766b668ef72524432080a0ce00ed676' +
+                    'd6d5e354984b1078520412525848156d06f0652469f95791baa3d9a798ae5370' +
+                    '94f76f976faecd5c9ce0c930a75910c63dacf63485cb4b5e7bdbcf4d80e74037' +
+                    'eaa1a8fe4b52930bec6be99cf6ac88cf5878dbf6859d456a95dbc34654eec425' +
+                    'de84ca2a535d517403a9aada827e7d0093ecfc97ed056a7652825e9a45cb2dcb'
+            },
+            {
+                tcId: 11, result: 'valid', flags: ["Normal"],
+                comment: "Longest valid message size",
+                msg: '78787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878',
+                ct: '7efb69f1137d6a6e813b7ab75bf0400b3d07a442b88ab048675dc06b0215fc1a' +
+                    '2e033263ec31a6c1d2eac56cb0470d69022a48131d1f000bbed70586b80cf635' +
+                    '6465c8834daced7ea2a5ff8ef9c44d5ab828ffbf0556a6394752a4a28a70cae2' +
+                    '0084e1236f042f6c29de5cb34ef73acba5abcc7ccb3a26342701df3b9daa945d' +
+                    '9fa5bf0b9b10306655e56370183f50fb8321f8f0cd1c72114791fca5df216629' +
+                    '6b509b01a0b291c46110787cebe69d41b3b1e89590bc2f5e5d49ea24ae0f1207' +
+                    'eef1aee54b9760553e80c5506a8a8a75732e92875025f0bfd5ead71e4340c8a9' +
+                    'fa16dcd5a7dc96d8c4a7dc4e91f47a69366445c4695c8bad578ffe52bb672f65'
+            },
+            {
+                tcId: 21, result: 'valid', flags: [],
+                comment: "seed is all 0",
+                msg: '313233343030',
+                ct: '8e5f01ff0c1775870715fd0366a8748531f8b00803df35e0e2308db63bbec4ec' +
+                    'a4e093351876b794213b904e5dde284a82d74abfcbfff94bc9a8300bea99edd0' +
+                    '7fe97d6e0b11219f85ac15acc404d37d3da16819a14a438f3f72f8178b312526' +
+                    '232386e918a8a7e11fc38f4668c499a00480cf9d2d75aabc0198d3ba9ba345fb' +
+                    'a9105c6564df5f6ce796f14100d186abffe4d83d57969c1caddc7c7aa340b4d1' +
+                    'bab23d9b3982278328ddebe648f5c52588738f3c56a88b3f34c890c03fafc27f' +
+                    '485a17677a53e974dc1dd86f463a927f4328ac51bbc61705ae8abd7f45628957' +
+                    '489e2defd8e043b955b118fb2a1c407d45893004aae0f945f06add1e45b41a03'
+            },
+            {
+                tcId: 22, result: 'valid', flags: [],
+                comment: "seed is all 1",
+                msg: '313233343030',
+                ct: '50c23e2ad6e3f3b10a5716cbf60efcc9f66d2c6f17bf050ba0153b877ba2755e' +
+                    '8a0d54060034562266155744ef80547b8af777b0ff764fbb12baae49d02b4f6d' +
+                    '65b6cd8f0a397839101d32ae163ff2e6072748d6b8017e5e73e332d53f4e91fe' +
+                    '6233a82dbf54f3146b489803575c5ea37ab55a9ea7eae47ad4f1727d45822b56' +
+                    '9cd6e5d4b6ab759850948186616b5da2a9a316f57d899f91934bbb27edcdfa19' +
+                    '532ba1c01f3724738daffdd88c9a18562ebcbc49185b0a817407903476d442c4' +
+                    '24c81b63aeb8f9d1b184756e0cc0a381eaba45a85c8bbc6770fd047ff1a6404a' +
+                    '384599fbbd6a40b212a066e23f6a15cf13e42c0ea88c710e4d70c612074968e5'
+            },
+            {
+                tcId: 12, result: 'invalid', flags: ["InvalidOaepPadding"],
+                comment: "first byte of l_hash modified",
+                msg: '313233343030',
+                ct: '287d7108a1c6e7a18acb0045b20c57cdf2ac03456b44942764a7a9e9fdf3db48' +
+                    '1d7e202e4c8d733b56b9c1e93d71e791af8325c9363df789b252a5ed0eddc79e' +
+                    '76fa41c2cb0a35618398217a390a5e6d99eed905d5554d19c1cf4e30bdf1c2fc' +
+                    'c5148b641d71b3f1977b63d232648ddd935ec9499a53ac2fbcac55f462e91065' +
+                    'adaa018a39c453ba759bd68b454074153421e2ce75cf149f748b5b84758df8a4' +
+                    '23d1c50c880af863f2a6df3cd465ca36aa2152b5771f3d507f4a4dd9f8006d80' +
+                    'eca23537092287976f218a90df1e16d889fe31e79f7309f3224f613e9b52479f' +
+                    'e73b7aad915319a3b62a5936649f7d015d7b09f7fa9f454f78a7c3dd4bf791e0'
+            },
+            {
+                tcId: 13, result: 'invalid', flags: ["InvalidOaepPadding"],
+                comment: "last byte of l_hash modified",
+                msg: '313233343030',
+                ct: '8b65065af82770625d24917d13fd97ae13247cad97910a2651f95800165b76cc' +
+                    '34bfe06cbf8c31a7d7ab4f41e05c45a25b90c606378c8e49c95a15ca11ae37e7' +
+                    '97a00f1b2680a6958c54396be4e1ceedcabc58d9f136b36867a2fefe648a9758' +
+                    'f49634bfbcaa48717a116cba58c27539be10c56911aabe013e0329645e830842' +
+                    '3c3aa42e0c9b1f4b5f546ddd9f90bf4d007dab52ac3879db755e4f2b96db5cf0' +
+                    '1950f39076f261f50b1bae137be500b03ceff6ea1bbd80b33424f7faba5cc6b8' +
+                    '6670fcb7db1a9b3c58bdfd7b75ba9f3ebd34ae32d320c757020a7324df7d3985' +
+                    'bccfe0e81bb7f61bd98cb37219312299b4f274b2c90c52a8e1790f52e8fdd768'
+            },
+            {
+                tcId: 17, result: 'invalid', flags: ["InvalidOaepPadding"],
+                comment: "all bits in ps flipped",
+                msg: '313233343030',
+                ct: '4b4546460b54697beb899b54f474079169b4f7e79d0299586d821bd9091e9c5d' +
+                    '2603b96c1aeb2924e887b15b211b07a657a85629932f97f18acd5a9f15684c99' +
+                    '59fa41a6d1c10eeca68b7b95179492e80927860b7fadce3eb4e1e8610adc709e' +
+                    '25580d8c7ad95af1de3a94b4a09e3078b86e88ae9630388711d20e28c801131c' +
+                    'd1f924dfeddd85a9d404ef5db9e6a887845b5aa4763fbb72f259985ccf7ee6fc' +
+                    '8329bf1ded74e5112f8c16df81e8038443df4bacb2eae1b06a48f178cdf22579' +
+                    '41ca5887db4dc5135f0a2d050f56ac94ad9ffd4a13925c85501976937e723979' +
+                    'cc31fd48c4d68d06e4c9cee53517dcb18da61fe4347658df495508d6ea9d7282'
+            },
+            {
+                tcId: 19, result: 'invalid', flags: ["InvalidOaepPadding"],
+                comment: "ps is all zero",
+                msg: '313233343030',
+                ct: 'a166bf7b5c2cf1896c0b924a69233a0a585bd47ed7f2330654aa68806deb0ff6' +
+                    '8c6475050ab45c691bbbcc58dbc2f5c817729e8e195ebd39d48bd5e14977abae' +
+                    '0829636831655917fb5a758fb43a8e505d6ce595f625970685f7ec81cb559221' +
+                    '0f5d68c6e2e1ef26b4ef8c92bf44f077e1d5099f379cb8120ad185bf07877979' +
+                    'ca81f251fb81be0ad3c14f4d7885fcec496f80033fd4279b6830a20cbdead27c' +
+                    '0967e28d1e06ef4bd7ba89210ec0d696274a187dc2f13212f5adf06e9450eca3' +
+                    '98325cfda73431036ac21b087d373c9f575c941f8cb078961176e31859a61c49' +
+                    'baf8ff4f817a11010448d6a0e40dcede1a5ac3befa4c6e9d9d67d8e8fd8b6de3'
+            },
+            {
+                tcId: 23, result: 'invalid', flags: ["InvalidOaepPadding"],
+                comment: "First byte is 1",
+                msg: '313233343030',
+                ct: '3f92a694661cae336cac7a3c5a6f67e0655d10218a64459739ab9664f2cec589' +
+                    '78939512df621e6b92fe3429bb22c08b5103da648a7719e7e95a04e6b6160154' +
+                    '6955825d60f4c517619f851780ad17f1b8a955cf8c7f1a5e26ca4a0cc19cca75' +
+                    '1d0790d56e1140a4705e19274f638b7c16d9d3e423a7f787d02699235e3e9e4d' +
+                    '543a954f9b1bce5411c8ebdcae86a4bb86c66818a0bab51a2b00383b318e53d9' +
+                    '5508bab1b19e388cd5a03cdceba0f7176c1782e19ef62cff69352d444b1ce0e1' +
+                    'f339e96d8a65c07aa37f5f2cf33867f6c496e0da6cd79b3e2183b57064ce21a1' +
+                    'b92072702e555a82cad75107fdfd8bd5e7ea5f119cfbbc1770e962fd0b781aff'
+            },
+            {
+                tcId: 24, result: 'invalid', flags: ["InvalidOaepPadding"],
+                comment: "m is 0",
+                msg: '313233343030',
+                ct: '0000000000000000000000000000000000000000000000000000000000000000' +
+                    '0000000000000000000000000000000000000000000000000000000000000000' +
+                    '0000000000000000000000000000000000000000000000000000000000000000' +
+                    '0000000000000000000000000000000000000000000000000000000000000000' +
+                    '0000000000000000000000000000000000000000000000000000000000000000' +
+                    '0000000000000000000000000000000000000000000000000000000000000000' +
+                    '0000000000000000000000000000000000000000000000000000000000000000' +
+                    '0000000000000000000000000000000000000000000000000000000000000000'
+            },
+            {
+                tcId: 26, result: 'invalid', flags: ["InvalidOaepPadding"],
+                comment: "m is n-1",
+                msg: '313233343030',
+                ct: 'a2b451a07d0aa5f96e455671513550514a8a5b462ebef717094fa1fee82224e6' +
+                    '37f9746d3f7cafd31878d80325b6ef5a1700f65903b469429e89d6eac8845097' +
+                    'b5ab393189db92512ed8a7711a1253facd20f79c15e8247f3d3e42e46e48c98e' +
+                    '254a2fe9765313a03eff8f17e1a029397a1fa26a8dce26f490ed81299615d981' +
+                    '4c22da610428e09c7d9658594266f5c021d0fceca08d945a12be82de4d1ece6b' +
+                    '4c03145b5d3495d4ed5411eb878daf05fd7afc3e09ada0f1126422f590975a19' +
+                    '69816f48698bcbba1b4d9cae79d460d8f9f85e7975005d9bc22c4e5ac0f7c1a4' +
+                    '5d12569a62807d3b9a02e5a530e773066f453d1f5b4c2e9cf7820283f742b9d4'
+            },
+            {
+                tcId: 27, result: 'invalid', flags: ["InvalidCiphertext"],
+                comment: "added n to c",
+                msg: '313233343030',
+                ct: 'b056e2513c7c470d897032d406e97b5946dcad52df1c1650d61a1d7b0af59e8c' +
+                    'faec4d9e834d06d819b92a7d440d277e5039ab8aeff25043e98b281ae6ce0a91' +
+                    'f8dfbbd1b4998fe5481671381b6a3952448b617ae606f06a0143561a040edaf3' +
+                    'c972e611bd7cb814aa4761d38e4a007ca65af8fde6eb25d919d8bd9273cca762' +
+                    '2984aa27994d049612424547775c5df75483962143522d075b8c55ea61b04583' +
+                    'eb4c0358f9fbb902dedff30b7d8592b57094df4f6345668af53d1aea86fb36dd' +
+                    '69b4434bacf8fc12c13802f5b03551ba8f207d4060a9f56e6b7e18c766eb82b6' +
+                    'ce6ee0747fbe785c3c1c25fe7fb87de50032b172129fa41a69c3ce0e777ef10f'
+            },
+            {
+                tcId: 28, result: 'invalid', flags: ["InvalidCiphertext"],
+                comment: "ciphertext not reduced",
+                msg: '313233343030',
+                ct: '6ea4320bc5bcae709d0e4b9d67e7f0c248a65c5bc0762910e220ea96bdea088e' +
+                    '20ce7ffb726a8fd87fa363249dc0ace75fdbe025b270dd72490cb164c4683881' +
+                    '17bd95624bddfb70c1f07f98a6b9ccf9cee3d2b5f5b3e79a6664568a788b3f10' +
+                    '02fc9546d6b3a0fb5f3cfb14f70785dc542dbbbaffbb3b791f0a5906ace090a3' +
+                    'c29d123db768ecce56f0dbf99956f070ce2ebe8209c2ff6de6064ac6247f81c4' +
+                    '064960c516f684f9e740b00f361844d9c1bcb1553bed9b297462e8badd3d431a' +
+                    '09b62c773b0071a8d734aae4de04bac45b7bf8555471e937b0a36f0c1bce595e' +
+                    'c9b3d366c9109319a3501156a08c21393e31fcffa2c51b242dac9f813c8f9686' +
+                    '00'
+            },
+            {
+                tcId: 29, result: 'invalid', flags: ["InvalidCiphertext"],
+                comment: "ciphertext is empty",
+                msg: '313233343030',
+                ct: ''
+            },
+            {
+                tcId: 32, result: 'invalid', flags: ["InvalidCiphertext"],
+                comment: "truncated ciphertext",
+                msg: '313233343030',
+                ct: 'a290b0bf71a1141b2adc62b5b42b07fc52520cb05d1f39ccca7b7c22d379a6c2' +
+                    'f2d93143d057050140527a1e5638243938b531ec3de7014b0151301e49b9fa43' +
+                    '3482a02abdfd94193dc9c70157e557776a69ded01ecbeac405133595c61165a4' +
+                    '28b6284729a4746b47d2bbaca9d7432c3b5693591cfee488eb3c68ddb6cde0dd' +
+                    '61cfc6952423f994abecee34f5683732b29934a2c498ad48cdd30c149177189f' +
+                    '48eefd9cc7232df18be11ff5f7e3af7319e3115997c599e2d8f7f4f663dcc400' +
+                    '32d403436d3058a5ea66473660f0e195281ec6eba997d2a951ca6ca5f3c11271' +
+                    '5c89da1d3dfb20a21940594ed10ade90ed7452b753757d7241cb8a803c373a'
+            }
+        ]
+    };
+    const wpKey = {
+        n: BigInt('0x' + WYCHEPROOF_OAEP.n),
+        e: BigInt('0x' + WYCHEPROOF_OAEP.e),
+        d: BigInt('0x' + WYCHEPROOF_OAEP.d)
+    };
+
+    // ── Test 8: Wycheproof "valid" ciphertexts decrypt to the expected msg
+    {
+        const cases    = WYCHEPROOF_OAEP.tests.filter((t) => t.result === 'valid');
+        const failures = [];
+        for (const t of cases) {
+            try {
+                const pt = rsaDecryptOAEP(Buffer.from(t.ct, 'hex'), wpKey);
+                if (pt.toString('hex') !== t.msg) failures.push(`tcId ${t.tcId}: wrong plaintext`);
+            } catch (e) {
+                failures.push(`tcId ${t.tcId}: threw "${e.message}"`);
+            }
+        }
+        record(`Test 8: Wycheproof RSA-OAEP-2048-SHA256 — ${cases.length} valid ciphertexts decrypt to the expected msg`,
+            cases.length > 0 && failures.length === 0, failures.join('; '));
+    }
+
+    // ── Test 9: Wycheproof "invalid" ciphertexts rejected, uniform error ─
+    {
+        const cases    = WYCHEPROOF_OAEP.tests.filter((t) => t.result === 'invalid');
+        const failures = [];
+        for (const t of cases) {
+            let msg = null;
+            try { rsaDecryptOAEP(Buffer.from(t.ct, 'hex'), wpKey); }
+            catch (e) { msg = e.message; }
+            // Every failure must look identical to the caller — padding
+            // errors (Manger) and malformed ciphertexts alike.
+            if (msg !== 'OAEP decoding error') {
+                failures.push(`tcId ${t.tcId} (${t.comment}): ${msg === null ? 'ACCEPTED' : `error "${msg}"`}`);
+            }
+        }
+        record(`Test 9: Wycheproof RSA-OAEP-2048-SHA256 — ${cases.length} invalid ciphertexts rejected with the uniform error`,
+            cases.length > 0 && failures.length === 0, failures.join('; '));
     }
 
     process.exit(allPass ? 0 : 1);

@@ -13,6 +13,7 @@ export interface PeriodBreakdown {
     income: number;
     expenses: number;
     saved: number;       // moved into goals this period
+    released?: number;   // goal money returned to the wallet this period (deleted goals)
     savingsOut: number;  // net moved into the Savings account this period
     netIncome: number;
     closing: number;     // = the Wallet for this period
@@ -22,17 +23,20 @@ export interface BalanceData {
     available: number;
     wallet: number;
     savingsBalance: number;
-    cumulative: { income: number; expenses: number; saved: number };
+    cumulative: { income: number; expenses: number; saved: number; released?: number };
     monthly: PeriodBreakdown;
     yearly: PeriodBreakdown;
 }
 
 // Renders the running-balance math for one period:
-//   Carried forward + Income − Expenses − Savings(green) = Balance
+//   Carried forward + Income − Expenses − Savings(green) + Returned = Balance
 // Savings is highlighted green because it isn't spent — it's set aside.
+// "Returned" is money from a deleted goal flowing back into the wallet on the
+// day the goal was deleted (earlier months are left untouched).
 export function SavingsBreakdown({ breakdown, periodLabel }: { breakdown: PeriodBreakdown; periodLabel?: string }) {
     const { format: fmt } = useCurrency();
     const carryLabel = "Carried forward";
+    const released = breakdown.released ?? 0;
 
     return (
         <div className="p-5 rounded-3xl bg-zinc-900/50 border border-white/5 space-y-1">
@@ -46,6 +50,9 @@ export function SavingsBreakdown({ breakdown, periodLabel }: { breakdown: Period
             <Row icon={<ArrowDown className="w-3.5 h-3.5" />} label="Expenses (out of pocket)" value={`− ${fmt(breakdown.expenses)}`} tone="expense" />
             {breakdown.saved > 0 && (
                 <Row icon={<PiggyBank className="w-3.5 h-3.5" />} label="Saved to goals" value={`− ${fmt(breakdown.saved)}`} tone="savings" />
+            )}
+            {released > 0 && (
+                <Row icon={<ArrowUp className="w-3.5 h-3.5" />} label="Returned from deleted goals" value={`+ ${fmt(released)}`} tone="income" />
             )}
             {breakdown.savingsOut > 0 && (
                 <Row icon={<PiggyBank className="w-3.5 h-3.5" />} label="Moved to savings" value={`− ${fmt(breakdown.savingsOut)}`} tone="savings" />

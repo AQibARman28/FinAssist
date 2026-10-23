@@ -3,7 +3,8 @@
 # creates the service, and you fill the `sync: false` secrets in the dashboard.
 #
 # Render injects PORT automatically; the app listens on process.env.PORT.
-# Frontend lives on Vercel (see DEPLOY.md) — not in this blueprint.
+# Frontend lives on Vercel (see DEPLOY.md) — not in this blueprint. Set the
+# same PROXY_SHARED_SECRET there.
 services:
   - type: web
     name: finassist-api
@@ -19,6 +20,14 @@ services:
         value: production
       - key: ACCESS_TOKEN_TTL
         value: 15m
+      # Vercel -> Render load balancer -> app.
+      - key: TRUST_PROXY
+        value: "2"
+      # Off until a mail provider is configured: sign-up works without an
+      # emailed code. To turn it on, set RESEND_API_KEY (or SMTP_HOST) and change
+      # this to "true" — the API refuses to start with it on and no provider.
+      - key: REQUIRE_EMAIL_VERIFICATION
+        value: "false"
       - key: SMTP_PORT
         value: "587"
       - key: SMTP_FROM
@@ -32,9 +41,13 @@ services:
         sync: false
       - key: EMAIL_HASH_SECRET    # 64 hex chars
         sync: false
+      - key: PROXY_SHARED_SECRET  # 64 hex chars — same value as on Vercel
+        sync: false
       - key: FRONTEND_URL         # your Vercel URL, e.g. https://finassist.vercel.app
         sync: false
-      - key: SMTP_HOST            # e.g. smtp.resend.com (or leave unset to log emails)
+      - key: RESEND_API_KEY       # Resend's HTTPS API (SMTP ports are blocked on the free tier)
+        sync: false
+      - key: SMTP_HOST            # alternative to Resend
         sync: false
       - key: SMTP_USER
         sync: false

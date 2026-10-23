@@ -1,6 +1,8 @@
 const crypto = require('node:crypto');
 const User = require('../models/User');
-const { masterEncrypt, masterDecrypt, encrypt, safeDecrypt, hashEmail, generateDataKey } = require('../utils/encryption');
+const native = require('../utils/nativeCrypto');
+const mongoose = require('mongoose');
+const { masterEncrypt, masterDecrypt, FIELDS, sealField, openField, hashEmail, generateDataKey } = require('../utils/encryption');
 const { generateUserKeyBundle, hasLegacyKeyBundle, regenerateUserKeyBundle } = require('../utils/keyManagement');
 const {
     COOKIE_REFRESH,
@@ -14,30 +16,43 @@ const {
     setTempCookie,
     clearSessionCookies,
 } = require('../utils/sessions');
-const { sendVerificationCodeEmail, sendWelcomeEmail, sendPasswordResetEmail } = require('../utils/mailer');
+const mailer = require('../utils/mailer');
 const { logAudit } = require('../utils/audit');
 const { seedDefaultCategoriesForUser } = require('../utils/defaultCategories');
-
-// Lockout policy (SEC-1 Phase 4)
-const LOGIN_WINDOW_MS    = 15 * 60 * 1000;   // 15 min
-const LOGIN_FAIL_LIMIT   = 5;
-const LOGIN_LOCKOUT_MS   = 15 * 60 * 1000;   // 15 min base, *2^lockoutCount
+const loginThrottle = require('../utils/loginThrottle');
+const { isBreachedPassword } = require('../utils/passwordStrength');
+const { emailVerificationRequired } = require('../utils/config');
+const { checkAndRecordTotp } = require('../utils/totpGuard');
 
 // Email verification (code-based, SEC-1 Phase 4 → code rework)
 const EMAIL_CODE_TTL_MS        = 15 * 60 * 1000; // codes expire in 15 min
 const EMAIL_CODE_MAX_ATTEMPTS  = 5;              // wrong guesses before invalidation
 const EMAIL_RESEND_COOLDOWN_MS = 60 * 1000;      // min gap between resends
 
-// Password reset (code-based) — same policy as email verification.
+// Password reset and email change (code-based) — same policy as verification.
 const PWRESET_TTL_MS       = 15 * 60 * 1000;
 const PWRESET_MAX_ATTEMPTS = 5;
+const EMAIL_CHANGE_TTL_MS       = 15 * 60 * 1000;
+const EMAIL_CHANGE_MAX_ATTEMPTS = 5;
 
-// Email verification is a gate only when REQUIRE_EMAIL_VERIFICATION=true.
-// Default (unset) auto-verifies on signup — needed until a verified sending
-// domain exists so codes can reach arbitrary users. Flip to 'true' to re-enable.
-function requireEmailVerification() {
-    return process.env.REQUIRE_EMAIL_VERIFICATION === 'true';
+const GENERIC_LOGIN_FAILURE = 'Invalid email or password';
+const THROTTLED_MESSAGE     = 'Too many sign-in attempts. Try again in a few minutes.';
+const BREACHED_MESSAGE      = 'This password has appeared in a data breach. Choose a different one.';
+
+// Email verification: on in production unless REQUIRE_EMAIL_VERIFICATION=false,
+// off in development unless REQUIRE_EMAIL_VERIFICATION=true (utils/config.js).
+const requireEmailVerification = () => emailVerificationRequired(process.env);
+
+// An Argon2 hash of a random string, verified against when the email is
+// unknown so that path costs the same as a wrong password (no timing oracle).
+let _dummyHash = null;
+async function _verifyAgainstDummy(candidate) {
+    if (!_dummyHash) _dummyHash = native.hashPassword(crypto.randomBytes(16).toString('hex'));
+    await native.verifyPassword(typeof candidate === 'string' ? candidate : '', await _dummyHash);
+    return false;
 }
+
+const _normalizeEmail = (e) => String(e || '').toLowerCase().trim();
 
 const buildPublicUser = (user, plainName, plainEmail) => ({
     _id: user._id,
@@ -77,40 +92,16 @@ function _codeMatches(candidate, storedHash) {
     return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-// ── Lockout helpers ──────────────────────────────────────────────────────────
-
-function _isLocked(user) {
-    return user.lockedUntil && user.lockedUntil.getTime() > Date.now();
-}
-
-async function _recordLoginFailure(user) {
-    const now = new Date();
-    if (!user.firstFailedLoginAt || (now - user.firstFailedLoginAt) > LOGIN_WINDOW_MS) {
-        user.firstFailedLoginAt = now;
-        user.failedLoginAttempts = 1;
-    } else {
-        user.failedLoginAttempts += 1;
-    }
-    if (user.failedLoginAttempts >= LOGIN_FAIL_LIMIT) {
-        const factor = Math.pow(2, user.lockoutCount || 0);
-        user.lockedUntil = new Date(now.getTime() + LOGIN_LOCKOUT_MS * factor);
-        user.lockoutCount = (user.lockoutCount || 0) + 1;
-        user.failedLoginAttempts = 0;
-        user.firstFailedLoginAt  = null;
-    }
-    await user.save();
-}
-
-async function _clearLockout(user) {
-    if (user.failedLoginAttempts || user.firstFailedLoginAt || user.lockedUntil || user.lockoutCount) {
-        user.failedLoginAttempts = 0;
-        user.firstFailedLoginAt  = null;
-        user.lockedUntil         = null;
-        user.lockoutCount        = 0;
-    }
-}
-
 // ── Handlers ─────────────────────────────────────────────────────────────────
+
+// Same body for a new sign-up and for an address that already has an account,
+// so the sign-up form can't be used to discover who is registered.
+const _verificationPending = (email) => ({
+    success: true,
+    requiresEmailVerification: true,
+    email,
+    message: 'Check your email for a verification code to finish signing up.',
+});
 
 // POST /api/auth/register
 const registerUser = async (req, res) => {
@@ -119,7 +110,17 @@ const registerUser = async (req, res) => {
 
         const emailHash = await hashEmail(email);
         if (await User.findOne({ emailHash })) {
+            if (requireEmailVerification()) {
+                try { await mailer.sendAccountExistsEmail(email); }
+                catch (mailErr) { console.error('register: account-exists email failed:', mailErr.message); }
+                logAudit(req, 'register.duplicate', null);
+                return res.status(201).json(_verificationPending(email));
+            }
             return res.status(400).json({ success: false, message: 'Email already registered' });
+        }
+
+        if (await isBreachedPassword(password)) {
+            return res.status(400).json({ success: false, message: BREACHED_MESSAGE });
         }
 
         // Generate per-user AES data key, encrypt it with the system master key
@@ -127,11 +128,14 @@ const registerUser = async (req, res) => {
         const encryptedDataKey = await masterEncrypt(rawDataKey);
         const dataKeyBuf = Buffer.from(rawDataKey, 'hex');
 
-        const encName  = await encrypt(name, dataKeyBuf);
-        const encEmail = await encrypt(email, dataKeyBuf);
-        const keyBundle = await generateUserKeyBundle(dataKeyBuf);
+        // The id is minted first: every encrypted field is bound to its owner.
+        const userId   = new mongoose.Types.ObjectId();
+        const encName  = await sealField(name, dataKeyBuf, FIELDS.userName, userId);
+        const encEmail = await sealField(email, dataKeyBuf, FIELDS.userEmail, userId);
+        const keyBundle = await generateUserKeyBundle(dataKeyBuf, userId);
 
         const user = new User({
+            _id: userId,
             name: encName,
             email: encEmail,
             emailHash,
@@ -141,36 +145,28 @@ const registerUser = async (req, res) => {
             ...keyBundle,
         });
 
-        // Two registration postures, toggled by REQUIRE_EMAIL_VERIFICATION:
-        //   'true'  → issue a 6-digit code, no session until verified.
-        //   else    → auto-verify and sign in immediately (default). Used when
-        //             email can't yet reach arbitrary users (no verified
-        //             sending domain). Flip the env var to re-enable the gate.
+        // Two registration postures (utils/config.emailVerificationRequired):
+        //   on  (production default) → issue a 6-digit code, no session until
+        //                              verified; the welcome email follows
+        //                              verification.
+        //   off (development default) → sign in immediately. No welcome email:
+        //                              the address was never proven, so we
+        //                              don't send branded mail to it.
         if (requireEmailVerification()) {
             const code = _issueVerificationCode(user);
             await user.save();
             try { await seedDefaultCategoriesForUser(user._id); }
             catch (seedErr) { console.error('register: default-category seed failed:', seedErr.message); }
-            try { await sendVerificationCodeEmail(email, code); }
+            try { await mailer.sendVerificationCodeEmail(email, code); }
             catch (mailErr) { console.error('register: verification email failed:', mailErr.message); }
             logAudit(req, 'register', user._id);
-            return res.status(201).json({
-                success: true,
-                data: buildPublicUser(user, name, email),
-                requiresEmailVerification: true,
-                email,
-                message: 'Account created. Enter the verification code we emailed you.',
-            });
+            return res.status(201).json(_verificationPending(email));
         }
 
-        // Auto-verify: mark live, seed categories, send a best-effort welcome,
-        // and establish the session so the user lands straight on the dashboard.
         user.emailVerified = true;
         await user.save();
         try { await seedDefaultCategoriesForUser(user._id); }
         catch (seedErr) { console.error('register: default-category seed failed:', seedErr.message); }
-        try { await sendWelcomeEmail(email, name); }
-        catch (mailErr) { console.error('register: welcome email failed:', mailErr.message); }
         logAudit(req, 'register', user._id);
         await establishSession(res, user._id);
         return res.status(201).json({
@@ -228,17 +224,17 @@ const verifyCode = async (req, res) => {
         user.emailVerificationToken     = null;
         user.emailVerificationExpiresAt = null;
         user.emailVerificationAttempts  = 0;
-        _clearLockout(user);
         await user.save();
+        await loginThrottle.clear(emailHash);
         logAudit(req, 'email.verify', user._id);
 
         const rawKey = await masterDecrypt(user.encryptedDataKey);
         const dataKey = Buffer.from(rawKey, 'hex');
-        const plainName  = await safeDecrypt(user.name, dataKey);
-        const plainEmail = await safeDecrypt(user.email, dataKey);
+        const plainName  = await openField(user.name, dataKey, FIELDS.userName, user._id);
+        const plainEmail = await openField(user.email, dataKey, FIELDS.userEmail, user._id);
 
         // Thank-you / welcome email — best-effort, never blocks the response.
-        try { await sendWelcomeEmail(plainEmail, plainName); }
+        try { await mailer.sendWelcomeEmail(plainEmail, plainName); }
         catch (mailErr) { console.error('verify: welcome email failed:', mailErr.message); }
 
         // Log them in. (A brand-new account won't have 2FA, but mirror login's
@@ -273,7 +269,7 @@ const resendCode = async (req, res) => {
 
         const code = _issueVerificationCode(user);
         await user.save();
-        try { await sendVerificationCodeEmail(email, code); }
+        try { await mailer.sendVerificationCodeEmail(email, code); }
         catch (mailErr) { console.error('resend: verification email failed:', mailErr.message); }
         logAudit(req, 'email.resend_code', user._id);
         return res.json(generic);
@@ -284,36 +280,28 @@ const resendCode = async (req, res) => {
 };
 
 // POST /api/auth/login
+//
+// Every path that isn't a success looks the same from outside: an unknown
+// email still pays for an Argon2 verify, and the throttle (keyed by the
+// email's blind index, independent of the client IP) applies identically to
+// emails with and without an account.
 const loginUser = async (req, res) => {
     try {
         const { email, password, rememberMe } = req.body;
 
         const emailHash = await hashEmail(email);
+        if (await loginThrottle.isThrottled(emailHash)) {
+            logAudit(req, 'login.failure', null, { reason: 'throttled' });
+            return res.status(429).json({ success: false, message: THROTTLED_MESSAGE });
+        }
+
         const user = await User.findOne({ emailHash });
+        const passwordOk = user ? await user.comparePassword(password) : await _verifyAgainstDummy(password);
 
-        // Unified "invalid email or password" for the no-user case is
-        // applied below alongside the wrong-password case. But: lockout
-        // check has to happen even when the password is wrong, so we still
-        // need to identify which user we're checking. We do the lockout
-        // check inside the user-exists branch.
-        if (!user) {
-            logAudit(req, 'login.failure', null, { reason: 'unknown_email' });
-            return res.status(401).json({ success: false, message: 'Invalid email or password' });
-        }
-
-        if (_isLocked(user)) {
-            logAudit(req, 'login.failure', user._id, { reason: 'locked' });
-            return res.status(423).json({
-                success: false,
-                message: 'Account temporarily locked due to repeated failed sign-ins. Try again later.',
-                lockedUntil: user.lockedUntil,
-            });
-        }
-
-        if (!(await user.comparePassword(password))) {
-            await _recordLoginFailure(user);
-            logAudit(req, 'login.failure', user._id, { reason: 'wrong_password' });
-            return res.status(401).json({ success: false, message: 'Invalid email or password' });
+        if (!passwordOk) {
+            await loginThrottle.recordFailure(emailHash);
+            logAudit(req, 'login.failure', user ? user._id : null, { reason: user ? 'wrong_password' : 'unknown_email' });
+            return res.status(401).json({ success: false, message: GENERIC_LOGIN_FAILURE });
         }
 
         // Password OK — but block unverified accounts before establishing a
@@ -327,14 +315,14 @@ const loginUser = async (req, res) => {
             });
         }
 
-        _clearLockout(user);
+        await loginThrottle.clear(emailHash);
 
-        // Lazy password rehash: legacy PBKDF2 hashes get upgraded to argon2id
-        // on first successful login.
-        if (user.passwordHashScheme !== 'argon2id') {
+        // Lazy password rehash: legacy PBKDF2 (plain or wrapped) hashes get
+        // upgraded to plain argon2id on first successful login.
+        if (user.passwordHashScheme !== 'argon2id' || !user.password.startsWith('$argon2')) {
             user.password = password;      // pre('save') hook re-hashes with argon2id
+            await user.save();
         }
-        await user.save();
 
         // 2FA — issue a short-lived temp token in a cookie and wait for TOTP verification
         if (user.twoFactorEnabled) {
@@ -360,8 +348,8 @@ const loginUser = async (req, res) => {
             success: true,
             data: buildPublicUser(
                 user,
-                (await safeDecrypt(user.name, dataKey)),
-                (await safeDecrypt(user.email, dataKey)),
+                (await openField(user.name, dataKey, FIELDS.userName, user._id)),
+                (await openField(user.email, dataKey, FIELDS.userEmail, user._id)),
             ),
         });
     } catch (error) {
@@ -391,7 +379,7 @@ const forgotPassword = async (req, res) => {
         user.passwordResetAttempts  = 0;
         await user.save();
 
-        try { await sendPasswordResetEmail(email, code); }
+        try { await mailer.sendPasswordResetEmail(email, code); }
         catch (mailErr) { console.error('forgot-password: email failed:', mailErr.message); }
         logAudit(req, 'password.reset_request', user._id);
         return res.json(generic);
@@ -431,16 +419,20 @@ const resetPassword = async (req, res) => {
             return fail();
         }
 
+        if (await isBreachedPassword(newPassword)) {
+            return res.status(400).json({ success: false, message: BREACHED_MESSAGE });
+        }
+
         // Success — set new password (pre-save hook re-hashes argon2id), clear
-        // reset + lockout state, and treat the email as verified (they just
+        // reset + throttle state, and treat the email as verified (they just
         // proved control of it).
         user.password               = newPassword;
         user.passwordResetToken     = null;
         user.passwordResetExpiresAt = null;
         user.passwordResetAttempts  = 0;
         user.emailVerified          = true;
-        _clearLockout(user);
         await user.save();
+        await loginThrottle.clear(user.emailHash);
 
         // Kick any other/old sessions, then sign in on this device.
         await revokeAllForUser(user._id);
@@ -455,7 +447,7 @@ const resetPassword = async (req, res) => {
         await establishSession(res, user._id);
         return res.json({
             success: true,
-            data: buildPublicUser(user, await safeDecrypt(user.name, dataKey), await safeDecrypt(user.email, dataKey)),
+            data: buildPublicUser(user, await openField(user.name, dataKey, FIELDS.userName, user._id), await openField(user.email, dataKey, FIELDS.userEmail, user._id)),
         });
     } catch (error) {
         console.error('Reset-password error:', error);
@@ -467,6 +459,13 @@ const resetPassword = async (req, res) => {
 const refreshSession = async (req, res) => {
     try {
         const rotated = await rotateRefreshToken(req.cookies?.[COOKIE_REFRESH]);
+        if (rotated && rotated.reuseDetected) {
+            // A rotated token came back after the grace window: the session
+            // was likely copied. Its whole family is already revoked.
+            logAudit(req, 'refresh.reuse_detected', rotated.userId);
+            clearSessionCookies(res);
+            return res.status(401).json({ success: false, message: 'Session ended for your security. Please sign in again.' });
+        }
         if (!rotated) {
             clearSessionCookies(res);
             return res.status(401).json({ success: false, message: 'Refresh token invalid or expired' });
@@ -519,43 +518,127 @@ const getUserProfile = async (req, res) => {
 };
 
 // PUT /api/auth/profile
+//
+// Name and currency change freely. A new password or a different email is a
+// sensitive change: it needs the current password, plus an authenticator code
+// when 2FA is on, so a borrowed session can't be turned into a takeover. A
+// password change signs out every other session; an email change only takes
+// effect once the code sent to the new address is confirmed.
 const updateUserProfile = async (req, res) => {
     try {
         const user = await User.findById(req.user._id);
         if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
         const dataKey = req.dataKey;
+        const { name, currency, password, currentPassword, totp } = req.body;
+        const newEmail = req.body.email ? _normalizeEmail(req.body.email) : null;
+        const emailChanging = Boolean(newEmail) && newEmail !== _normalizeEmail(req.user._email);
 
-        if (req.body.name)     user.name  = await encrypt(req.body.name, dataKey);
-        if (req.body.currency) user.currency = req.body.currency;
-
-        if (req.body.email) {
-            const newEmail = req.body.email.toLowerCase().trim();
-            const newHash  = await hashEmail(newEmail);
-            const existing = await User.findOne({ emailHash: newHash });
-            if (existing && existing._id.toString() !== user._id.toString()) {
-                return res.status(400).json({ success: false, message: 'Email already in use' });
+        if (password || emailChanging) {
+            if (!currentPassword || !(await user.comparePassword(currentPassword))) {
+                logAudit(req, 'reauth.failure', user._id, { reason: 'wrong_password' });
+                return res.status(401).json({ success: false, code: 'reauth_required', message: 'Enter your current password to change your email or password.' });
             }
-            user.email     = await encrypt(newEmail, dataKey);
-            user.emailHash = newHash;
+            if (user.twoFactorEnabled) {
+                if (!totp) {
+                    return res.status(401).json({ success: false, code: 'totp_required', message: 'Enter your authenticator code to confirm this change.' });
+                }
+                const result = await checkAndRecordTotp(user, dataKey, totp);
+                if (!result.ok) {
+                    logAudit(req, 'reauth.failure', user._id, { reason: 'totp' });
+                    return res.status(result.status).json({ success: false, code: 'totp_invalid', message: result.status === 423 ? 'Too many failed 2FA attempts. Try again in a few minutes.' : 'Invalid authenticator code.' });
+                }
+            }
+            if (password && await isBreachedPassword(password)) {
+                return res.status(400).json({ success: false, message: BREACHED_MESSAGE });
+            }
         }
 
-        const passwordChanged = Boolean(req.body.password);
-        const emailChanged    = Boolean(req.body.email);
-        if (req.body.password) user.password = req.body.password;
+        if (name)     user.name = await sealField(name, dataKey, FIELDS.userName, user._id);
+        if (currency) user.currency = currency;
+
+        let emailCode = null;
+        if (emailChanging) {
+            emailCode = _generateCode();
+            user.pendingEmail         = await sealField(newEmail, dataKey, FIELDS.userPendingEmail, user._id);
+            user.pendingEmailHash     = await hashEmail(newEmail);
+            user.emailChangeToken     = _hashVerificationToken(emailCode);
+            user.emailChangeExpiresAt = new Date(Date.now() + EMAIL_CHANGE_TTL_MS);
+            user.emailChangeAttempts  = 0;
+        }
+        if (password) user.password = password;
 
         await user.save();
 
-        if (passwordChanged) logAudit(req, 'password.change',     user._id);
-        if (emailChanged)    logAudit(req, 'profile.email_change', user._id);
+        if (emailChanging) {
+            try { await mailer.sendEmailChangeCodeEmail(newEmail, emailCode); }
+            catch (mailErr) { console.error('profile: email-change code failed:', mailErr.message); }
+            logAudit(req, 'profile.email_change_requested', user._id);
+        }
+        if (password) {
+            await revokeAllForUser(user._id);
+            await establishSession(res, user._id);   // this device stays signed in
+            logAudit(req, 'password.change', user._id);
+        }
 
-        const plainName  = req.body.name  || req.user._name;
-        const plainEmail = req.body.email || req.user._email;
-
-        res.json({ success: true, data: buildPublicUser(user, plainName, plainEmail) });
+        res.json({
+            success: true,
+            data: buildPublicUser(user, name || req.user._name, req.user._email),
+            emailChangePending: emailChanging,
+            ...(emailChanging ? { pendingEmail: newEmail } : {}),
+        });
     } catch (error) {
         console.error('Update profile error:', error);
         res.status(500).json({ success: false, message: 'Server error updating profile' });
+    }
+};
+
+// POST /api/auth/profile/email/confirm  { code }
+// Completes an email change started in updateUserProfile.
+const confirmEmailChange = async (req, res) => {
+    try {
+        const user = await User.findById(req.user._id);
+        const fail = (msg = 'Invalid or expired code') => res.status(400).json({ success: false, message: msg });
+
+        if (!user || !user.pendingEmailHash || !user.emailChangeToken) return fail('There is no email change waiting for confirmation.');
+        if (!user.emailChangeExpiresAt || user.emailChangeExpiresAt.getTime() < Date.now()) {
+            return fail('Your code has expired. Change the email again to get a new one.');
+        }
+        if ((user.emailChangeAttempts || 0) >= EMAIL_CHANGE_MAX_ATTEMPTS) {
+            user.emailChangeToken = null;
+            user.emailChangeExpiresAt = null;
+            await user.save();
+            return fail('Too many incorrect attempts. Change the email again to get a new code.');
+        }
+        if (!_codeMatches(req.body.code, user.emailChangeToken)) {
+            user.emailChangeAttempts = (user.emailChangeAttempts || 0) + 1;
+            await user.save();
+            return fail();
+        }
+
+        const taken = await User.findOne({ emailHash: user.pendingEmailHash, _id: { $ne: user._id } });
+        if (taken) return res.status(409).json({ success: false, message: 'That email can\'t be used for this account.' });
+
+        const oldEmail = req.user._email;
+        const newEmail = await openField(user.pendingEmail, req.dataKey, FIELDS.userPendingEmail, user._id);
+        if (!newEmail) return fail('That change could not be confirmed. Change the email again.');
+        user.email     = await sealField(newEmail, req.dataKey, FIELDS.userEmail, user._id);
+        user.emailHash = user.pendingEmailHash;
+        user.pendingEmail = null;
+        user.pendingEmailHash = null;
+        user.emailChangeToken = null;
+        user.emailChangeExpiresAt = null;
+        user.emailChangeAttempts = 0;
+        await user.save();
+
+        try { await mailer.sendEmailChangedNotice(oldEmail); }
+        catch (mailErr) { console.error('profile: email-changed notice failed:', mailErr.message); }
+        logAudit(req, 'profile.email_change', user._id);
+
+        res.json({ success: true, data: buildPublicUser(user, req.user._name, newEmail) });
+    } catch (error) {
+        console.error('Confirm email change error:', error);
+        res.status(500).json({ success: false, message: 'Server error confirming email change' });
     }
 };
 
@@ -563,5 +646,5 @@ module.exports = {
     registerUser, loginUser, verifyCode, resendCode,
     forgotPassword, resetPassword,
     refreshSession, logout,
-    getUserProfile, updateUserProfile,
+    getUserProfile, updateUserProfile, confirmEmailChange,
 };

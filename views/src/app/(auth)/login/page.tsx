@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
+import { apiErrorCode, apiErrorMessage, apiErrorStatus } from "@/lib/apiError";
 import { useAuthStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { VerifyCode } from "@/components/auth/VerifyCode";
@@ -19,6 +20,9 @@ export default function LoginPage() {
     const [showPw, setShowPw]           = useState(false);
     const [totpCode, setTotpCode]       = useState("");
     const [requires2FA, setRequires2FA] = useState(false);
+    // Lost phone: sign in with one of the single-use recovery codes instead.
+    const [useRecovery, setUseRecovery]   = useState(false);
+    const [recoveryCode, setRecoveryCode] = useState("");
     const [isLoading, setIsLoading]     = useState(false);
     const [error, setError]             = useState<string | null>(null);
     // Set when login is blocked because the email isn't verified yet → we drop
@@ -41,12 +45,12 @@ export default function LoginPage() {
                 setUser(res.data.data);
                 router.push("/dashboard");
             }
-        } catch (err: any) {
-            if (err.response?.status === 403 && err.response?.data?.code === "email_unverified") {
+        } catch (err: unknown) {
+            if (apiErrorStatus(err) === 403 && apiErrorCode(err) === "email_unverified") {
                 setError(null);
                 setNeedsVerifyEmail(formData.email);
             } else {
-                setError(err.response?.data?.message || "Something went wrong. Please try again.");
+                setError(apiErrorMessage(err, "Something went wrong. Please try again."));
             }
         } finally {
             setIsLoading(false);
@@ -59,18 +63,25 @@ export default function LoginPage() {
         setError(null);
 
         try {
-            const res = await api.post("/auth/2fa/verify", { token: totpCode });
+            const body = useRecovery ? { recoveryCode: recoveryCode.trim().toUpperCase() } : { token: totpCode };
+            const res = await api.post("/auth/2fa/verify", body);
             setUser(res.data.data);
             router.push("/dashboard");
-        } catch (err: any) {
-            setError(err.response?.data?.message || "Invalid verification code.");
+        } catch (err: unknown) {
+            setError(apiErrorMessage(err, "Invalid verification code."));
             setTotpCode("");
+            setRecoveryCode("");
         } finally {
             setIsLoading(false);
         }
     };
 
-    const setTotpCode2 = setTotpCode;
+    // Recovery codes look like ABCDE-FGHIJ; insert the dash as the user types.
+    const formatRecovery = (v: string) => {
+        const raw = v.toUpperCase().replace(/[^A-Z2-7]/g, "").slice(0, 10);
+        return raw.length > 5 ? `${raw.slice(0, 5)}-${raw.slice(5)}` : raw;
+    };
+    const secondFactorReady = useRecovery ? /^[A-Z2-7]{5}-[A-Z2-7]{5}$/.test(recoveryCode) : totpCode.length === 6;
 
     return (
         <div className="relative min-h-screen w-full flex items-center justify-center bg-zinc-950 overflow-hidden text-zinc-200">
@@ -203,22 +214,42 @@ export default function LoginPage() {
                                 <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-purple-500/10 border border-purple-500/20 mb-3">
                                     <ShieldCheck className="w-6 h-6 text-purple-400" />
                                 </div>
-                                <p className="text-zinc-400 text-sm">Enter the 6-digit code from your authenticator app</p>
+                                <p className="text-zinc-400 text-sm">
+                                    {useRecovery ? "Enter one of your recovery codes" : "Enter the 6-digit code from your authenticator app"}
+                                </p>
                             </div>
 
                             <div className="group">
-                                <input
-                                    type="text"
-                                    inputMode="numeric"
-                                    pattern="[0-9]{6}"
-                                    maxLength={6}
-                                    placeholder="000000"
-                                    value={totpCode}
-                                    onChange={(e) => setTotpCode2(e.target.value.replace(/\D/g, ""))}
-                                    className="w-full bg-zinc-900/50 border-b border-zinc-800 focus:border-purple-500 text-zinc-300 placeholder:text-zinc-600 text-center text-2xl tracking-[0.5em] py-3 outline-none transition-all duration-300 rounded-t-sm"
-                                    required
-                                    autoFocus
-                                />
+                                {useRecovery ? (
+                                    <input
+                                        key="recovery"
+                                        type="text"
+                                        autoComplete="one-time-code"
+                                        placeholder="ABCDE-FGHIJ"
+                                        aria-label="Recovery code"
+                                        value={recoveryCode}
+                                        onChange={(e) => setRecoveryCode(formatRecovery(e.target.value))}
+                                        className="w-full bg-zinc-900/50 border-b border-zinc-800 focus:border-purple-500 text-zinc-300 placeholder:text-zinc-600 text-center text-xl tracking-[0.3em] font-mono py-3 outline-none transition-all duration-300 rounded-t-sm"
+                                        required
+                                        autoFocus
+                                    />
+                                ) : (
+                                    <input
+                                        key="totp"
+                                        type="text"
+                                        inputMode="numeric"
+                                        autoComplete="one-time-code"
+                                        pattern="[0-9]{6}"
+                                        maxLength={6}
+                                        placeholder="000000"
+                                        aria-label="Authenticator code"
+                                        value={totpCode}
+                                        onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ""))}
+                                        className="w-full bg-zinc-900/50 border-b border-zinc-800 focus:border-purple-500 text-zinc-300 placeholder:text-zinc-600 text-center text-2xl tracking-[0.5em] py-3 outline-none transition-all duration-300 rounded-t-sm"
+                                        required
+                                        autoFocus
+                                    />
+                                )}
                             </div>
 
                             <motion.button
@@ -228,7 +259,7 @@ export default function LoginPage() {
                                     "w-full flex items-center justify-center gap-2 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-medium py-3 rounded-full shadow-lg shadow-purple-900/20 transition-all duration-300",
                                     isLoading && "opacity-80 cursor-wait"
                                 )}
-                                disabled={isLoading || totpCode.length !== 6}
+                                disabled={isLoading || !secondFactorReady}
                             >
                                 {isLoading ? (
                                     <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -239,7 +270,15 @@ export default function LoginPage() {
 
                             <button
                                 type="button"
-                                onClick={() => { setRequires2FA(false); setError(null); }}
+                                onClick={() => { setUseRecovery((v) => !v); setError(null); setTotpCode(""); setRecoveryCode(""); }}
+                                className="w-full text-purple-400 hover:text-purple-300 text-xs transition-colors"
+                            >
+                                {useRecovery ? "Use my authenticator app instead" : "Lost your phone? Use a recovery code"}
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={() => { setRequires2FA(false); setUseRecovery(false); setError(null); }}
                                 className="w-full text-zinc-500 hover:text-zinc-400 text-xs transition-colors"
                             >
                                 ← Back to login

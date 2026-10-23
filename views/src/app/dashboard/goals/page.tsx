@@ -1,51 +1,70 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { Target, PiggyBank, TrendingUp, Info, Loader2, Trophy } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Target, PiggyBank, TrendingUp, Info, Loader2, Trophy, Compass, AlertTriangle, ArrowRight } from "lucide-react";
 import { api } from "@/lib/api";
 import { useCurrency } from "@/lib/useCurrency";
 import { GoalForm, type GoalPeriod } from "@/components/dashboard/goals/GoalForm";
 import { GoalCard, type Goal } from "@/components/dashboard/goals/GoalCard";
+import { SavingsPlan } from "@/components/dashboard/goals/SavingsPlan";
 import { SavingsBreakdown, type BalanceData } from "@/components/dashboard/SavingsBreakdown";
+import type { GoalPlanRow, PlanData } from "@/components/dashboard/goals/goalPlanModel";
 
-type View = "active" | "completed";
+type View = "active" | "plan" | "completed";
+
+// Data tagged with the request it answers, so "loading" is derived (the data on
+// hand belongs to another view/period) instead of set synchronously in effects.
+interface Tagged<T> { key: string; value: T; failed: boolean }
 
 export default function GoalsPage() {
     const { format: fmt } = useCurrency();
     const [period, setPeriod] = useState<GoalPeriod>("monthly");
     const [view, setView] = useState<View>("active");
-    const [balance, setBalance] = useState<BalanceData | null>(null);
-    const [goals, setGoals] = useState<Goal[]>([]);
-    const [loadingBalance, setLoadingBalance] = useState(true);
-    const [loadingGoals, setLoadingGoals] = useState(true);
     const [refreshTrigger, setRefreshTrigger] = useState(0);
+    const [balanceState, setBalanceState] = useState<Tagged<BalanceData | null> | null>(null);
+    const [goalsState, setGoalsState] = useState<Tagged<Goal[]> | null>(null);
+    const [planState, setPlanState] = useState<Tagged<PlanData | null> | null>(null);
 
     const handleRefresh = useCallback(() => setRefreshTrigger((p) => p + 1), []);
 
     // The single continuous balance + its monthly/yearly classification.
     useEffect(() => {
         let cancelled = false;
-        setLoadingBalance(true);
         api.get("/analytics/balance")
-            .then((res) => { if (!cancelled) setBalance(res.data?.data ?? null); })
-            .catch((err) => { if (!cancelled) { console.error(err); setBalance(null); } })
-            .finally(() => { if (!cancelled) setLoadingBalance(false); });
+            .then((res) => { if (!cancelled) setBalanceState({ key: "balance", value: res.data?.data ?? null, failed: false }); })
+            .catch((err) => { if (!cancelled) { console.error(err); setBalanceState({ key: "balance", value: null, failed: true }); } });
+        return () => { cancelled = true; };
+    }, [refreshTrigger]);
+
+    // Cash-flow-aware plan for every active goal (feasibility + forecast).
+    // Re-fetched whenever goals change (create / contribute / allocate / delete).
+    useEffect(() => {
+        let cancelled = false;
+        api.get("/goals/plan")
+            .then((res) => { if (!cancelled) setPlanState({ key: "plan", value: res.data?.data ?? null, failed: false }); })
+            .catch((err) => { if (!cancelled) { console.error(err); setPlanState({ key: "plan", value: null, failed: true }); } });
         return () => { cancelled = true; };
     }, [refreshTrigger]);
 
     // Goals list: active is period-scoped; completed lists every accomplished goal.
+    const goalsKey = view === "completed" ? "completed" : `active|${period}`;
     useEffect(() => {
+        if (view === "plan") return; // plan view renders from /goals/plan
         let cancelled = false;
-        setLoadingGoals(true);
-        const params = view === "active"
-            ? { status: "Active", period }
-            : { status: "Completed" };
+        const key = view === "completed" ? "completed" : `active|${period}`;
+        const params = view === "completed" ? { status: "Completed" } : { status: "Active", period };
         api.get("/goals", { params })
-            .then((res) => { if (!cancelled) setGoals(res.data?.data ?? []); })
-            .catch((err) => { if (!cancelled) { console.error(err); setGoals([]); } })
-            .finally(() => { if (!cancelled) setLoadingGoals(false); });
+            .then((res) => { if (!cancelled) setGoalsState({ key, value: res.data?.data ?? [], failed: false }); })
+            .catch((err) => { if (!cancelled) { console.error(err); setGoalsState({ key, value: [], failed: true }); } });
         return () => { cancelled = true; };
     }, [period, view, refreshTrigger]);
+
+    const balance = balanceState?.value ?? null;
+    const loadingBalance = balanceState === null;
+    const loadingGoals = goalsState?.key !== goalsKey;
+    const goals = goalsState && goalsState.key === goalsKey ? goalsState.value : [];
+    const plan = planState?.value ?? null;
+    const planById = useMemo(() => new Map<string, GoalPlanRow>((plan?.goals ?? []).map((g) => [g.goalId, g])), [plan]);
 
     const breakdown = balance ? balance[period] : null;
     const periodLabel = period === "monthly" ? "this month" : "this year";
@@ -80,23 +99,49 @@ export default function GoalsPage() {
             )}
 
             {/* View tabs */}
-            <div className="flex items-center gap-1 p-1 rounded-xl bg-zinc-900/50 border border-white/5 w-fit">
+            <div className="flex items-center gap-1 p-1 rounded-xl bg-zinc-900/50 border border-white/5 w-fit max-w-full overflow-x-auto">
                 <TabButton active={view === "active"} onClick={() => setView("active")} icon={<Target className="w-4 h-4" />}>Active</TabButton>
+                <TabButton active={view === "plan"} onClick={() => setView("plan")} icon={<Compass className="w-4 h-4" />}>Plan</TabButton>
                 <TabButton active={view === "completed"} onClick={() => setView("completed")} icon={<Trophy className="w-4 h-4" />}>Completed</TabButton>
             </div>
 
-            {/* Create form — active view only */}
-            {view === "active" && <GoalForm period={period} onSuccess={handleRefresh} />}
-
-            {/* Goals grid */}
-            {loadingGoals ? (
-                <div className="flex justify-center py-20"><Loader2 className="w-6 h-6 animate-spin text-zinc-500" /></div>
-            ) : goals.length === 0 ? (
-                <EmptyState view={view} period={period} />
+            {view === "plan" ? (
+                <SavingsPlan
+                    plan={plan}
+                    failed={!!planState?.failed}
+                    wallet={balance ? balance.available : null}
+                    onAllocated={handleRefresh}
+                />
             ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {goals.map((g) => <GoalCard key={g._id} goal={g} onUpdate={handleRefresh} />)}
-                </div>
+                <>
+                    {/* Overcommitted nudge — the full breakdown lives in the Plan tab */}
+                    {view === "active" && plan?.portfolio.overcommitted && plan.goals.length > 0 && (
+                        <button
+                            onClick={() => setView("plan")}
+                            className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-left hover:bg-amber-500/15 transition-colors"
+                        >
+                            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                            <span className="text-xs sm:text-sm text-amber-200 flex-1">
+                                Your goals need {fmt(plan.portfolio.totalRequired)}/mo but your surplus is {fmt(plan.cashFlow.monthlySurplus)}/mo. See the plan for what to fund first.
+                            </span>
+                            <ArrowRight className="w-4 h-4 text-amber-400 shrink-0" />
+                        </button>
+                    )}
+
+                    {/* Create form — active view only */}
+                    {view === "active" && <GoalForm period={period} onSuccess={handleRefresh} />}
+
+                    {/* Goals grid */}
+                    {loadingGoals ? (
+                        <div className="flex justify-center py-20"><Loader2 className="w-6 h-6 animate-spin text-zinc-500" /></div>
+                    ) : goals.length === 0 ? (
+                        <EmptyState view={view} period={period} />
+                    ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                            {goals.map((g) => <GoalCard key={g._id} goal={g} onUpdate={handleRefresh} plan={planById.get(g._id)} />)}
+                        </div>
+                    )}
+                </>
             )}
         </div>
     );
@@ -122,14 +167,14 @@ function TabButton({ active, onClick, icon, children }: { active: boolean; onCli
     return (
         <button
             onClick={onClick}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${active ? "bg-white/10 text-white" : "text-zinc-400 hover:text-white"}`}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors shrink-0 ${active ? "bg-white/10 text-white" : "text-zinc-400 hover:text-white"}`}
         >
             {icon}{children}
         </button>
     );
 }
 
-function EmptyState({ view, period }: { view: View; period: GoalPeriod }) {
+function EmptyState({ view, period }: { view: Exclude<View, "plan">; period: GoalPeriod }) {
     const Icon = view === "completed" ? Trophy : Target;
     return (
         <div className="py-20 text-center border border-dashed border-white/10 rounded-3xl bg-white/5">

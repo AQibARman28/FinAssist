@@ -1,6 +1,7 @@
 const Income = require('../models/Income');
-const { encrypt, safeDecrypt } = require('../utils/encryption');
-const { signRecord, verifyRecord, encryptNote, decryptNote } = require('../utils/signing');
+const { FIELDS, sealField, openField } = require('../utils/encryption');
+const { signRecord, encryptNote, decryptNote } = require('../utils/signing');
+const { checkRecords, flag } = require('../utils/integrity');
 const { assertCategoryOwnedAndTyped } = require('../utils/categoryGuard');
 const { logAudit } = require('../utils/audit');
 const { materializeRecurring } = require('../utils/recurring');
@@ -24,20 +25,12 @@ function _defaultWindow() {
 // Payload that goes into the ECDSA serverAttestation. Stricter than
 // Expense's signed payload — date, user, and createdAt are all bound,
 // so any direct-DB rewrite of those fields detaches the signature.
-function attestationPayload(income) {
-    return {
-        amount:    income.amount,
-        category:  income.category,
-        date:      income.date,
-        user:      income.user,
-        createdAt: income.createdAt,
-    };
-}
+const { income: attestationPayload } = require('../utils/attestationPayloads');
 
 async function decryptIncome(income, user, dataKey) {
     const obj = income.toObject ? income.toObject({ virtuals: true }) : { ...income };
-    obj.description = await safeDecrypt(income.description, dataKey);
-    obj.note = income.note ? await decryptNote(income.note, user, dataKey) : null;
+    obj.description = await openField(income.description, dataKey, FIELDS.incomeDescription, user._id);
+    obj.note = income.note ? await decryptNote(income.note, user, dataKey, FIELDS.incomeNote) : null;
     return obj;
 }
 
@@ -53,8 +46,8 @@ const createIncome = async (req, res) => {
 
         const incomeDate = new Date(date);
         const createdAt  = new Date();   // set explicitly so we can include it in the signature
-        const encDesc    = await encrypt(description, req.dataKey);
-        const encNote    = req.body.note ? (await encryptNote(req.body.note, req.user)) : undefined;
+        const encDesc    = await sealField(description, req.dataKey, FIELDS.incomeDescription, req.user._id);
+        const encNote    = req.body.note ? (await encryptNote(req.body.note, req.user, req.dataKey, FIELDS.incomeNote)) : undefined;
 
         const signed = await signRecord(
             { amount, category, date: incomeDate, user: req.user._id, createdAt },
@@ -117,13 +110,9 @@ const getIncomes = async (req, res) => {
             .limit(limit * 1)
             .skip((page - 1) * limit);
 
+        const issues = await checkRecords(req, 'income', incomes, attestationPayload);
         const items = [];
-        for (const inc of incomes) {
-            if (inc.serverAttestation && !(await verifyRecord(attestationPayload(inc), inc.serverAttestation, req.user))) {
-                console.warn(`serverAttestation failed verification on income ${inc._id} (user ${req.user._id})`);
-            }
-            items.push(await decryptIncome(inc, req.user, req.dataKey));
-        }
+        for (const inc of incomes) items.push(flag(await decryptIncome(inc, req.user, req.dataKey), issues));
 
         const total = await Income.countDocuments(query);
 
@@ -195,11 +184,8 @@ const getIncomeById = async (req, res) => {
         const income = await Income.findOne({ _id: req.params.id, user: req.user._id });
         if (!income) return res.status(404).json({ success: false, message: 'Income not found' });
 
-        if (income.serverAttestation && !(await verifyRecord(attestationPayload(income), income.serverAttestation, req.user))) {
-            console.warn(`serverAttestation failed verification on income ${income._id} (user ${req.user._id})`);
-        }
-
-        res.json({ success: true, data: await decryptIncome(income, req.user, req.dataKey) });
+        const issues = await checkRecords(req, 'income', [income], attestationPayload);
+        res.json({ success: true, data: flag(await decryptIncome(income, req.user, req.dataKey), issues) });
     } catch (error) {
         console.error('Get income error:', error);
         res.status(500).json({ success: false, message: 'Server error fetching income' });
@@ -218,10 +204,13 @@ const updateIncome = async (req, res) => {
             }
         }
 
+        const current = await Income.findOne({ _id: req.params.id, user: req.user._id });
+        if (!current) return res.status(404).json({ success: false, message: 'Income not found' });
+
         const updates = {};
         if (req.body.amount             !== undefined) updates.amount             = req.body.amount;
         if (req.body.category           !== undefined) updates.category           = req.body.category;
-        if (req.body.description        !== undefined) updates.description        = await encrypt(req.body.description, req.dataKey);
+        if (req.body.description        !== undefined) updates.description        = await sealField(req.body.description, req.dataKey, FIELDS.incomeDescription, req.user._id);
         if (req.body.date               !== undefined) updates.date               = new Date(req.body.date);
         if (req.body.isRecurring        !== undefined) updates.isRecurring        = req.body.isRecurring;
         if (req.body.recurringFrequency !== undefined) updates.recurringFrequency = req.body.recurringFrequency;
@@ -229,21 +218,29 @@ const updateIncome = async (req, res) => {
         if (req.body.note               !== undefined) {
             updates.note = (req.body.note === null || req.body.note === '')
                 ? null
-                : (await encryptNote(req.body.note, req.user));
+                : (await encryptNote(req.body.note, req.user, req.dataKey, FIELDS.incomeNote));
         }
 
-        // If the client turned isRecurring OFF, clear the cadence so the
-        // record doesn't carry a stale frequency.
+        // Turning isRecurring OFF clears the cadence. It has to be an explicit
+        // $unset: Mongoose drops `undefined` values from an update.
+        const unset = {};
         if (updates.isRecurring === false && updates.recurringFrequency === undefined) {
-            updates.recurringFrequency = undefined;
+            unset.recurringFrequency = 1;
         }
 
-        // serverAttestation is set on creation and NOT regenerated on update —
-        // see docs/decisions/SEC-1-ecdsa.md.
+        // Re-sign over the values the record will hold after this update
+        // (supersedes the create-only rule in docs/decisions/SEC-1-ecdsa.md).
+        updates.serverAttestation = await signRecord(attestationPayload({
+            amount:    updates.amount   ?? current.amount,
+            category:  updates.category ?? current.category,
+            date:      updates.date     ?? current.date,
+            user:      current.user,
+            createdAt: current.createdAt,
+        }), req.user, req.dataKey);
 
         const updated = await Income.findOneAndUpdate(
             { _id: req.params.id, user: req.user._id },
-            updates,
+            Object.keys(unset).length ? { $set: updates, $unset: unset } : updates,
             { new: true, runValidators: true },
         );
         if (!updated) return res.status(404).json({ success: false, message: 'Income not found' });

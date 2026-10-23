@@ -39,11 +39,23 @@
  * Why ipad = 0x36 and opad = 0x5c specifically
  * ─────────────────────────────────────────────────────────────────────────────
  * The two pad bytes are 0x36 = 0011_0110 and 0x5C = 0101_1100. Their bitwise
- * XOR is 0110_1010 — exactly 4 of 8 bits differ, the maximum possible
- * "spread" between two byte values. That means K' XOR ipad and K' XOR opad
- * differ in *half* of all bit positions of the prepared key, so the inner
- * and outer hash inputs are well separated even when the underlying key is
- * the same. This is what gives HMAC its security proof.
+ * XOR is 0110_1010 = 0x6A, so they differ in 4 of the 8 bit positions. That
+ * is NOT the maximum possible — two bytes can differ in all 8 bits (0x00 vs
+ * 0xFF). And the bit count is not what HMAC's security rests on: the proofs
+ * (Bellare–Canetti–Krawczyk 1996; Bellare 2006) need the inner and outer
+ * keys K' XOR ipad and K' XOR opad to be DIFFERENT, i.e. ipad ≠ opad, plus an
+ * assumption about the compression function keyed with that fixed pair of
+ * related keys. Any two distinct constants give distinct keys; 0x36/0x5C are
+ * simply the values the designers fixed, with a comfortable Hamming distance
+ * between them.
+ *
+ * Reusing the prepared key
+ * ─────────────────────────────────────────────────────────────────────────────
+ * K' XOR ipad and K' XOR opad depend only on the key, so a caller that MACs
+ * many messages under one key (PBKDF2 does it `iterations` times) should
+ * prepare them once: createHmacSha256(key) returns a function that reuses
+ * them. That matters most for keys longer than 64 bytes, which would
+ * otherwise be re-hashed on every call.
  *
  * Allowed dependencies
  * ─────────────────────────────────────────────────────────────────────────────
@@ -76,8 +88,9 @@ const IPAD_BYTE = 0x36;
 
 /*
  * OPAD_BYTE — the byte value the prepared key gets XORed with for the outer
- * hash. 0x5C = 0101_1100. As noted above, ipad and opad were chosen to
- * differ in 4 of 8 bit positions for maximum separation.
+ * hash. 0x5C = 0101_1100. As noted above, what matters is that it differs
+ * from IPAD_BYTE (they differ in 4 of 8 bit positions), so the inner and
+ * outer hashes are keyed differently.
  */
 const OPAD_BYTE = 0x5c;
 
@@ -150,17 +163,18 @@ function xorWithByte(buf, b) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Compute HMAC-SHA256 of `message` under shared secret `key`.
+ * Prepare the HMAC key state for `key` ONCE and return a function that
+ * computes HMAC-SHA256(key, message) for any message.
  *
- *   HMAC(K, m) = sha256( (K' XOR opad) || sha256( (K' XOR ipad) || m ) )
+ *   const mac = createHmacSha256(key);
+ *   mac(m1); mac(m2); ...     // no per-call key preparation
  *
- * @param {string|Buffer} key      — the shared secret
- * @param {string|Buffer} message  — the message to authenticate
- * @returns {Buffer} 32-byte authentication tag
+ * The returned function holds K' XOR ipad and K' XOR opad (64 bytes each).
+ *
+ * @param {string|Buffer} key — the shared secret
+ * @returns {(message: string|Buffer) => Buffer}
  */
-function hmacSha256(key, message) {
-    const msgBuf = toBuffer(message, 'message');
-
+function createHmacSha256(key) {
     // Bring the key to exactly one hash block (64 bytes).
     const k = prepareKey(key);
 
@@ -168,16 +182,34 @@ function hmacSha256(key, message) {
     const kIpad = xorWithByte(k, IPAD_BYTE);
     const kOpad = xorWithByte(k, OPAD_BYTE);
 
-    // Inner hash: takes the message itself, prefixed with the ipad-key.
-    // Length-extension attacks against this inner output are possible, but
-    // that's fine — only the outer hash is ever published.
-    const innerInput = Buffer.concat([kIpad, msgBuf]);
-    const innerHash  = sha256(innerInput);
+    return function hmacWithPreparedKey(message) {
+        const msgBuf = toBuffer(message, 'message');
 
-    // Outer hash: a fixed 64+32 = 96 byte input — opad-key concatenated with
-    // the inner digest. This is what we return as the HMAC.
-    const outerInput = Buffer.concat([kOpad, innerHash]);
-    return sha256(outerInput);
+        // Inner hash: takes the message itself, prefixed with the ipad-key.
+        // Length-extension attacks against this inner output are possible,
+        // but that's fine — only the outer hash is ever published.
+        const innerHash = sha256(Buffer.concat([kIpad, msgBuf]));
+
+        // Outer hash: a fixed 64+32 = 96 byte input — opad-key concatenated
+        // with the inner digest. This is what we return as the HMAC.
+        return sha256(Buffer.concat([kOpad, innerHash]));
+    };
+}
+
+/**
+ * Compute HMAC-SHA256 of `message` under shared secret `key`.
+ *
+ *   HMAC(K, m) = sha256( (K' XOR opad) || sha256( (K' XOR ipad) || m ) )
+ *
+ * One-shot convenience over createHmacSha256 (prepares the key each call).
+ *
+ * @param {string|Buffer} key      — the shared secret
+ * @param {string|Buffer} message  — the message to authenticate
+ * @returns {Buffer} 32-byte authentication tag
+ */
+function hmacSha256(key, message) {
+    toBuffer(message, 'message');          // type-check the message first, as before
+    return createHmacSha256(key)(message);
 }
 
 /**
@@ -188,7 +220,7 @@ function hmacSha256Hex(key, message) {
 }
 
 
-module.exports = { hmacSha256, hmacSha256Hex };
+module.exports = { hmacSha256, hmacSha256Hex, createHmacSha256 };
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -229,6 +261,28 @@ if (require.main === module) {
             console.log(`        expected: ${expected}`);
             console.log(`        got:      ${got}`);
         }
+    }
+
+    // Prepared-key reuse: one createHmacSha256(key) instance, called
+    // repeatedly on different messages, must match the one-shot function —
+    // including for a key longer than the 64-byte block (hashed first).
+    {
+        const longKey  = Buffer.alloc(200, 0x5a);
+        const keys     = [...vectors.map((v) => v.key), longKey];
+        const messages = [...vectors.map((v) => v.message), '', Buffer.alloc(1000, 0x01)];
+        let pass = true;
+        for (const key of keys) {
+            const mac = createHmacSha256(key);
+            for (const m of [...messages, ...messages]) {        // each message twice
+                if (Buffer.compare(mac(m), hmacSha256(key, m)) !== 0) pass = false;
+            }
+        }
+        // And the RFC 4231 vectors through the prepared-key path.
+        for (const { key, message, expected } of vectors) {
+            if (createHmacSha256(key)(message).toString('hex') !== expected) pass = false;
+        }
+        if (!pass) allPass = false;
+        console.log(`${pass ? 'PASS' : 'FAIL'}  createHmacSha256 reuse matches one-shot (RFC 4231 #1–#3 + 200-byte key)`);
     }
 
     process.exit(allPass ? 0 : 1);

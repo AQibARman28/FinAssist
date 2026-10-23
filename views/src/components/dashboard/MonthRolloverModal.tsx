@@ -6,6 +6,7 @@ import { CalendarClock, ArrowRight, PiggyBank, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useCurrency } from "@/lib/useCurrency";
 import { cn } from "@/lib/utils";
+import { apiErrorCode, apiErrorMessage, apiErrorStatus } from "@/lib/apiError";
 
 interface RolloverStatus {
     pending: boolean;
@@ -20,6 +21,7 @@ export function MonthRolloverModal({ onDone }: { onDone?: () => void }) {
     const { format: fmt } = useCurrency();
     const [status, setStatus] = useState<RolloverStatus | null>(null);
     const [submitting, setSubmitting] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
         let cancelled = false;
@@ -31,12 +33,24 @@ export function MonthRolloverModal({ onDone }: { onDone?: () => void }) {
 
     const choose = async (action: "carry" | "save") => {
         setSubmitting(true);
+        setError(null);
         try {
             await api.post("/wallet/rollover", { action });
             setStatus({ pending: false });
             onDone?.();
-        } catch {
-            setStatus({ pending: false });
+        } catch (err) {
+            if (apiErrorCode(err) === "ROLLOVER_ALREADY_HANDLED") {
+                // Already handled for this month (another tab/device, or a
+                // double tap) — nothing left to decide: close and refresh.
+                setStatus({ pending: false });
+                onDone?.();
+                return;
+            }
+            // 409 WALLET_BUSY is a transient lock conflict: keep the prompt
+            // open with the server's message so the user can tap again.
+            setError(apiErrorMessage(err, apiErrorStatus(err) === 409
+                ? "Another wallet update is in progress. Please try again."
+                : "Couldn't save your choice. Please try again."));
         } finally {
             setSubmitting(false);
         }
@@ -104,6 +118,19 @@ export function MonthRolloverModal({ onDone }: { onDone?: () => void }) {
 
                         {submitting && positive && (
                             <div className="mt-3 flex justify-center"><Loader2 className="w-4 h-4 animate-spin text-zinc-500" /></div>
+                        )}
+
+                        {error && (
+                            <div className="mt-3 text-center">
+                                <p className="text-xs text-red-400">{error}</p>
+                                {/* Never trap the user behind the prompt; it reappears next visit. */}
+                                <button
+                                    onClick={() => setStatus({ pending: false })}
+                                    className="mt-2 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-200 rounded-lg hover:bg-white/5 transition-colors"
+                                >
+                                    Decide later
+                                </button>
+                            </div>
                         )}
                     </motion.div>
                 </motion.div>

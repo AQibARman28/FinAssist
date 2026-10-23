@@ -28,9 +28,9 @@
  *     hashPassword(plaintext) -> string (encoded argon2 hash)
  *     verifyPassword(plaintext, hash) -> boolean
  *
- *   TOTP (otplib):
- *     generateTotpSecret() -> string (base32)
- *     verifyTotp(secret, code) -> boolean
+ *   TOTP (speakeasy; secrets from crypto.randomBytes):
+ *     generateTotpSecret() -> string (base32, 160 random bits)
+ *     verifyTotp(secret, code, algorithm = 'sha256') -> boolean
  *
  *   JWT (jsonwebtoken HS256):
  *     signJwt(payload, secret, expiresIn) -> string
@@ -63,18 +63,41 @@ const ARGON2_PARAMS = Object.freeze({
     parallelism: 1,
 });
 
-// TOTP config: SHA-256 + 30s step + ±1 window. SHA-256 matches the legacy
-// Python TOTP — existing 2FA-enrolled users' authenticator apps were
-// provisioned with `algorithm=SHA256`; switching to SHA-1 here would
-// silently invalidate every enrolled secret. window:1 accepts ±30s clock
-// skew.
+// TOTP config: 30s step + ±1 window (±30s clock skew), 6 digits. The HMAC
+// algorithm is per user: accounts enrolled before 2026-10 were provisioned
+// with SHA-256 (matching the legacy Python TOTP) and keep it; new enrolments
+// use SHA-1, the RFC 6238 default and what common authenticator apps compute
+// regardless of the otpauth `algorithm` parameter. HMAC-SHA1 remains sound
+// for HOTP/TOTP (RFC 4226 §A).
+const TOTP_ALGORITHMS = new Set(['sha1', 'sha256']);
 const TOTP_OPTS = Object.freeze({
     encoding:  'base32',
-    algorithm: 'sha256',
     step:      30,
     window:    1,
     digits:    6,
 });
+
+const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+// RFC 4648 base32 without padding.
+function _base32(buf) {
+    let bits = 0, value = 0, out = '';
+    for (const byte of buf) {
+        value = (value << 8) | byte;
+        bits += 8;
+        while (bits >= 5) {
+            out += BASE32_ALPHABET[(value >>> (bits - 5)) & 31];
+            bits -= 5;
+        }
+    }
+    if (bits > 0) out += BASE32_ALPHABET[(value << (5 - bits)) & 31];
+    return out;
+}
+
+function _totpAlgorithm(algorithm) {
+    if (!TOTP_ALGORITHMS.has(algorithm)) throw new TypeError(`TOTP algorithm must be sha1 or sha256 (got ${algorithm})`);
+    return algorithm;
+}
 
 // ── AES-256-GCM ───────────────────────────────────────────────────────────────
 
@@ -228,24 +251,26 @@ async function verifyPassword(plaintext, hash) {
     return argon2.verify(hash, plaintext);
 }
 
-// ── TOTP (speakeasy, SHA-256) ────────────────────────────────────────────────
+// ── TOTP (speakeasy) ─────────────────────────────────────────────────────────
 
 function generateTotpSecret() {
-    // length:20 = 160 random bits → 32-char base32 string, RFC-recommended.
-    return speakeasy.generateSecret({ length: 20 }).base32;
+    // 20 bytes straight from the CSPRNG = a full 160 random bits (RFC 4226 R6
+    // asks for at least 128). speakeasy's own generator maps random bytes onto
+    // a skewed character set first, which yields only ~127 bits.
+    return _base32(crypto.randomBytes(20));
 }
 
-function verifyTotp(secret, code) {
+function verifyTotp(secret, code, algorithm = 'sha256') {
     if (typeof secret !== 'string') {
         throw new TypeError('verifyTotp: secret must be a base32 string');
     }
     if (typeof code !== 'string') {
         throw new TypeError('verifyTotp: code must be a string');
     }
-    return speakeasy.totp.verify({ ...TOTP_OPTS, secret, token: code });
+    return speakeasy.totp.verify({ ...TOTP_OPTS, algorithm: _totpAlgorithm(algorithm), secret, token: code });
 }
 
-function totpOtpauthUri(label, issuer, secret) {
+function totpOtpauthUri(label, issuer, secret, algorithm = 'sha256') {
     if (typeof label !== 'string' || typeof issuer !== 'string' || typeof secret !== 'string') {
         throw new TypeError('totpOtpauthUri: label, issuer, secret must be strings');
     }
@@ -254,7 +279,7 @@ function totpOtpauthUri(label, issuer, secret) {
         encoding:  'base32',
         label,
         issuer,
-        algorithm: 'sha256',
+        algorithm: _totpAlgorithm(algorithm),
         digits:    6,
         period:    30,
     });
@@ -274,14 +299,27 @@ function signJwt(payload, secret, expiresIn) {
     return jwt.sign(payload, secret, options);
 }
 
+// `secret` may be one secret or a list (current first, then the previous one
+// during a JWT_SECRET rotation). HS256 is pinned either way.
 function verifyJwt(token, secret) {
     if (typeof token !== 'string') {
         throw new TypeError('verifyJwt: token must be a string');
     }
-    if (typeof secret !== 'string') {
-        throw new TypeError('verifyJwt: secret must be a string');
+    const secrets = Array.isArray(secret) ? secret : [secret];
+    if (secrets.length === 0 || secrets.some((s) => typeof s !== 'string' || s.length === 0)) {
+        throw new TypeError('verifyJwt: secret must be a non-empty string or list of strings');
     }
-    return jwt.verify(token, secret, { algorithms: ['HS256'] });
+    let lastErr;
+    for (const s of secrets) {
+        try {
+            return jwt.verify(token, s, { algorithms: ['HS256'] });
+        } catch (err) {
+            // An expired token is expired under every key; don't retry.
+            if (err.name === 'TokenExpiredError') throw err;
+            lastErr = err;
+        }
+    }
+    throw lastErr;
 }
 
 module.exports = {

@@ -258,8 +258,8 @@ describe('createIncome (controller)', () => {
         expect(raw.description).not.toBe('October salary');
         expect(typeof raw.description).toBe('string');
         expect(raw.description.length).toBeGreaterThan(0);
-        // base64 shape (the encryption wrapper outputs base64(IV||tag||CT)).
-        expect(raw.description).toMatch(/^[A-Za-z0-9+/=]+$/);
+        // v2 shape: "v2:" + base64(IV||tag||CT), bound to owner + field by AAD.
+        expect(raw.description).toMatch(/^v2:[A-Za-z0-9+/=]+$/);
     });
 
     // ── 5. Audit log written ────────────────────────────────────────────────

@@ -197,17 +197,8 @@ async function materializeRecurring(Model, userId, fromDate, toDate) {
             const createdAt = new Date();
             tpl.createdAt = createdAt;
 
-            tpl.serverAttestation = await signRecord(
-                {
-                    amount:    tpl.amount,
-                    category:  tpl.category,
-                    date:      tpl.date,
-                    user:      tpl.user,
-                    createdAt,
-                },
-                user,
-                dataKey,
-            );
+            // Same payload shape the income controller checks on read.
+            tpl.serverAttestation = await signRecord(require('./attestationPayloads').income(tpl), user, dataKey);
 
             await Model.create(tpl);
             created++;

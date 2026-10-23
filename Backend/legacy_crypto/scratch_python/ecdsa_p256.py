@@ -1,3 +1,4 @@
+# WARNING: NOT CONSTANT-TIME — double-and-add scalar multiplication and big-int arithmetic leak the nonce k / key d through timing; teaching code only, never use with real secrets (see legacy_crypto/README.md "Known limitations").
 """
 ECDSA on the NIST P-256 curve (also called secp256r1 / prime256v1),
 implemented from scratch using only Python int arithmetic.
@@ -88,6 +89,15 @@ before any signature math runs. If Q isn't on P-256 we reject the
 signature outright. Same defense applied to range checks on r and s
 (both must be in [1, n-1]).
 
+Signature malleability and the low-S rule
+─────────────────────────────────────────────────────────────────────────────
+(r, s) and (r, n - s) are both valid signatures for the same message and
+key, so a third party can "re-sign" without the private key. sign()
+always emits s <= n/2 and verify() rejects s > n/2 unless the caller
+passes allow_high_s=True (needed only for signers that do not normalize,
+e.g. OpenSSL and the RFC 6979 test vectors). The DER decoder is strict
+for the same reason: one signature, one byte encoding.
+
 Allowed dependencies
 ─────────────────────────────────────────────────────────────────────────────
   `sha256` from our local scratch SHA-256 — used to hash the message
@@ -129,6 +139,20 @@ h  = 1
 
 # The standard base point as a tuple (x, y).
 G = (Gx, Gy)
+
+# HALF_N = n // 2. The "low-S" rule (BIP-62 / BIP-146 style, also what
+# libsecp256k1 enforces) says a canonical signature has s <= n/2.
+#
+# Why it exists: if (r, s) is a valid ECDSA signature then so is
+# (r, n - s) -- negating k flips the sign of s but gives a point with the
+# same x, so the same r. Without a canonical form, anyone can turn one
+# valid signature into a second, byte-different valid signature without
+# the private key ("signature malleability"). That breaks any system that
+# uses signature bytes as an identifier or replay-protection key. We
+# normalize on sign and, by default, reject s > n/2 on verify.
+#
+# Because n is odd, "s > n/2" is exactly "s > HALF_N".
+HALF_N = n >> 1
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -380,7 +404,9 @@ def sign(message, private_d):
         private_d: int in [1, n-1].
 
     Returns:
-        tuple (r, s) of two ints, each in [1, n-1].
+        tuple (r, s) of two ints, r in [1, n-1] and s in [1, n/2]. The
+        returned s is always LOW-S (see HALF_N): if the computed s is in
+        the upper half we return n - s, the other valid signature for r.
     """
     if not isinstance(private_d, int):
         raise TypeError("sign: private_d must be int")
@@ -410,15 +436,21 @@ def sign(message, private_d):
         s_val = (k_inv * (z + r * private_d)) % n
         if s_val == 0:
             continue
+        # Low-S normalization: (r, s) and (r, n - s) both verify; emit the
+        # canonical one.
+        if s_val > HALF_N:
+            s_val = n - s_val
         return (r, s_val)
 
 
-def verify(message, signature, public_Q):
+def verify(message, signature, public_Q, allow_high_s=False):
     """Verify an ECDSA signature (r, s) on message bytes under public point Q.
 
     Returns boolean. Performs all the standard mandatory checks:
       - r and s are integers in [1, n-1]
-      - public_Q is well-formed and lies on the P-256 curve
+      - s <= n/2 (low-S rule; see HALF_N) unless allow_high_s is True
+      - public_Q is well-formed, has coordinates in [0, p), and lies on
+        the P-256 curve
       - public_Q is not the point at infinity
     BEFORE doing any signature math. This is the invalid-curve-attack
     defense referenced in the file header.
@@ -427,6 +459,10 @@ def verify(message, signature, public_Q):
         message:   bytes (or str — UTF-8 encoded internally).
         signature: tuple (r, s) of two ints.
         public_Q:  tuple (x, y) of two ints, OR None.
+        allow_high_s: accept s > n/2. Only for checking signatures from
+                   signers that do not normalize S (OpenSSL /
+                   `cryptography`, the RFC 6979 test vectors). Leave it
+                   off anywhere signature bytes must be unique.
 
     Returns:
         bool.
@@ -441,6 +477,11 @@ def verify(message, signature, public_Q):
     # Range checks: r, s in [1, n-1]
     if r < 1 or r >= n: return False
     if s < 1 or s >= n: return False
+
+    # Low-S rule: reject the malleable upper-half twin unless the caller
+    # explicitly opted in.
+    if s > HALF_N and allow_high_s is not True:
+        return False
 
     # Public key validity
     if public_Q is None: return False
@@ -509,9 +550,20 @@ def _encode_der_integer(value):
 def _decode_der_integer(buf, offset):
     """Read a DER INTEGER starting at `offset`.
 
-    Returns (value, total_bytes_consumed). Validates the tag and length
-    byte; raises ValueError on long-form length (which can't legitimately
-    appear in a P-256 ECDSA signature).
+    Returns (value, total_bytes_consumed).
+
+    STRICT: DER has exactly one valid encoding per value, and we accept
+    only that one. Anything else is a different byte string for the
+    "same" signature (malleability) or a parser-differential hazard, so
+    we raise ValueError on:
+      - a long-form length byte (0x8X). Every length in a P-256 signature
+        is < 128, and DER requires short form for those, so long form is
+        always non-minimal here;
+      - a zero-length INTEGER;
+      - a length that runs past the end of the buffer (= the SEQUENCE);
+      - a negative INTEGER (first content byte has its high bit set);
+      - a non-minimal INTEGER (leading 0x00 that is not needed to keep
+        the next byte's high bit clear).
     """
     if offset + 2 > len(buf):
         raise ValueError("DER: truncated INTEGER")
@@ -519,10 +571,16 @@ def _decode_der_integer(buf, offset):
         raise ValueError("DER: expected INTEGER tag (0x02)")
     length = buf[offset + 1]
     if length & 0x80:
-        raise ValueError("DER: long-form length not supported (signature too large)")
+        raise ValueError("DER: long-form length is non-minimal here")
+    if length == 0:
+        raise ValueError("DER: zero-length INTEGER")
     if offset + 2 + length > len(buf):
         raise ValueError("DER: INTEGER length exceeds buffer")
     value_bytes = buf[offset + 2 : offset + 2 + length]
+    if value_bytes[0] & 0x80:
+        raise ValueError("DER: negative INTEGER")
+    if length > 1 and value_bytes[0] == 0x00 and (value_bytes[1] & 0x80) == 0:
+        raise ValueError("DER: non-minimal INTEGER encoding")
     value = int.from_bytes(value_bytes, 'big')
     return value, 2 + length
 
@@ -545,8 +603,9 @@ def der_encode_signature(r, s):
 def der_decode_signature(sig_bytes):
     """Decode an ASN.1 DER ECDSA signature into (r, s).
 
-    Validates: SEQUENCE tag, length byte (short-form only), exact match
-    of declared length to total bytes, no trailing bytes after s.
+    Strict DER only (see _decode_der_integer): SEQUENCE tag, short-form
+    length that matches the total bytes exactly, exactly two minimal
+    non-negative INTEGERs, no trailing bytes after s.
     """
     if not isinstance(sig_bytes, (bytes, bytearray)):
         raise TypeError("der_decode_signature: input must be bytes or bytearray")
@@ -558,7 +617,7 @@ def der_decode_signature(sig_bytes):
         raise ValueError("DER: expected SEQUENCE tag (0x30)")
     seq_len = sig_bytes[1]
     if seq_len & 0x80:
-        raise ValueError("DER: long-form length not supported")
+        raise ValueError("DER: long-form length is non-minimal here")
     if seq_len + 2 != len(sig_bytes):
         raise ValueError("DER: SEQUENCE length mismatch")
 
@@ -586,18 +645,18 @@ def sign_record(message_bytes, private_d):
     return der_encode_signature(r, s)
 
 
-def verify_record(message_bytes, signature_bytes, public_Q):
+def verify_record(message_bytes, signature_bytes, public_Q, allow_high_s=False):
     """High-level verify: takes DER-encoded signature bytes.
 
     Returns False on any DER parse failure (rather than raising), since
     a malformed signature is just an invalid signature from the API
-    contract's point of view.
+    contract's point of view. `allow_high_s` is passed through to verify().
     """
     try:
         r, s = der_decode_signature(signature_bytes)
     except (ValueError, TypeError):
         return False
-    return verify(message_bytes, (r, s), public_Q)
+    return verify(message_bytes, (r, s), public_Q, allow_high_s=allow_high_s)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -779,6 +838,123 @@ if __name__ == "__main__":
         f"rt_ok={rt_ok} priv_keys={priv_keys_ok} pub_keys={pub_keys_ok} all_hex={all_hex}",
     )
 
+    # ── RFC 6979 Appendix A.2.5 known-answer vectors (P-256 + SHA-256) ──
+    # Source: https://www.rfc-editor.org/rfc/rfc6979.txt — Appendix A.2.5
+    # "ECDSA, 256 Bits (Prime Field)": private key x, public key U = xG,
+    # and the "With SHA-256" signatures for messages "sample" and "test".
+    # RFC 6979 derives k deterministically; this lab signs with a random
+    # k, so these are used as VERIFY vectors plus a key-derivation check.
+    RFC6979_X  = 0xC9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721
+    RFC6979_UX = 0x60FED4BA255A9D31C961EB74C6356D68C049B8923B61FA6CE669622E60F29FB6
+    RFC6979_UY = 0x7903FE1008B8BC99A41AE9E95628BC64F2F1B20C2D7E9F5177A3C294D4462299
+    # SHA-256, message = "sample" (note: s > n/2, i.e. a HIGH-S signature)
+    RFC6979_SAMPLE = (0xEFD48B2AACB6A8FD1140DD9CD45E81D69D2C877B56AAF991C34D0EA84EAF3716,
+                      0xF7CB1C942D657C41D436C7A1B6E29F65F3E900DBB9AFF4064DC4AB2F843ACDA8)
+    # SHA-256, message = "test" (s < n/2, already low-S)
+    RFC6979_TEST   = (0xF1ABB023518351CD71D881567B1EA663ED3EFCF6C5132B354F28D3B0B7D38367,
+                      0x019F4113742A2B14BD25926B49C649155F267E60D3814B4C0CC84250E46F0083)
+    rfc_U  = (RFC6979_UX, RFC6979_UY)
+    half_n = n >> 1          # n is odd, so "s > n/2" <=> "s > n // 2"
+
+    def run(name, fn):
+        """Run one test body; an exception counts as FAIL (with the reason)."""
+        try:
+            ok, detail = fn()
+        except Exception as exc:                     # noqa: BLE001
+            ok, detail = False, f"raised {type(exc).__name__}: {exc}"
+        record(name, ok, detail)
+
+    # ── Test 10: RFC 6979 public-key derivation x*G == U ───────────────
+    def t10():
+        derived = scalar_multiply(RFC6979_X, G)
+        return derived == rfc_U and point_is_on_curve(rfc_U), f"derived={derived}"
+    run("Test 10: RFC 6979 A.2.5 public key derivation x*G == (Ux, Uy)", t10)
+
+    # ── Test 11: RFC 6979 "test" signature verifies (raw and DER) ───────
+    def t11():
+        low_s      = RFC6979_TEST[1] <= half_n
+        accept     = verify(b"test", RFC6979_TEST, rfc_U)
+        accept_der = verify_record(b"test", der_encode_signature(*RFC6979_TEST), rfc_U)
+        reject_msg = not verify(b"sample", RFC6979_TEST, rfc_U)
+        return (low_s and accept and accept_der and reject_msg,
+                f"low_s={low_s} accept={accept} accept_der={accept_der} reject_msg={reject_msg}")
+    run('Test 11: RFC 6979 A.2.5 SHA-256 "test" signature verifies (raw + DER), wrong msg rejected', t11)
+
+    # ── Test 12: RFC 6979 "sample" signature is high-S -> low-S policy ──
+    def t12():
+        r_, s_ = RFC6979_SAMPLE
+        high_s       = s_ > half_n
+        valid_math   = verify(b"sample", RFC6979_SAMPLE, rfc_U, allow_high_s=True)
+        rejected     = not verify(b"sample", RFC6979_SAMPLE, rfc_U)
+        rejected_der = not verify_record(b"sample", der_encode_signature(r_, s_), rfc_U)
+        low_twin_ok  = verify(b"sample", (r_, n - s_), rfc_U)
+        return (high_s and valid_math and rejected and rejected_der and low_twin_ok,
+                f"high_s={high_s} valid_math={valid_math} rejected={rejected} "
+                f"rejected_der={rejected_der} low_twin={low_twin_ok}")
+    run('Test 12: RFC 6979 "sample" sig (high-S): valid with allow_high_s, rejected by default, (r, n-s) accepted', t12)
+
+    # ── Test 13: sign() always emits low-S; the high-S twin is rejected ─
+    def t13():
+        all_low = all_verify = twin_rejected = True
+        for i in range(16):
+            m = f"low-s {i}".encode()
+            r_, s_ = sign(m, private)
+            all_low       &= s_ <= half_n
+            all_verify    &= verify(m, (r_, s_), public)
+            twin_rejected &= not verify(m, (r_, n - s_), public)
+        return (all_low and all_verify and twin_rejected,
+                f"all_low={all_low} all_verify={all_verify} twin_rejected={twin_rejected}")
+    run("Test 13: 16 fresh signatures are all low-S and verify; each high-S twin (r, n-s) rejected", t13)
+
+    # ── Test 14: strict DER — reject non-canonical encodings ────────────
+    def t14():
+        r_, s_ = RFC6979_TEST                      # r has high bit set, s does not
+        r_raw = r_.to_bytes(32, 'big')             # first byte 0xF1
+        s_raw = s_.to_bytes(32, 'big')             # first byte 0x01
+        def der_int(body): return bytes([0x02, len(body)]) + body
+        def der_seq(inner): return bytes([0x30, len(inner)]) + inner
+        r_min = der_int(b'\x00' + r_raw)           # canonical r: 0x00 pad needed
+        s_min = der_int(s_raw)                     # canonical s: no pad needed
+        canonical = der_seq(r_min + s_min)
+        canonical_ok = (canonical == der_encode_signature(r_, s_) and
+                        verify_record(b"test", canonical, rfc_U))
+        inner = r_min + s_min
+        bad = {
+            "non-minimal INTEGER (extra leading 0x00 on s)": der_seq(r_min + der_int(b'\x00' + s_raw)),
+            "negative INTEGER (r high bit set, no 0x00 pad)": der_seq(der_int(r_raw) + s_min),
+            "non-minimal SEQUENCE length (long form 0x81)":   bytes([0x30, 0x81, len(inner)]) + inner,
+            "non-minimal INTEGER length (long form 0x81)":    der_seq(bytes([0x02, 0x81, 0x21]) + b'\x00' + r_raw + s_min),
+            "extra byte after SEQUENCE":                      canonical + b'\x00',
+            "extra byte inside SEQUENCE after s":             der_seq(r_min + s_min + b'\x00'),
+            "zero-length INTEGER":                            der_seq(bytes([0x02, 0x00]) + r_min + s_min),
+            "INTEGER length overruns SEQUENCE":               der_seq(r_min + bytes([0x02, 0x40]) + s_raw),
+        }
+        failures = []
+        for label, der in bad.items():
+            try:
+                der_decode_signature(der)
+                raised = False
+            except ValueError:
+                raised = True
+            verify_rejects = not verify_record(b"test", der, rfc_U)
+            if not raised or not verify_rejects:
+                failures.append(f"{label}: raised={raised} verify_rejects={verify_rejects}")
+        return canonical_ok and not failures, f"canonical_ok={canonical_ok}; " + "; ".join(failures)
+    run("Test 14: strict DER - canonical accepted, 8 non-canonical encodings rejected", t14)
+
+    # ── Test 15: on-curve range check 0 <= x, y < p ─────────────────────
+    def t15():
+        # (x + p, y) satisfies the curve equation mod p but is not a
+        # canonical field element; it must be rejected as a public key.
+        shifted_x = (RFC6979_UX + p, RFC6979_UY)
+        shifted_y = (RFC6979_UX, RFC6979_UY + p)
+        rejects_x   = not point_is_on_curve(shifted_x) and not verify(b"test", RFC6979_TEST, shifted_x)
+        rejects_y   = not point_is_on_curve(shifted_y) and not verify(b"test", RFC6979_TEST, shifted_y)
+        rejects_neg = not point_is_on_curve((-1, RFC6979_UY))
+        return (rejects_x and rejects_y and rejects_neg and point_is_on_curve(rfc_U),
+                f"rejects_x={rejects_x} rejects_y={rejects_y} rejects_neg={rejects_neg}")
+    run("Test 15: point_is_on_curve rejects (x+p, y), (x, y+p), negative coords; verify rejects them", t15)
+
     if not all_pass:
         sys.exit(1)
 
@@ -805,10 +981,26 @@ if __name__ == "__main__":
                 print(f"FAIL  cross-check A iteration {i + 1}: cryptography rejected scratch sig - {e}")
                 sys.exit(1)
 
-            # Direction B: cryptography sign -> scratch verify
+            if der_decode_signature(scratch_sig)[1] > HALF_N:
+                print(f"FAIL  cross-check A iteration {i + 1}: scratch emitted a high-S signature")
+                sys.exit(1)
+
+            # Direction B: cryptography sign -> scratch verify.
+            # OpenSSL (behind `cryptography`) does NOT normalize S, so about
+            # half of these are high-S: they must be rejected by default,
+            # accepted with allow_high_s=True, and their (r, n - s) twin
+            # must be accepted.
             ca_sig = ca_private.sign(msg, ec.ECDSA(hashes.SHA256()))
-            if not verify_record(msg, ca_sig, (keypair["x"], keypair["y"])):
-                print(f"FAIL  cross-check B iteration {i + 1}: scratch rejected cryptography sig")
+            pub = (keypair["x"], keypair["y"])
+            ca_r, ca_s = der_decode_signature(ca_sig)
+            if ca_s <= HALF_N:
+                ok_b = verify_record(msg, ca_sig, pub)
+            else:
+                ok_b = (not verify_record(msg, ca_sig, pub)
+                        and verify_record(msg, ca_sig, pub, allow_high_s=True)
+                        and verify_record(msg, der_encode_signature(ca_r, n - ca_s), pub))
+            if not ok_b:
+                print(f"FAIL  cross-check B iteration {i + 1}: scratch mishandled cryptography sig (high_s={ca_s > HALF_N})")
                 sys.exit(1)
 
             cross_pass += 1

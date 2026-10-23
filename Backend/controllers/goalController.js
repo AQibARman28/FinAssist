@@ -1,11 +1,30 @@
 const Goal = require('../models/Goal');
-const { encrypt, safeDecrypt } = require('../utils/encryption');
-const { signRecord, verifyRecord, encryptNote, decryptNote } = require('../utils/signing');
+const { FIELDS, sealField, openField } = require('../utils/encryption');
+const { signRecord, encryptNote, decryptNote } = require('../utils/signing');
+const { checkRecords, flag } = require('../utils/integrity');
 const { getCashFlow } = require('../services/cashFlow');
 const { planGoals, allocateSurplus } = require('../services/goalPlanning');
-const { getBalance } = require('../services/balance');
+const { getBalance, releasableAmount } = require('../services/balance');
+const { withWalletLock, WalletBusyError } = require('../services/walletLock');
 const SavingsEntry = require('../models/SavingsEntry');
 const { logAudit } = require('../utils/audit');
+
+// G3: deleted goals are archived (deletedAt set), never removed, so the
+// balance history stays intact. Every goal VIEW / mutation is scoped to live
+// goals; only the balance computations (getBalance) see archived ones.
+const LIVE = { deletedAt: null };
+
+// G4: contributions/allocations are capped at the wallet balance; the check
+// and the write run inside the user's wallet lock.
+const busy = (res, err) => res.status(409).json({ success: false, code: err.code, message: err.message });
+
+async function availableBalance(userId) {
+    const [allGoals, savingsEntries] = await Promise.all([
+        Goal.find({ user: userId }),            // incl. archived — their history counts
+        SavingsEntry.find({ user: userId }),
+    ]);
+    return (await getBalance(userId, allGoals, savingsEntries)).available;
+}
 
 // End-of-period date used as a display/forecast targetDate when the user
 // doesn't supply one (the period-based UI doesn't ask for a deadline).
@@ -15,16 +34,24 @@ function endOfPeriod(period, now = new Date()) {
         : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
 }
 
+const openTitle = (goal, user, dataKey) => openField(goal.title, dataKey, FIELDS.goalTitle, user._id);
+
 async function decryptGoal(goal, user, dataKey) {
     const obj         = goal.toJSON ? goal.toJSON() : { ...goal };
-    obj.title         = await safeDecrypt(goal.title,       dataKey);
-    obj.description   = await safeDecrypt(goal.description, dataKey);
-    obj.note          = goal.note ? await decryptNote(goal.note, user, dataKey) : null;
+    obj.title         = await openTitle(goal, user, dataKey);
+    obj.description   = await openField(goal.description, dataKey, FIELDS.goalDescription, user._id);
+    obj.note          = goal.note ? await decryptNote(goal.note, user, dataKey, FIELDS.goalNote) : null;
     return obj;
 }
 
-function goalAttestationPayload(title, targetAmount, goalType) {
-    return { title, targetAmount, goalType };
+const { goal: goalAttestationPayload } = require('../utils/attestationPayloads');
+
+// The attestation covers the decrypted title, so decrypt titles once and
+// check every goal against them.
+async function checkGoals(req, goals) {
+    const titles = new Map();
+    for (const g of goals) titles.set(String(g._id), await openTitle(g, req.user, req.dataKey));
+    return checkRecords(req, 'goal', goals, (g) => goalAttestationPayload(titles.get(String(g._id)), g.targetAmount, g.goalType));
 }
 
 // POST /api/goals
@@ -35,9 +62,9 @@ const createGoal = async (req, res) => {
         const resolvedType = goalType || 'Other';
 
         const serverAttestation = await signRecord(goalAttestationPayload(title, targetAmount, resolvedType), req.user, req.dataKey);
-        const encTitle          = await encrypt(title, req.dataKey);
-        const encDesc           = description ? (await encrypt(description, req.dataKey)) : undefined;
-        const encNote           = req.body.note ? (await encryptNote(req.body.note, req.user)) : undefined;
+        const encTitle          = await sealField(title, req.dataKey, FIELDS.goalTitle, req.user._id);
+        const encDesc           = description ? (await sealField(description, req.dataKey, FIELDS.goalDescription, req.user._id)) : undefined;
+        const encNote           = req.body.note ? (await encryptNote(req.body.note, req.user, req.dataKey, FIELDS.goalNote)) : undefined;
 
         const goal = await Goal.create({
             user: req.user._id,
@@ -52,6 +79,7 @@ const createGoal = async (req, res) => {
             note: encNote
         });
 
+        logAudit(req, 'goal.create', req.user._id, { goalId: goal._id.toString(), targetAmount });
         res.status(201).json({ success: true, data: await decryptGoal(goal, req.user, req.dataKey) });
     } catch (error) {
         console.error('Create goal error:', error);
@@ -64,7 +92,7 @@ const getGoals = async (req, res) => {
     try {
         const { status, goalType, period } = req.query;
 
-        const query = { user: req.user._id };
+        const query = { user: req.user._id, ...LIVE };
         if (status)   query.status   = status;
         if (goalType) query.goalType = goalType;
 
@@ -73,14 +101,9 @@ const getGoals = async (req, res) => {
         // 'monthly'. Volumes are tiny (personal finance), so no index needed.
         if (period) goals = goals.filter((g) => (g.period || 'monthly') === period);
 
+        const issues = await checkGoals(req, goals);
         const items = [];
-        for (const g of goals) {
-            const plainTitle = await safeDecrypt(g.title, req.dataKey);
-            if (g.serverAttestation && !(await verifyRecord(goalAttestationPayload(plainTitle, g.targetAmount, g.goalType), g.serverAttestation, req.user))) {
-                console.warn(`serverAttestation failed verification on goal ${g._id} (user ${req.user._id})`);
-            }
-            items.push(await decryptGoal(g, req.user, req.dataKey));
-        }
+        for (const g of goals) items.push(flag(await decryptGoal(g, req.user, req.dataKey), issues));
 
         res.json({ success: true, data: items });
     } catch (error) {
@@ -92,15 +115,11 @@ const getGoals = async (req, res) => {
 // GET /api/goals/:id
 const getGoalById = async (req, res) => {
     try {
-        const goal = await Goal.findOne({ _id: req.params.id, user: req.user._id });
+        const goal = await Goal.findOne({ _id: req.params.id, user: req.user._id, ...LIVE });
         if (!goal) return res.status(404).json({ success: false, message: 'Goal not found' });
 
-        const plainTitle = await safeDecrypt(goal.title, req.dataKey);
-        if (goal.serverAttestation && !(await verifyRecord(goalAttestationPayload(plainTitle, goal.targetAmount, goal.goalType), goal.serverAttestation, req.user))) {
-            console.warn(`serverAttestation failed verification on goal ${goal._id} (user ${req.user._id})`);
-        }
-
-        res.json({ success: true, data: await decryptGoal(goal, req.user, req.dataKey) });
+        const issues = await checkGoals(req, [goal]);
+        res.json({ success: true, data: flag(await decryptGoal(goal, req.user, req.dataKey), issues) });
     } catch (error) {
         console.error('Get goal error:', error);
         res.status(500).json({ success: false, message: 'Server error fetching goal' });
@@ -110,31 +129,40 @@ const getGoalById = async (req, res) => {
 // PUT /api/goals/:id
 const updateGoal = async (req, res) => {
     try {
+        // Compound filter prevents IDOR.
+        const current = await Goal.findOne({ _id: req.params.id, user: req.user._id, ...LIVE });
+        if (!current) return res.status(404).json({ success: false, message: 'Goal not found' });
+
         const updates = {};
-        if (req.body.description  !== undefined) updates.description  = await encrypt(req.body.description, req.dataKey);
+        if (req.body.description  !== undefined) updates.description  = await sealField(req.body.description, req.dataKey, FIELDS.goalDescription, req.user._id);
         if (req.body.note         !== undefined) {
             updates.note = (req.body.note === null || req.body.note === '')
                 ? null
-                : (await encryptNote(req.body.note, req.user));
+                : (await encryptNote(req.body.note, req.user, req.dataKey, FIELDS.goalNote));
         }
         if (req.body.targetAmount !== undefined) updates.targetAmount = req.body.targetAmount;
         if (req.body.targetDate   !== undefined) updates.targetDate   = req.body.targetDate;
         if (req.body.goalType     !== undefined) updates.goalType     = req.body.goalType;
         if (req.body.status       !== undefined) updates.status       = req.body.status;
         if (req.body.priority     !== undefined) updates.priority     = req.body.priority;
-        if (req.body.title        !== undefined) updates.title        = await encrypt(req.body.title, req.dataKey);
+        if (req.body.title        !== undefined) updates.title        = await sealField(req.body.title, req.dataKey, FIELDS.goalTitle, req.user._id);
 
-        // serverAttestation is set on creation and NOT regenerated on update —
-        // see docs/decisions/SEC-1-ecdsa.md.
+        // Re-sign over the values the goal will hold after this update
+        // (supersedes the create-only rule in docs/decisions/SEC-1-ecdsa.md).
+        const title = req.body.title !== undefined ? req.body.title : await openTitle(current, req.user, req.dataKey);
+        updates.serverAttestation = await signRecord(
+            goalAttestationPayload(title, updates.targetAmount ?? current.targetAmount, updates.goalType ?? current.goalType),
+            req.user, req.dataKey,
+        );
 
-        // Compound filter on the mutation prevents IDOR.
         const updatedGoal = await Goal.findOneAndUpdate(
-            { _id: req.params.id, user: req.user._id },
+            { _id: req.params.id, user: req.user._id, ...LIVE },
             updates,
             { new: true, runValidators: true }
         );
         if (!updatedGoal) return res.status(404).json({ success: false, message: 'Goal not found' });
 
+        logAudit(req, 'goal.update', req.user._id, { goalId: updatedGoal._id.toString(), fields: Object.keys(updates).filter((k) => k !== 'serverAttestation') });
         res.json({ success: true, data: await decryptGoal(updatedGoal, req.user, req.dataKey) });
     } catch (error) {
         console.error('Update goal error:', error);
@@ -143,13 +171,35 @@ const updateGoal = async (req, res) => {
 };
 
 // DELETE /api/goals/:id
+//
+// G3: archive, don't remove. The contributions stay so every past month's
+// closing balance is unchanged; the money still set aside (releasedAmount)
+// returns to the wallet as of now. Runs under the wallet lock so a
+// concurrent contribution can't land on the goal after the release is fixed.
 const deleteGoal = async (req, res) => {
     try {
-        const deleted = await Goal.findOneAndDelete({ _id: req.params.id, user: req.user._id });
-        if (!deleted) return res.status(404).json({ success: false, message: 'Goal not found' });
+        const userId = req.user._id;
+        const released = await withWalletLock(userId, async () => {
+            const goal = await Goal.findOne({ _id: req.params.id, user: userId, ...LIVE });
+            if (!goal) return null;
+            const at = new Date();
+            const amount = releasableAmount(goal, at);
+            const archived = await Goal.findOneAndUpdate(
+                { _id: goal._id, user: userId, ...LIVE },
+                { $set: { deletedAt: at, releasedAmount: amount } },
+            );
+            return archived ? amount : null;
+        });
+        if (released === null) return res.status(404).json({ success: false, message: 'Goal not found' });
 
-        res.json({ success: true, message: 'Goal deleted successfully' });
+        logAudit(req, 'goal.delete', userId, { goalId: req.params.id, released });
+        res.json({
+            success: true,
+            data: { released },
+            message: released > 0 ? 'Goal deleted — its saved amount is back in your wallet' : 'Goal deleted successfully',
+        });
     } catch (error) {
+        if (error instanceof WalletBusyError) return busy(res, error);
         console.error('Delete goal error:', error);
         res.status(500).json({ success: false, message: 'Server error deleting goal' });
     }
@@ -159,31 +209,33 @@ const deleteGoal = async (req, res) => {
 const addContribution = async (req, res) => {
     try {
         const { amount, note } = req.body;
+        const userId = req.user._id;
 
-        const goal = await Goal.findOne({ _id: req.params.id, user: req.user._id });
-        if (!goal) return res.status(404).json({ success: false, message: 'Goal not found' });
+        const outcome = await withWalletLock(userId, async () => {
+            const goal = await Goal.findOne({ _id: req.params.id, user: userId, ...LIVE });
+            if (!goal) return { status: 404, message: 'Goal not found' };
 
-        if (goal.status === 'Completed') {
-            return res.status(400).json({ success: false, message: 'Cannot add contribution to completed goal' });
-        }
+            if (goal.status === 'Completed') {
+                return { status: 400, message: 'Cannot add contribution to completed goal' };
+            }
 
-        // Hard cap: you can't save more than your available wallet (cumulative
-        // income − expenses − goal contributions − standalone savings).
-        const allGoals = await Goal.find({ user: req.user._id });
-        const savingsEntries = await SavingsEntry.find({ user: req.user._id });
-        const { available } = await getBalance(req.user._id, allGoals, savingsEntries);
-        if (amount > available) {
-            return res.status(400).json({
-                success: false,
-                message: `Only ${Math.max(0, Math.round(available))} ${req.user.currency} is available to save right now.`,
-            });
-        }
+            // Hard cap: you can't save more than your available wallet (cumulative
+            // income − expenses − goal contributions − standalone savings).
+            const available = await availableBalance(userId);
+            if (amount > available) {
+                return { status: 400, message: `Only ${Math.max(0, Math.round(available))} ${req.user.currency} is available to save right now.` };
+            }
 
-        goal.contributions.push({ amount, note, date: new Date() });
-        await goal.save();
+            goal.contributions.push({ amount, note, date: new Date() });
+            await goal.save();
+            return { goal };
+        });
+        if (!outcome.goal) return res.status(outcome.status).json({ success: false, message: outcome.message });
 
-        res.json({ success: true, data: await decryptGoal(goal, req.user, req.dataKey), message: 'Contribution added successfully' });
+        logAudit(req, 'goal.contribute', userId, { goalId: outcome.goal._id.toString(), amount });
+        res.json({ success: true, data: await decryptGoal(outcome.goal, req.user, req.dataKey), message: 'Contribution added successfully' });
     } catch (error) {
+        if (error instanceof WalletBusyError) return busy(res, error);
         console.error('Add contribution error:', error);
         res.status(500).json({ success: false, message: 'Server error adding contribution' });
     }
@@ -192,10 +244,10 @@ const addContribution = async (req, res) => {
 // GET /api/goals/:id/progress
 const getGoalProgress = async (req, res) => {
     try {
-        const goal = await Goal.findOne({ _id: req.params.id, user: req.user._id });
+        const goal = await Goal.findOne({ _id: req.params.id, user: req.user._id, ...LIVE });
         if (!goal) return res.status(404).json({ success: false, message: 'Goal not found' });
 
-        const plainTitle = await safeDecrypt(goal.title, req.dataKey);
+        const plainTitle = await openTitle(goal, req.user, req.dataKey);
 
         res.json({
             success: true,
@@ -222,11 +274,11 @@ const getGoalProgress = async (req, res) => {
 // GET /api/goals/reminders
 const getGoalReminders = async (req, res) => {
     try {
-        const goals = await Goal.find({ user: req.user._id, status: 'Active' });
+        const goals = await Goal.find({ user: req.user._id, status: 'Active', ...LIVE });
 
         const reminders = [];
         for (const goal of goals) {
-            const title            = await safeDecrypt(goal.title, req.dataKey);
+            const title            = await openTitle(goal, req.user, req.dataKey);
             const daysRemaining    = goal.daysRemaining;
             const progressPct      = goal.progressPercentage;
             const remainingAmount  = goal.remainingAmount;
@@ -267,7 +319,7 @@ const getGoalReminders = async (req, res) => {
 // GET /api/goals/dashboard
 const getGoalsDashboard = async (req, res) => {
     try {
-        const goals = await Goal.find({ user: req.user._id });
+        const goals = await Goal.find({ user: req.user._id, ...LIVE });
 
         const sorted = [...goals].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
@@ -314,13 +366,13 @@ const getGoalPlan = async (req, res) => {
     try {
         const userId = req.user._id;
         const cash = await getCashFlow(userId, 90);
-        const goals = await Goal.find({ user: userId, status: 'Active' });
+        const goals = await Goal.find({ user: userId, status: 'Active', ...LIVE });
 
         const inputs = [];
         const titles = {};
         for (const g of goals) {
             const id = g._id.toString();
-            titles[id] = await safeDecrypt(g.title, req.dataKey);
+            titles[id] = await openTitle(g, req.user, req.dataKey);
             inputs.push({
                 id,
                 targetAmount:  g.targetAmount,
@@ -361,13 +413,13 @@ const getAllocationSuggestion = async (req, res) => {
     try {
         const userId = req.user._id;
         const cash = await getCashFlow(userId, 90);
-        const goals = await Goal.find({ user: userId, status: 'Active' });
+        const goals = await Goal.find({ user: userId, status: 'Active', ...LIVE });
 
         const inputs = [];
         const meta = {};
         for (const g of goals) {
             const id = g._id.toString();
-            meta[id] = { title: await safeDecrypt(g.title, req.dataKey), goalType: g.goalType, targetAmount: g.targetAmount, currentAmount: g.currentAmount, targetDate: g.targetDate, priority: g.priority ?? 0 };
+            meta[id] = { title: await openTitle(g, req.user, req.dataKey), goalType: g.goalType, targetAmount: g.targetAmount, currentAmount: g.currentAmount, targetDate: g.targetDate, priority: g.priority ?? 0 };
             inputs.push({ id, targetAmount: g.targetAmount, currentAmount: g.currentAmount, targetDate: g.targetDate, goalType: g.goalType, priority: g.priority ?? 0 });
         }
 
@@ -402,50 +454,57 @@ const getAllocationSuggestion = async (req, res) => {
 //
 // Records the user's CONFIRMED allocation as a contribution per goal — same
 // path as addContribution (find → reject Completed → push → save; pre-save
-// recomputes currentAmount). IDOR-checked per goal; over-surplus warns, never
-// blocks (user may fund from existing savings). Tracked intentions only.
+// recomputes currentAmount). IDOR-checked per goal; hard-capped at the wallet
+// balance. Tracked intentions only. The whole validate → cap → record runs
+// inside the user's wallet lock (G4).
 const allocateContributions = async (req, res) => {
     try {
         const userId = req.user._id;
-        const { allocations, date, note } = req.body;
+        const { allocations, note } = req.body;
 
-        // Validate ALL goals up front so we record nothing on a bad request.
-        const targets = [];
-        for (const a of allocations) {
-            const goal = await Goal.findOne({ _id: a.goalId, user: userId });
-            if (!goal) return res.status(404).json({ success: false, message: `Goal ${a.goalId} not found` });
-            if (goal.status === 'Completed') {
-                return res.status(400).json({ success: false, message: 'Cannot allocate to a completed goal' });
+        // The same goal listed twice is one contribution of the summed amount
+        // (two saves of separately-loaded copies would corrupt currentAmount).
+        const perGoal = new Map();
+        for (const a of allocations) perGoal.set(a.goalId, (perGoal.get(a.goalId) || 0) + a.amount);
+
+        const outcome = await withWalletLock(userId, async () => {
+            // Validate ALL goals up front so we record nothing on a bad request.
+            const targets = [];
+            for (const [goalId, amount] of perGoal) {
+                const goal = await Goal.findOne({ _id: goalId, user: userId, ...LIVE });
+                if (!goal) return { status: 404, message: `Goal ${goalId} not found` };
+                if (goal.status === 'Completed') {
+                    return { status: 400, message: 'Cannot allocate to a completed goal' };
+                }
+                targets.push({ goal, amount });
             }
-            targets.push({ goal, amount: a.amount });
-        }
 
-        // Hard cap: the total saved can't exceed the available balance (the
-        // single continuous pocket = cumulative income − expenses − saved).
-        const allGoals = await Goal.find({ user: userId });
-        const savingsEntries = await SavingsEntry.find({ user: userId });
-        const { available } = await getBalance(userId, allGoals, savingsEntries);
-        const requestedTotal = targets.reduce((s, t) => s + t.amount, 0);
-        if (requestedTotal > available) {
-            return res.status(400).json({
-                success: false,
-                message: `Allocation exceeds your available balance (${Math.max(0, Math.round(available))} ${req.user.currency}).`,
-            });
-        }
+            // Hard cap: the total saved can't exceed the available balance (the
+            // single continuous pocket = cumulative income − expenses − saved).
+            const available = await availableBalance(userId);
+            const requestedTotal = targets.reduce((s, t) => s + t.amount, 0);
+            if (requestedTotal > available) {
+                return { status: 400, message: `Allocation exceeds your available balance (${Math.max(0, Math.round(available))} ${req.user.currency}).` };
+            }
 
-        const when = date ? new Date(date) : new Date();
+            const when = new Date();   // never client-chosen: no backdating into closed months
+            for (const { goal, amount } of targets) {
+                goal.contributions.push({ amount, note: note || 'Surplus allocation', date: when });
+                await goal.save();
+            }
+            return { goals: targets.map((t) => t.goal) };
+        });
+        if (!outcome.goals) return res.status(outcome.status).json({ success: false, message: outcome.message });
+
         const updated = [];
-        for (const { goal, amount } of targets) {
-            goal.contributions.push({ amount, note: note || 'Surplus allocation', date: when });
-            await goal.save();
-            updated.push(await decryptGoal(goal, req.user, req.dataKey));
-        }
+        for (const goal of outcome.goals) updated.push(await decryptGoal(goal, req.user, req.dataKey));
 
         const totalAllocated = allocations.reduce((s, a) => s + a.amount, 0);
-        logAudit(req, 'goal.allocate', userId, { goals: allocations.length, total: totalAllocated });
+        logAudit(req, 'goal.allocate', userId, { goals: perGoal.size, total: totalAllocated });
 
         res.json({ success: true, data: updated, message: 'Allocation recorded' });
     } catch (error) {
+        if (error instanceof WalletBusyError) return busy(res, error);
         console.error('Allocate error:', error);
         res.status(500).json({ success: false, message: 'Server error recording allocation' });
     }

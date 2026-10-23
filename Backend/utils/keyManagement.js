@@ -30,7 +30,7 @@
  */
 
 const native = require('./nativeCrypto');
-const { encrypt, decrypt } = require('./encryption');
+const { encrypt, decrypt, fieldContext, FIELDS } = require('./encryption');
 
 // ── Format detection ─────────────────────────────────────────────────────────
 
@@ -101,14 +101,16 @@ async function eccVerify(message, signatureB64, publicKeyPem) {
 
 // ── Key bundle (called at registration; uses encryption.encrypt) ─────────────
 
-async function generateUserKeyBundle(dataKey) {
+// With a userId the private keys are bound to their owner (v2 ciphertexts).
+async function generateUserKeyBundle(dataKey, userId = null) {
     const rsa = await generateRSAKeyPair();
     const ecc = await generateECCKeyPair();
+    const ctx = (field) => (userId ? fieldContext(field, userId) : null);
     return {
         rsaPublicKey:           rsa.publicKey,
-        encryptedRsaPrivateKey: await encrypt(rsa.privateKey, dataKey),
+        encryptedRsaPrivateKey: await encrypt(rsa.privateKey, dataKey, ctx(FIELDS.userRsaPrivateKey)),
         eccPublicKey:           ecc.publicKey,
-        encryptedEccPrivateKey: await encrypt(ecc.privateKey, dataKey),
+        encryptedEccPrivateKey: await encrypt(ecc.privateKey, dataKey, ctx(FIELDS.userEccPrivateKey)),
     };
 }
 
@@ -117,8 +119,8 @@ async function generateUserKeyBundle(dataKey) {
 // has a legacy hex-JSON bundle — caller must call regenerateUserKeyBundle
 // first).
 async function getUserPrivateKeys(user, dataKey) {
-    const rsaPrivateKey = await decrypt(user.encryptedRsaPrivateKey, dataKey);
-    const eccPrivateKey = await decrypt(user.encryptedEccPrivateKey, dataKey);
+    const rsaPrivateKey = await decrypt(user.encryptedRsaPrivateKey, dataKey, user._id ? fieldContext(FIELDS.userRsaPrivateKey, user._id) : null);
+    const eccPrivateKey = await decrypt(user.encryptedEccPrivateKey, dataKey, user._id ? fieldContext(FIELDS.userEccPrivateKey, user._id) : null);
     _assertPemPrivate(rsaPrivateKey, 'getUserPrivateKeys.rsaPrivateKey');
     _assertPemPrivate(eccPrivateKey, 'getUserPrivateKeys.eccPrivateKey');
     return { rsaPrivateKey, eccPrivateKey };
@@ -133,7 +135,7 @@ function hasLegacyKeyBundle(user) {
 // Mutates the user document in-place with a fresh PEM bundle. Caller is
 // responsible for calling user.save(). The user's dataKey is unchanged.
 async function regenerateUserKeyBundle(user, dataKey) {
-    const bundle = await generateUserKeyBundle(dataKey);
+    const bundle = await generateUserKeyBundle(dataKey, user._id);
     user.rsaPublicKey           = bundle.rsaPublicKey;
     user.encryptedRsaPrivateKey = bundle.encryptedRsaPrivateKey;
     user.eccPublicKey           = bundle.eccPublicKey;
@@ -141,20 +143,12 @@ async function regenerateUserKeyBundle(user, dataKey) {
     user.keyVersion             = (user.keyVersion || 1) + 1;
 }
 
-// ── Master-key rotation (scaffold — unused in production today) ──────────────
-
-async function rotateUserDataKey(user, oldMasterDecrypt, newMasterEncrypt) {
-    const rawKey = await oldMasterDecrypt(user.encryptedDataKey);
-    return {
-        encryptedDataKey: await newMasterEncrypt(rawKey),
-        keyVersion:       (user.keyVersion || 1) + 1,
-    };
-}
+// Master-key rotation lives in utils/keyRotation.js (wrapped data keys carry
+// the id of the master key that wrapped them).
 
 module.exports = {
     generateRSAKeyPair, rsaEncrypt, rsaDecrypt,
     generateECCKeyPair, eccSign, eccVerify,
     generateUserKeyBundle, getUserPrivateKeys,
     hasLegacyKeyBundle, regenerateUserKeyBundle,
-    rotateUserDataKey,
 };

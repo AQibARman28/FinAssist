@@ -8,9 +8,11 @@ import {
     Plus, Loader2, MoreVertical, Pencil, Trash2, Repeat, AlertCircle,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/apiError";
 import { useAuthStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
-import { iconFor, type IconName } from "@/lib/categoryIcons";
+import { type IconName } from "@/lib/categoryIcons";
+import { CategoryIcon } from "@/components/CategoryIcon";
 import { IncomeChart, type IncomeGranularity } from "@/components/dashboard/income/IncomeChart";
 import { SavingsBreakdown, type BalanceData } from "@/components/dashboard/SavingsBreakdown";
 
@@ -57,38 +59,40 @@ export default function IncomePage() {
     const [granularity, setGranularity] = useState<IncomeGranularity>("monthly");
     const [balance, setBalance] = useState<BalanceData | null>(null);
 
-    const load = async () => {
-        setLoading(true);
-        try {
-            // Pull a window covering this and last month so materialization
-            // catches the current period reliably.
-            const now = new Date();
-            const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
-            const end   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999));
+    // Initial load. `loading` starts true, so nothing needs setting before the
+    // request; state is only written once it settles.
+    useEffect(() => {
+        const load = async () => {
+            try {
+                // Pull a window covering this and last month so materialization
+                // catches the current period reliably.
+                const now = new Date();
+                const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+                const end   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999));
 
-            const [cRes, iRes] = await Promise.all([
-                api.get("/categories?type=income&includeArchived=true"),
-                api.get("/incomes", {
-                    params: { startDate: start.toISOString(), endDate: end.toISOString(), limit: 100 },
-                }),
-            ]);
-            const map: Record<string, Category> = {};
-            for (const c of cRes.data?.data ?? []) map[c._id] = c;
-            setCatMap(map);
+                const [cRes, iRes] = await Promise.all([
+                    api.get("/categories?type=income&includeArchived=true"),
+                    api.get("/incomes", {
+                        params: { startDate: start.toISOString(), endDate: end.toISOString(), limit: 100 },
+                    }),
+                ]);
+                const map: Record<string, Category> = {};
+                for (const c of cRes.data?.data ?? []) map[c._id] = c;
+                setCatMap(map);
 
-            const list: Income[] = (iRes.data?.data ?? [])
-                .slice()
-                .sort((a: Income, b: Income) => new Date(b.date).getTime() - new Date(a.date).getTime());
-            setIncomes(list);
-            setError(null);
-        } catch (err: any) {
-            setError(err.response?.data?.message || "Failed to load income");
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    useEffect(() => { load(); }, []);
+                const list: Income[] = (iRes.data?.data ?? [])
+                    .slice()
+                    .sort((a: Income, b: Income) => new Date(b.date).getTime() - new Date(a.date).getTime());
+                setIncomes(list);
+                setError(null);
+            } catch (err: unknown) {
+                setError(apiErrorMessage(err, "Failed to load income"));
+            } finally {
+                setLoading(false);
+            }
+        };
+        load();
+    }, []);
 
     // The continuous balance (carry-forward + income − expenses − savings).
     useEffect(() => {
@@ -107,8 +111,8 @@ export default function IncomePage() {
         try {
             await api.delete(`/incomes/${id}`);
             setIncomes((prev) => prev.filter((i) => i._id !== id));
-        } catch (err: any) {
-            setError(err.response?.data?.message || "Failed to delete income");
+        } catch (err: unknown) {
+            setError(apiErrorMessage(err, "Failed to delete income"));
         }
     };
 
@@ -208,7 +212,6 @@ function IncomeRow({
     onDelete: () => void;
 }) {
     const [menuOpen, setMenuOpen] = useState(false);
-    const Icon = iconFor(cat?.icon);
     const isRecurringSource = income.isRecurring && !income.parentRecurringId;
     const isMaterialized    = !!income.parentRecurringId;
 
@@ -227,7 +230,7 @@ function IncomeRow({
                 className="p-2.5 rounded-xl shrink-0"
                 style={{ backgroundColor: cat ? `${cat.color}22` : "rgba(255,255,255,0.05)" }}
             >
-                <Icon className="w-4 h-4" style={cat ? { color: cat.color } : undefined} />
+                <CategoryIcon icon={cat?.icon} className="w-4 h-4" style={cat ? { color: cat.color } : undefined} />
             </div>
 
             <div className="min-w-0 flex-1">

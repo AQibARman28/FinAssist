@@ -94,3 +94,28 @@ Three options were considered:
 - If a future sprint adds client-side keys, the field can either be
   promoted to a real `signature` (renaming again is fine) or kept as
   `serverAttestation` and a separate `userSignature` added.
+
+## Revision — 2026-10-20: re-sign on update, flag on read
+
+**Status:** supersedes Decision 3 ("do not regenerate on update") and the
+warn-and-continue verification above.
+
+The create-only rule meant every legitimate edit made a record fail
+verification, so a failed check carried no signal, and a record whose
+`serverAttestation` had simply been deleted wasn't checked at all.
+
+1. **Re-sign on every update.** The expense, income, goal and budget update
+   handlers sign over the values the record will hold after the update.
+   Payload shapes live in one place: `Backend/utils/attestationPayloads.js`.
+2. **Three states on read.** `utils/signing.attestationStatus` returns
+   `valid`, `missing` or `invalid`. Records that aren't valid come back with
+   `integrity: 'missing' | 'invalid'` (`utils/integrity.js`) and the request
+   writes one `integrity.attestation_failure` audit event naming the ids.
+3. **Baseline.** `npm run migrate:reattest` signs records that don't verify
+   (created before this revision, or under a key bundle regenerated at the
+   SEC-1 migration). Its dry run lists every record first so an operator can
+   review them before accepting them as the baseline.
+
+The trust boundary is unchanged: the server holds the signing key, so this
+detects changes made *around* the application (direct database writes,
+restored backups, a compromised replica) — it is not non-repudiation.
