@@ -54,6 +54,11 @@ services:
     environment:
       BACKEND_ORIGIN: http://backend:5000
       PROXY_SHARED_SECRET: ${PROXY_SHARED_SECRET:?set PROXY_SHARED_SECRET}
+      # Behind a reverse proxy that writes the visitor's address into a
+      # single-address header (e.g. nginx: proxy_set_header X-Real-IP
+      # $remote_addr), name it here so the API can rate-limit per visitor.
+      # Unset, no client-supplied address is forwarded.
+      CLIENT_IP_HEADER: ${CLIENT_IP_HEADER:-}
     depends_on:
       - backend
 

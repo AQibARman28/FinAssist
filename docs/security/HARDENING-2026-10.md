@@ -69,6 +69,13 @@ Also fixed along the way: turning a recurring income off now actually clears its
 cadence (`$unset`), and `/goals/allocate` no longer accepts a client-chosen
 (backdated) date.
 
+Follow-up from the commit review (2026-10-23): the web proxy forwarded the
+client's own `X-Forwarded-For` to the API. Vercel overwrites that header, but a
+self-hosted Next server keeps it, so a visitor could pick their rate-limit
+address. `views/src/proxy.ts` now drops every forwarding header and sets the
+address only from a trusted one (Vercel's `x-real-ip`, or `CLIENT_IP_HEADER`
+behind your own reverse proxy). Proof: `views/src/__tests__/proxy.test.ts`.
+
 ## Deploy notes
 
 See `DEPLOY.md` §7 for the one-time migration order and the new settings

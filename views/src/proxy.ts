@@ -15,6 +15,18 @@ import type { NextRequest } from "next/server";
 
 const BACKEND_ORIGIN = process.env.BACKEND_ORIGIN || "http://localhost:5000";
 const PROXY_HEADER = "x-finassist-proxy";
+const FORWARDING_HEADERS = ["forwarded", "x-forwarded-for", "x-real-ip"];
+
+// The visitor's address for the API's per-IP limits, taken only from a header
+// a trusted hop wrote. On Vercel the platform overwrites x-real-ip on every
+// request. Self-hosted, Next keeps whatever the client sent, so the address
+// comes from CLIENT_IP_HEADER (a single-address header set by your reverse
+// proxy) or not at all — then the API sees only this server, never a forgery.
+function clientIp(request: NextRequest): string | null {
+    const header = process.env.CLIENT_IP_HEADER || (process.env.VERCEL ? "x-real-ip" : "");
+    if (!header) return null;
+    return request.headers.get(header)?.split(",")[0].trim() || null;
+}
 
 function contentSecurityPolicy(nonce: string): string {
     const isDev = process.env.NODE_ENV === "development";
@@ -42,6 +54,9 @@ export function proxy(request: NextRequest) {
     if (pathname.startsWith("/api/")) {
         const headers = new Headers(request.headers);
         headers.delete(PROXY_HEADER);
+        for (const name of FORWARDING_HEADERS) headers.delete(name);
+        const ip = clientIp(request);
+        if (ip) headers.set("x-forwarded-for", ip);
         const secret = process.env.PROXY_SHARED_SECRET;
         if (secret) headers.set(PROXY_HEADER, secret);
         return NextResponse.rewrite(new URL(pathname + search, BACKEND_ORIGIN), { request: { headers } });
