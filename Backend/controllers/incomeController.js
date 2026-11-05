@@ -105,16 +105,18 @@ const getIncomes = async (req, res) => {
             if (endDate)   query.date.$lte = new Date(endDate);
         }
 
-        const incomes = await Income.find(query)
-            .sort({ date: -1 })
-            .limit(limit * 1)
-            .skip((page - 1) * limit);
+        // The page and the total are independent — fetch them together.
+        const [incomes, total] = await Promise.all([
+            Income.find(query)
+                .sort({ date: -1 })
+                .limit(limit * 1)
+                .skip((page - 1) * limit),
+            Income.countDocuments(query),
+        ]);
 
         const issues = await checkRecords(req, 'income', incomes, attestationPayload);
         const items = [];
         for (const inc of incomes) items.push(flag(await decryptIncome(inc, req.user, req.dataKey), issues));
-
-        const total = await Income.countDocuments(query);
 
         res.json({
             success: true,
@@ -145,7 +147,7 @@ const getIncomeTimeline = async (req, res) => {
         const userId = req.user._id;
         const granularity = req.query.granularity === 'yearly' ? 'yearly' : 'monthly';
         const now = new Date();
-        const buckets = [];
+        const windows = [];
 
         // Cap each window at `now`: this is a backward-looking "income received"
         // chart, so the current period must not include income that
@@ -159,17 +161,21 @@ const getIncomeTimeline = async (req, res) => {
             for (let m = 0; m <= now.getUTCMonth(); m++) {
                 const from = new Date(Date.UTC(year, m, 1, 0, 0, 0, 0));
                 const to   = capAtNow(new Date(Date.UTC(year, m + 1, 0, 23, 59, 59, 999)));
-                buckets.push({ period: from.toISOString(), label: MONTH_LABELS[m], total: await incomeTotalForPeriod(userId, from, to) });
+                windows.push({ from, to, label: MONTH_LABELS[m] });
             }
         } else {
             const thisYear = now.getUTCFullYear();
             for (let y = thisYear - YEARS_BACK; y <= thisYear; y++) {
                 const from = new Date(Date.UTC(y, 0, 1, 0, 0, 0, 0));
                 const to   = capAtNow(new Date(Date.UTC(y, 11, 31, 23, 59, 59, 999)));
-                buckets.push({ period: from.toISOString(), label: String(y), total: await incomeTotalForPeriod(userId, from, to) });
+                windows.push({ from, to, label: String(y) });
             }
         }
 
+        // Buckets are independent windows — total them concurrently.
+        const buckets = await Promise.all(windows.map(async ({ from, to, label }) => (
+            { period: from.toISOString(), label, total: await incomeTotalForPeriod(userId, from, to) }
+        )));
         const grandTotal = buckets.reduce((s, b) => s + b.total, 0);
         res.json({ success: true, data: { granularity, buckets, grandTotal } });
     } catch (error) {

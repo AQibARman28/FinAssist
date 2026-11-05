@@ -122,21 +122,21 @@ function _deps() {
     };
 }
 
+// Identity of one materialized occurrence: template id + exact date.
+const occurrenceKey = (templateId, date) => `${String(templateId)}:${date.getTime()}`;
+
+// Set of occurrenceKey for every instance of `templateIds` dated in
+// [fromDate, toDate] — one query, however many occurrences the window holds.
+async function materializedDates(Model, userId, templateIds, fromDate, toDate) {
+    const rows = await Model.find({
+        user:              userId,
+        parentRecurringId: { $in: templateIds },
+        date:              { $gte: fromDate, $lte: toDate },
+    }).select('parentRecurringId date').lean();
+    return new Set(rows.map((r) => occurrenceKey(r.parentRecurringId, r.date)));
+}
+
 async function materializeRecurring(Model, userId, fromDate, toDate) {
-    const { User, masterDecrypt, signRecord } = _deps();
-
-    // Load the user-side material needed to re-sign serverAttestation on
-    // each new instance. If the user is missing or pre-encryption, we
-    // silently skip — the list endpoint still works, just without
-    // freshly-materialized rows for that user.
-    const user = await User.findById(userId).select(
-        'encryptedDataKey rsaPublicKey encryptedRsaPrivateKey eccPublicKey encryptedEccPrivateKey'
-    );
-    if (!user?.encryptedDataKey) return { created: 0 };
-
-    const rawKey  = await masterDecrypt(user.encryptedDataKey);
-    const dataKey = Buffer.from(rawKey, 'hex');
-
     // Templates: rows authored as recurring AND that are themselves the
     // anchor (parentRecurringId === null). Templates whose anchor is in
     // the future relative to the window can't produce any instances IN the
@@ -147,65 +147,75 @@ async function materializeRecurring(Model, userId, fromDate, toDate) {
         parentRecurringId: null,
         date:              { $lte: toDate },
     });
+    if (templates.length === 0) return { created: 0 };
 
-    let created = 0;
-
+    const due = [];
     for (const template of templates) {
         const freq = template.recurringFrequency;
         if (!freq || !FREQUENCIES.has(freq)) continue;          // skip malformed
 
-        const scheduleDates = computeRecurringDates(
-            template.date, freq, fromDate, toDate,
-        );
-
-        for (const occurrenceDate of scheduleDates) {
+        for (const occurrenceDate of computeRecurringDates(template.date, freq, fromDate, toDate)) {
             // The template stands in for its own anchor occurrence — don't
             // generate a separate instance for that date.
             if (occurrenceDate.getTime() === template.date.getTime()) continue;
-
-            // Idempotency: only insert if no instance already exists for
-            // this template at this exact date.
-            const existing = await Model.exists({
-                user:              userId,
-                parentRecurringId: template._id,
-                date:              occurrenceDate,
-            });
-            if (existing) continue;
-
-            // Deep clone the template, then strip the fields that should
-            // change or get re-managed by Mongoose on insert.
-            const tpl = template.toObject();
-            delete tpl._id;
-            delete tpl.updatedAt;
-            delete tpl.__v;
-
-            // Snapshotting the encrypted description / note is intentional
-            // — the instance preserves the template's encrypted payload as
-            // of materialization. Re-encrypting would not change the
-            // plaintext (same dataKey + same plaintext); the only delta
-            // would be a fresh IV per row, which doesn't buy anything
-            // here because the parentRecurringId already publicly links
-            // the rows.
-
-            tpl.isRecurring        = false;
-            tpl.recurringFrequency = undefined;        // only the template carries the cadence
-            tpl.parentRecurringId  = template._id;
-            tpl.date               = occurrenceDate;
-
-            // createdAt is set explicitly so it makes it into the signed
-            // payload — same pattern as incomeController.createIncome.
-            const createdAt = new Date();
-            tpl.createdAt = createdAt;
-
-            // Same payload shape the income controller checks on read.
-            tpl.serverAttestation = await signRecord(require('./attestationPayloads').income(tpl), user, dataKey);
-
-            await Model.create(tpl);
-            created++;
+            due.push({ template, occurrenceDate });
         }
     }
+    if (due.length === 0) return { created: 0 };
 
-    return { created };
+    // Idempotency: only insert occurrences that have no instance yet for
+    // their template at that exact date.
+    const existing = await materializedDates(Model, userId, templates.map((t) => t._id), fromDate, toDate);
+    const missing = due.filter(({ template, occurrenceDate }) => !existing.has(occurrenceKey(template._id, occurrenceDate)));
+    if (missing.length === 0) return { created: 0 };
+
+    // Load the user-side material needed to re-sign serverAttestation on
+    // each new instance — only now that there is something to write. If the
+    // user is missing or pre-encryption, we silently skip — the list endpoint
+    // still works, just without freshly-materialized rows for that user.
+    const { User, masterDecrypt, signRecord } = _deps();
+    const user = await User.findById(userId).select(
+        'encryptedDataKey rsaPublicKey encryptedRsaPrivateKey eccPublicKey encryptedEccPrivateKey'
+    );
+    if (!user?.encryptedDataKey) return { created: 0 };
+
+    const rawKey  = await masterDecrypt(user.encryptedDataKey);
+    const dataKey = Buffer.from(rawKey, 'hex');
+
+    const rows = [];
+    for (const { template, occurrenceDate } of missing) {
+        // Deep clone the template, then strip the fields that should
+        // change or get re-managed by Mongoose on insert.
+        const tpl = template.toObject();
+        delete tpl._id;
+        delete tpl.updatedAt;
+        delete tpl.__v;
+
+        // Snapshotting the encrypted description / note is intentional
+        // — the instance preserves the template's encrypted payload as
+        // of materialization. Re-encrypting would not change the
+        // plaintext (same dataKey + same plaintext); the only delta
+        // would be a fresh IV per row, which doesn't buy anything
+        // here because the parentRecurringId already publicly links
+        // the rows.
+
+        tpl.isRecurring        = false;
+        tpl.recurringFrequency = undefined;        // only the template carries the cadence
+        tpl.parentRecurringId  = template._id;
+        tpl.date               = occurrenceDate;
+
+        // createdAt is set explicitly so it makes it into the signed
+        // payload — same pattern as incomeController.createIncome.
+        tpl.createdAt = new Date();
+
+        // Same payload shape the income controller checks on read.
+        tpl.serverAttestation = await signRecord(require('./attestationPayloads').income(tpl), user, dataKey);
+        rows.push(tpl);
+    }
+
+    // One write for the whole window instead of one round trip per row.
+    await Model.insertMany(rows);
+    return { created: rows.length };
 }
 
-module.exports = { computeRecurringDates, materializeRecurring };
+module.exports = { computeRecurringDates, materializeRecurring, materializedDates, occurrenceKey };

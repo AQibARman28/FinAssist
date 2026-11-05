@@ -96,16 +96,18 @@ const getExpenses = async (req, res) => {
             if (endDate)   query.date.$lte = new Date(endDate);
         }
 
-        const expenses = await Expense.find(query)
-            .sort({ date: -1 })
-            .limit(limit * 1)
-            .skip((page - 1) * limit);
+        // The page and the total are independent — fetch them together.
+        const [expenses, total] = await Promise.all([
+            Expense.find(query)
+                .sort({ date: -1 })
+                .limit(limit * 1)
+                .skip((page - 1) * limit),
+            Expense.countDocuments(query),
+        ]);
 
         const issues = await checkRecords(req, 'expense', expenses, attestationPayload);
         const items = [];
         for (const e of expenses) items.push(flag(await decryptExpense(e, req.user, req.dataKey), issues));
-
-        const total = await Expense.countDocuments(query);
 
         res.json({
             success: true,

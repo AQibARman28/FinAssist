@@ -33,7 +33,7 @@
 
 const Expense = require('../models/Expense');
 const Income = require('../models/Income');
-const { computeRecurringDates } = require('./recurring');
+const { computeRecurringDates, materializedDates, occurrenceKey } = require('./recurring');
 
 const FREQ_MULTIPLIER = Object.freeze({
     weekly:   52,
@@ -69,7 +69,14 @@ async function incomeTotalForPeriod(userId, fromDate, toDate) {
     //     instances; light users don't; either way we sum correctly.
     const templates = await Income.find({
         user: userId, isRecurring: true, parentRecurringId: null,
-    });
+    }).select('amount date recurringFrequency').lean();
+    if (templates.length === 0) return total;
+
+    // Every materialized instance of these templates in the window, fetched
+    // in one query (it used to be one Income.exists per occurrence date).
+    const materialized = await materializedDates(
+        Income, userId, templates.map((t) => t._id), fromDate, toDate,
+    );
 
     for (const tpl of templates) {
         if (!tpl.recurringFrequency) continue;
@@ -84,13 +91,8 @@ async function incomeTotalForPeriod(userId, fromDate, toDate) {
                 total += tpl.amount;
                 continue;
             }
-            // Otherwise check for a materialized instance at this date.
-            const exists = await Income.exists({
-                user:              userId,
-                parentRecurringId: tpl._id,
-                date:              d,
-            });
-            if (!exists) total += tpl.amount;
+            // Otherwise count it unless an instance exists at this date.
+            if (!materialized.has(occurrenceKey(tpl._id, d))) total += tpl.amount;
         }
     }
 
