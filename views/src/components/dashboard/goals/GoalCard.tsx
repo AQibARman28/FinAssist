@@ -187,7 +187,7 @@ export function GoalCard({ goal, onUpdate, plan, monthlySurplus = 0, now, index 
                 {!isCompleted && plan && plan.requiredMonthly !== null && (
                     <p className="text-[12.5px] text-zinc-400 tabular-nums">
                         {plan.actualMonthlyRate !== null
-                            ? `Adding about ${fmt(Math.round(plan.actualMonthlyRate))} a month (last 90 days)`
+                            ? `Adding about ${fmt(Math.round(plan.actualMonthlyRate))} a month lately`
                             : "Nothing added in the last 90 days"}
                     </p>
                 )}

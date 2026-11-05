@@ -378,6 +378,7 @@ const getGoalPlan = async (req, res) => {
                 targetAmount:  g.targetAmount,
                 currentAmount: g.currentAmount,
                 targetDate:    g.targetDate,
+                createdAt:     g.createdAt, // the even pace runs from the day it was set
                 contributions: g.contributions.map((c) => ({ amount: c.amount, date: c.date })),
             });
         }

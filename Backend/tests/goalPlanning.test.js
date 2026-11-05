@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 const mongoose = require('mongoose');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 
-const { planGoal, planGoals, allocateSurplus, STATUS } = require('../services/goalPlanning');
+const { planGoal, planGoals, allocateSurplus, goalVerdict, STATUS } = require('../services/goalPlanning');
 
 const DAY = 86_400_000;
 const MONTH = 30 * DAY;
@@ -37,18 +37,58 @@ describe('planGoal (pure)', () => {
         expect(r.actualMonthlyRate).toBeNull();
         expect(r.forecastMonths).toBeNull();
         expect(r.forecastDelta).toBeNull();
-        // rate 0 vs required 1000 → not feasible at current rate
-        expect(r.status).toBe(STATUS.NOT_FEASIBLE);
+        // Nothing saved and nothing due yet, and the surplus covers it: the
+        // verdict comes from pace and surplus, not from a rate it can't have.
+        expect(r.status).toBe(STATUS.ON_TRACK);
     });
 
-    test('half the needed rate → At risk', () => {
+    // One verdict for the goals plan and the health score (PRODUCT.md › Plan
+    // from real money): out of reach when the rest needs more each month
+    // than the whole surplus; behind when below an even pace from the day the
+    // goal was set; otherwise on track.
+    test('behind the even pace but affordable → At risk', () => {
         const r = planGoal(
-            { id: 'g3', targetAmount: 12_000, currentAmount: 0, targetDate: new Date(NOW + 12 * MONTH), contributions: monthlyContribs(500, 3) },
+            { id: 'g3', targetAmount: 12_000, currentAmount: 3000, createdAt: new Date(NOW - 6 * MONTH), targetDate: new Date(NOW + 6 * MONTH), contributions: monthlyContribs(500, 3) },
             { monthlySurplus: 2000, now: NOW },
         );
-        expect(r.requiredMonthly).toBe(1000);
-        expect(r.actualMonthlyRate).toBe(500); // 50% of required
-        expect(r.status).toBe(STATUS.AT_RISK);
+        expect(r.requiredMonthly).toBe(1500); // 9000 / 6mo, within the surplus
+        expect(r.status).toBe(STATUS.AT_RISK); // 25% saved, an even pace would be 50%
+    });
+
+    test('on or ahead of the even pace and affordable → On track, whatever the recent rate', () => {
+        const r = planGoal(
+            { id: 'g7', targetAmount: 12_000, currentAmount: 7000, createdAt: new Date(NOW - 6 * MONTH), targetDate: new Date(NOW + 6 * MONTH), contributions: [] },
+            { monthlySurplus: 2000, now: NOW },
+        );
+        expect(r.actualMonthlyRate).toBeNull(); // nothing added lately
+        expect(r.status).toBe(STATUS.ON_TRACK);
+    });
+
+    test('a goal set yesterday is judged on pace and surplus, not on a 90-day rate it cannot have', () => {
+        const r = planGoal(
+            {
+                id: 'g8', targetAmount: 3000, currentAmount: 1000,
+                createdAt: new Date(NOW - 1 * DAY), targetDate: new Date(NOW + 25 * DAY),
+                contributions: [{ amount: 1000, date: new Date(NOW - 1 * DAY) }],
+            },
+            { monthlySurplus: 5566, now: NOW },
+        );
+        expect(r.status).toBe(STATUS.ON_TRACK);
+        expect(r.actualMonthlyRate).toBe(1000); // its first month, not 1000 / 3
+        expect(r.forecastMonths).toBeNull();     // too young to forecast from
+        expect(r.forecastDelta).toBeNull();
+    });
+
+    test('the saving rate covers only the lifetime of the goal', () => {
+        const r = planGoal(
+            {
+                id: 'g9', targetAmount: 12_000, currentAmount: 900,
+                createdAt: new Date(NOW - 45 * DAY), targetDate: new Date(NOW + 12 * MONTH),
+                contributions: [{ amount: 900, date: new Date(NOW - 40 * DAY) }],
+            },
+            { monthlySurplus: 2000, now: NOW },
+        );
+        expect(r.actualMonthlyRate).toBe(600); // 900 over 1.5 months, not over 3
     });
 
     test('requiredMonthly exceeds surplus → Not feasible', () => {
@@ -79,6 +119,21 @@ describe('planGoal (pure)', () => {
         );
         expect(r.forecastMonths).toBe(20); // 12000 / 600
         expect(r.forecastDelta).toBe(8);   // 20 - 12
+    });
+});
+
+describe('goalVerdict (shared with the health score)', () => {
+    const fresh = (createdAgo) => ({ targetAmount: 2000, currentAmount: 0, createdAt: new Date(NOW - createdAgo), targetDate: new Date(NOW + 26 * DAY) });
+    test('a goal set today with nothing saved yet is not behind', () => {
+        expect(goalVerdict(fresh(60 * 60 * 1000), { monthlySurplus: 5000, now: NOW })).toBe(STATUS.ON_TRACK);
+    });
+    test('a whole day without saving its share puts it behind', () => {
+        expect(goalVerdict(fresh(2 * DAY), { monthlySurplus: 5000, now: NOW })).toBe(STATUS.AT_RISK);
+    });
+    test('affordability needs the surplus; without it, pace alone decides', () => {
+        const goal = { targetAmount: 100_000, currentAmount: 0, createdAt: new Date(NOW), targetDate: new Date(NOW + 1 * MONTH) };
+        expect(goalVerdict(goal, { monthlySurplus: 5000, now: NOW })).toBe(STATUS.NOT_FEASIBLE);
+        expect(goalVerdict(goal, { now: NOW })).toBe(STATUS.ON_TRACK);
     });
 });
 
@@ -225,6 +280,41 @@ describe('GET /api/goals/plan (DB)', () => {
         expect(d.goals[0].title).toBe('Car');
         expect(d.goals[0].requiredMonthly).toBeGreaterThan(0);
         expect(d.portfolio).toHaveProperty('overcommitted');
+    });
+
+    // The Goals page and the health score must give a goal the same verdict.
+    test('the goals plan and the health score agree on behind and out of reach', async () => {
+        const aiCtl = require('../controllers/aiController');
+        const { user, dataKey } = await persistUser();
+        const incCat = await Category.create({ user: user._id, name: 'Salary', type: 'income', color: '#10B981', icon: 'briefcase' });
+        await Income.create({ user: user._id, amount: 90_000, category: incCat._id, description: await encrypt('s', dataKey), date: daysAgo(10), isRecurring: false, isPostTax: true });
+
+        // Set 20 days ago, due in 10: an even pace would have two thirds saved by now.
+        const behind = await makeGoal(user, dataKey, { title: 'Phone', targetAmount: 3000, goalType: 'Other' });
+        await Goal.collection.updateOne({ _id: behind._id }, { $set: {
+            currentAmount: 300, createdAt: daysAgo(20), targetDate: new Date(Date.now() + 10 * DAY),
+            contributions: [{ amount: 300, date: daysAgo(15) }],
+        } });
+
+        const plan = mockRes();
+        await goalCtl.getGoalPlan(mockReq(user, dataKey), plan);
+        expect(plan.json.mock.calls.at(-1)[0].data.goals[0].status).toBe(STATUS.AT_RISK);
+
+        const health = mockRes();
+        await aiCtl.financialHealthScore(mockReq(user, dataKey), health);
+        const goalFactor = (res) => res.json.mock.calls.at(-1)[0].data.factors.find((f) => f.label === 'Goal progress');
+        expect(goalFactor(health).detail).toBe('Your goal is behind');
+
+        // Due in a month but needing far more than the 30,000 a month surplus.
+        await Goal.collection.updateOne({ _id: behind._id }, { $set: {
+            targetAmount: 1_000_000, currentAmount: 0, createdAt: new Date(), targetDate: new Date(Date.now() + 30 * DAY), contributions: [],
+        } });
+        const plan2 = mockRes();
+        await goalCtl.getGoalPlan(mockReq(user, dataKey), plan2);
+        expect(plan2.json.mock.calls.at(-1)[0].data.goals[0].status).toBe(STATUS.NOT_FEASIBLE);
+        const health2 = mockRes();
+        await aiCtl.financialHealthScore(mockReq(user, dataKey), health2);
+        expect(goalFactor(health2).detail).toBe('Your goal is out of reach');
     });
 
     test('POST /allocate records contributions via the contribute path', async () => {

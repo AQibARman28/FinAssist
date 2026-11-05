@@ -159,7 +159,7 @@ describe("goalStatus", () => {
     it("puts a close deadline per day instead of per month, and says plainly it is out of reach", () => {
         const goal = { title: "Emergency Fund", targetAmount: 5000, currentAmount: 0, requiredMonthly: 5898, targetDate: "2026-11-30T17:59:59.000Z" };
         assert.deepEqual(goalStatus({ ...goal, status: "Not feasible at current rate" }, 5203, fmt, TODAY), {
-            tone: "bad", text: "Out of reach at this rate · ৳5,000 to go by 30 Nov · about ৳193 a day",
+            tone: "bad", text: "Out of reach · ৳5,000 to go by 30 Nov · about ৳193 a day",
         });
     });
 

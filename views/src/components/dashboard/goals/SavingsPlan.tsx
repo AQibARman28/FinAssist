@@ -189,11 +189,11 @@ function PlanRow({ row, index, monthlySurplus, now, fmt }: {
                     <dd className="text-right text-white tabular-nums">{required === null ? "Flexible, no deadline" : `${fmt.format(required)} a month`}</dd>
                 </div>
                 <div className="flex items-baseline justify-between gap-4">
-                    <dt className="text-zinc-400">Going in (last 90 days)</dt>
+                    <dt className="text-zinc-400">Going in lately</dt>
                     <dd className="text-right text-white tabular-nums">{actual === null ? "No history yet" : `${fmt.format(actual)} a month`}</dd>
                 </div>
                 <div className="flex items-baseline justify-between gap-4">
-                    <dt className="text-zinc-400">Finishes</dt>
+                    <dt className="text-zinc-400">At that rate</dt>
                     <dd className="text-right">
                         <StateNote tone={forecastTone} icon={FORECAST_ICON[forecastTone]} className="tabular-nums">{forecast.text}</StateNote>
                     </dd>

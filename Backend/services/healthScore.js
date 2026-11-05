@@ -13,6 +13,8 @@
  * savings-rate and expense-to-income factors score 0 so the deficit counts.
  */
 
+const { STATUS, goalVerdict, evenPaceFraction } = require('./goalPlanning');
+
 const HEALTH_WINDOW_DAYS = 90;
 
 const WEIGHTS = Object.freeze({
@@ -77,30 +79,46 @@ function budgetAdherenceFactor(budgets) {
 
 // ── Factor 3: goal progress (weight 20) ──────────────────────────────────────
 // goals: [{ currentAmount, targetAmount, targetDate(Date|null), createdAt(Date) }]
-function goalProgressFactor(goals, nowMs) {
+// Each dated goal gets the goals plan's own verdict (goalPlanning.goalVerdict),
+// so this factor and the Goals page always agree. On pace scores 100, behind
+// scores in proportion to the even pace, and a goal the monthly surplus can't
+// fund in time scores 0. Without a surplus, pace alone decides.
+function goalProgressFactor(goals, nowMs, monthlySurplus) {
     const base = { weight: WEIGHTS.goal, label: 'Goal progress' };
     if (!goals || goals.length === 0) return { ...base, score: null, detail: 'No active goals' };
 
-    let sum = 0, behind = 0;
+    let sum = 0, behind = 0, outOfReach = 0;
     for (const g of goals) {
         const actual = g.targetAmount > 0 ? g.currentAmount / g.targetAmount : 0;
         let s;
         if (!g.targetDate) {
             s = clamp(actual, 0, 1) * 100;
         } else {
-            const start = g.createdAt ? new Date(g.createdAt).getTime() : nowMs;
-            const denom = new Date(g.targetDate).getTime() - start;
-            const expected = denom > 0 ? clamp((nowMs - start) / denom, 0, 1) : 1;
-            s = clamp(actual / Math.max(expected, 0.01), 0, 1) * 100;
-            if (actual < expected) behind++;
+            const verdict = goalVerdict(g, { monthlySurplus, now: nowMs });
+            if (verdict === STATUS.NOT_FEASIBLE) {
+                s = 0;
+                outOfReach++;
+            } else if (verdict === STATUS.AT_RISK) {
+                s = clamp(actual / Math.max(evenPaceFraction(g, nowMs), 0.01), 0, 1) * 100;
+                behind++;
+            } else {
+                s = 100;
+            }
         }
         sum += s;
     }
     const score = clamp(Math.round(sum / goals.length), 0, 100);
-    const detail = behind === 0
-        ? `On pace on ${goals.length === 1 ? "your goal" : `all ${goals.length} goals`}`
-        : `${behind} of ${goals.length} ${goals.length === 1 ? "goal" : "goals"} behind`;
-    return { ...base, score, detail };
+    return { ...base, score, detail: goalDetail(goals.length, behind, outOfReach) };
+}
+
+// In the Goals page's words: "On track", "behind", "out of reach".
+function goalDetail(n, behind, outOfReach) {
+    if (behind === 0 && outOfReach === 0) return n === 1 ? 'On track on your goal' : `On track on all ${n} goals`;
+    if (n === 1) return outOfReach ? 'Your goal is out of reach' : 'Your goal is behind';
+    const parts = [];
+    if (behind) parts.push(`${behind} of ${n} goals behind`);
+    if (outOfReach) parts.push(behind ? `${outOfReach} out of reach` : `${outOfReach} of ${n} goals out of reach`);
+    return parts.join(', ');
 }
 
 // ── Factor 4: spending stability (weight 15) ─────────────────────────────────
@@ -152,12 +170,14 @@ function buildMessage(contributor, detractor) {
 }
 
 // ── Composite ────────────────────────────────────────────────────────────────
-function computeHealthScore({ income, expense, budgets, goals, weeklySpends, now }) {
+// monthlySurplus: average monthly income minus spending (services/cashFlow),
+// the same figure the goals plan judges goals against.
+function computeHealthScore({ income, expense, budgets, goals, weeklySpends, monthlySurplus, now }) {
     const nowMs = now ?? Date.now();
     const factors = [
         savingsRateFactor(income, expense),
         budgetAdherenceFactor(budgets),
-        goalProgressFactor(goals, nowMs),
+        goalProgressFactor(goals, nowMs, monthlySurplus),
         spendingStabilityFactor(weeklySpends),
         expenseIncomeRatioFactor(income, expense),
     ];

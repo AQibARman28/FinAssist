@@ -68,6 +68,39 @@ describe('goalProgressFactor (w20)', () => {
     test('no target date → actual fraction', () => {
         expect(goalProgressFactor([{ currentAmount: 30, targetAmount: 100, targetDate: null, createdAt: new Date(now) }], now).score).toBe(30);
     });
+
+    // With the surplus known, the same verdict as the goals plan
+    // (goalPlanning.goalVerdict), so the two pages never disagree.
+    test('a goal the surplus cannot fund in time is out of reach and scores 0', () => {
+        const f = goalProgressFactor([
+            { currentAmount: 0, targetAmount: 100_000, targetDate: new Date(now + 30 * DAY), createdAt: new Date(now) },
+        ], now, 5000);
+        expect(f.score).toBe(0);
+        expect(f.detail).toBe('Your goal is out of reach');
+    });
+    test('says on track or behind in the words the goals page uses', () => {
+        const onTrack = { currentAmount: 50, targetAmount: 100, targetDate: new Date(now + 50 * DAY), createdAt: new Date(now - 50 * DAY) };
+        const behind  = { currentAmount: 25, targetAmount: 100, targetDate: new Date(now + 50 * DAY), createdAt: new Date(now - 50 * DAY) };
+        expect(goalProgressFactor([onTrack], now, 5000).detail).toBe('On track on your goal');
+        expect(goalProgressFactor([onTrack, onTrack], now, 5000).detail).toBe('On track on all 2 goals');
+        expect(goalProgressFactor([onTrack, behind], now, 5000).detail).toBe('1 of 2 goals behind');
+    });
+    test('a goal set today with nothing saved yet is on track and scores 100', () => {
+        const f = goalProgressFactor([
+            { currentAmount: 0, targetAmount: 2000, targetDate: new Date(now + 26 * DAY), createdAt: new Date(now - 60 * 60 * 1000) },
+        ], now, 5000);
+        expect(f.score).toBe(100);
+        expect(f.detail).toBe('On track on your goal');
+    });
+    test('computeHealthScore passes the surplus through to the goal verdict', () => {
+        const r = computeHealthScore({
+            income: 1000, expense: 500, budgets: [], weeklySpends: [],
+            // On pace (set today, 5% saved), so only the surplus makes it 0.
+            goals: [{ currentAmount: 5000, targetAmount: 100_000, targetDate: new Date(now + 30 * DAY), createdAt: new Date(now) }],
+            monthlySurplus: 500, now,
+        });
+        expect(r.factors.find((f) => f.label === 'Goal progress').score).toBe(0);
+    });
 });
 
 describe('spendingStabilityFactor (w15)', () => {

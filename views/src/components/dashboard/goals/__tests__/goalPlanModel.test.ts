@@ -36,8 +36,15 @@ describe("formatMonths", () => {
 
 describe("describeForecast", () => {
     it("null forecast → no-history wording, not NaN", () => {
-        const f = describeForecast({ ...base, forecastMonths: null, forecastDelta: null });
+        const f = describeForecast({ ...base, forecastMonths: null, forecastDelta: null, actualMonthlyRate: null });
         assert.match(f.text, /No forecast yet/);
+        assert.equal(f.tone, "neutral");
+    });
+    // The server forecasts only from a month of history; a newer goal with
+    // money going in has a rate but no finish date yet.
+    it("money going in but no forecast yet → too early to tell", () => {
+        const f = describeForecast({ ...base, forecastMonths: null, forecastDelta: null, actualMonthlyRate: 1000 });
+        assert.equal(f.text, "Too early to tell");
         assert.equal(f.tone, "neutral");
     });
     it("late by more than 3 months → bad", () => {

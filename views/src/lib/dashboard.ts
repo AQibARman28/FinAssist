@@ -176,7 +176,7 @@ export function goalStatus(
             const atRisk = goal.status === "At risk";
             return {
                 tone: atRisk ? "warn" : "bad",
-                text: `${atRisk ? "Behind" : "Out of reach at this rate"} · ${money(Math.round(remaining))} to go by ${format(deadline, "d MMM")} · about ${money(Math.ceil(remaining / daysLeft))} a day`,
+                text: `${atRisk ? "Behind" : "Out of reach"} · ${money(Math.round(remaining))} to go by ${format(deadline, "d MMM")} · about ${money(Math.ceil(remaining / daysLeft))} a day`,
             };
         }
     }

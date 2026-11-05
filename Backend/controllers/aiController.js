@@ -8,6 +8,7 @@ const {
     monthlyEquivalentIncome,
 } = require('../utils/finance');
 const { computeHealthScore, HEALTH_WINDOW_DAYS } = require('../services/healthScore');
+const { summarizeCashFlow } = require('../services/cashFlow');
 
 // Helper: current calendar month, UTC bounds. Matches the convention used
 // by utils/recurring.js so monthly templates anchored at UTC midnight don't
@@ -228,7 +229,11 @@ const financialHealthScore = async (req, res) => {
         }));
         const weeklySpends = weekAgg.map((w) => w.total);
 
-        const result = computeHealthScore({ income, expense, budgets, goals, weeklySpends, now: now.getTime() });
+        // The goals plan's own surplus (same window and totals), so the goal
+        // factor gives each goal the verdict the Goals page shows.
+        const { monthlySurplus } = summarizeCashFlow({ income, expenses: expense, windowDays: HEALTH_WINDOW_DAYS });
+
+        const result = computeHealthScore({ income, expense, budgets, goals, weeklySpends, monthlySurplus, now: now.getTime() });
         res.json({ success: true, data: result });
     } catch (error) {
         console.error('Financial health score error:', error);

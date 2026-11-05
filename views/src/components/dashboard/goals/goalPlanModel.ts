@@ -93,9 +93,14 @@ export interface ForecastText { text: string; tone: Tone }
 
 // forecastMonths = months to finish at the recent contribution rate;
 // forecastDelta  = forecastMonths − months until the deadline (+ = late).
-export function describeForecast(row: Pick<GoalPlanRow, "forecastMonths" | "forecastDelta" | "currentAmount" | "targetAmount">): ForecastText {
+export function describeForecast(row: Pick<GoalPlanRow, "forecastMonths" | "forecastDelta" | "currentAmount" | "targetAmount"> & Partial<Pick<GoalPlanRow, "actualMonthlyRate">>): ForecastText {
     if (row.targetAmount > 0 && row.currentAmount >= row.targetAmount) return { text: "Fully funded", tone: "good" };
-    if (!isNum(row.forecastMonths)) return { text: "No forecast yet — no recent contributions", tone: "neutral" };
+    // The server forecasts from a month of history; a newer goal has a rate but no finish date.
+    if (!isNum(row.forecastMonths)) {
+        return isNum(row.actualMonthlyRate)
+            ? { text: "Too early to tell", tone: "neutral" }
+            : { text: "No forecast yet — nothing added lately", tone: "neutral" };
+    }
     const finish = `Done in ~${formatMonths(row.forecastMonths)}`;
     if (!isNum(row.forecastDelta)) return { text: finish, tone: "neutral" };
     if (row.forecastDelta > 0.5) {

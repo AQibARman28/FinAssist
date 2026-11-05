@@ -23,47 +23,65 @@ function monthsUntil(targetDate, nowMs) {
     return (new Date(targetDate).getTime() - nowMs) / MS_PER_MONTH;
 }
 
-// Recent contribution rate = sum of this goal's contributions in the trailing
-// window ÷ window-in-months. null when there are no in-window contributions.
-function recentMonthlyRate(contributions, nowMs, windowDays) {
-    const cutoff = nowMs - windowDays * 86_400_000;
+const DAY_MS = 86_400_000;
+// Less history than this and a monthly rate (and a finish date from it) says
+// more about the calendar than about the saving.
+const MIN_HISTORY_DAYS = 30;
+
+// The share of the target an even pace would have saved by now, from the day
+// the goal was set to its deadline: 0 the day it's set, 1 once the deadline
+// passes. The goal card's tick shows the same pace. null when undated.
+function evenPaceFraction(goal, nowMs) {
+    if (goal.targetDate == null) return null;
+    const start = goal.createdAt ? new Date(goal.createdAt).getTime() : nowMs;
+    const span = new Date(goal.targetDate).getTime() - start;
+    return span > 0 ? Math.min(Math.max((nowMs - start) / span, 0), 1) : 1;
+}
+
+// Recent contribution rate = this goal's contributions in the trailing window
+// ÷ the window in months. The window never reaches back before the goal was
+// set (a goal set last week isn't averaged over three months it didn't
+// exist), and counts as at least a month. null when nothing was added in it.
+function recentMonthlyRate(contributions, nowMs, windowDays, createdAt) {
+    const cutoff = nowMs - windowDays * DAY_MS;
     let sum = 0;
     for (const c of contributions || []) {
         if (new Date(c.date).getTime() >= cutoff) sum += c.amount;
     }
-    return sum > 0 ? sum / (windowDays / 30) : null;
+    const from = createdAt ? Math.max(cutoff, new Date(createdAt).getTime()) : cutoff;
+    const months = Math.max(nowMs - from, MIN_HISTORY_DAYS * DAY_MS) / MS_PER_MONTH;
+    return sum > 0 ? sum / months : null;
 }
 
-function computeStatus({ dated, requiredMonthly, actualMonthlyRate, forecastDelta, monthlySurplus, currentAmount }) {
-    if (!dated) {
+// The one verdict for a goal, shared by the goals plan and the health score so
+// the two never disagree (PRODUCT.md › Plan from real money):
+//   Not feasible — what's left needs more each month than the whole surplus;
+//   At risk      — affordable, but less saved than an even pace would have
+//                  had by yesterday;
+//   On track     — affordable, and on or ahead of that pace.
+// The recent contribution rate doesn't decide it: a goal set yesterday has no
+// rate yet. Without a surplus (none passed), pace alone decides.
+// goal: { targetAmount, currentAmount, targetDate, createdAt }
+function goalVerdict(goal, { monthlySurplus, now } = {}) {
+    const nowMs = now ?? Date.now();
+    if (goal.targetDate == null) {
         // Undated goals (defensive — the model currently requires a date):
         // no deadline pressure, so "started" reads as on track.
-        return currentAmount > 0 ? STATUS.ON_TRACK : STATUS.AT_RISK;
+        return goal.currentAmount > 0 ? STATUS.ON_TRACK : STATUS.AT_RISK;
     }
-    // Can't afford it even if all surplus went here.
-    if (requiredMonthly > monthlySurplus) return STATUS.NOT_FEASIBLE;
-    if (requiredMonthly <= 0) return STATUS.ON_TRACK; // already met
+    const remaining = Math.max(goal.targetAmount - goal.currentAmount, 0);
+    if (remaining <= 0) return STATUS.ON_TRACK; // already met
 
-    // The brief's rate-band and forecast-lateness conditions overlap (a
-    // 50%-rate goal is also "many months late"). Resolve rate-ratio FIRST as
-    // the primary classifier; forecast lateness then only WORSENS an
-    // otherwise on-track goal (the rare on-rate-but-deadline-slipping case).
-    const rate  = actualMonthlyRate ?? 0; // no recent contributions ⇒ rate 0
-    const ratio = rate / requiredMonthly;
+    const requiredMonthly = remaining / Math.max(monthsUntil(goal.targetDate, nowMs), 0.1);
+    if (monthlySurplus != null && requiredMonthly > monthlySurplus) return STATUS.NOT_FEASIBLE;
 
-    let status;
-    if (ratio >= 1)        status = STATUS.ON_TRACK;
-    else if (ratio >= 0.5) status = STATUS.AT_RISK;
-    else                   status = STATUS.NOT_FEASIBLE;
-
-    if (status === STATUS.ON_TRACK && forecastDelta !== null) {
-        if (forecastDelta > 3)      status = STATUS.NOT_FEASIBLE;
-        else if (forecastDelta > 1) status = STATUS.AT_RISK;
-    }
-    return status;
+    // Behind once it trails where the pace stood a day ago, so a goal set
+    // today isn't behind seconds later for not having its first day's share.
+    const saved = goal.targetAmount > 0 ? goal.currentAmount / goal.targetAmount : 0;
+    return saved < evenPaceFraction(goal, nowMs - DAY_MS) ? STATUS.AT_RISK : STATUS.ON_TRACK;
 }
 
-// goal: { id, targetAmount, currentAmount, targetDate(Date|string|null), contributions:[{amount,date}] }
+// goal: { id, targetAmount, currentAmount, targetDate(Date|string|null), createdAt?, contributions:[{amount,date}] }
 function planGoal(goal, { monthlySurplus, now, windowDays = 90 }) {
     const nowMs = now ?? Date.now();
     const remaining = Math.max(goal.targetAmount - goal.currentAmount, 0);
@@ -73,9 +91,11 @@ function planGoal(goal, { monthlySurplus, now, windowDays = 90 }) {
         ? remaining / Math.max(monthsUntil(goal.targetDate, nowMs), 0.1)
         : null;
 
-    const actualMonthlyRate = recentMonthlyRate(goal.contributions, nowMs, windowDays);
+    const actualMonthlyRate = recentMonthlyRate(goal.contributions, nowMs, windowDays, goal.createdAt);
 
-    const forecastMonths = actualMonthlyRate && actualMonthlyRate > 0
+    // A finish date needs a month of history to project from.
+    const age = goal.createdAt ? nowMs - new Date(goal.createdAt).getTime() : Infinity;
+    const forecastMonths = actualMonthlyRate && actualMonthlyRate > 0 && age >= MIN_HISTORY_DAYS * DAY_MS
         ? remaining / actualMonthlyRate
         : null;
 
@@ -83,10 +103,7 @@ function planGoal(goal, { monthlySurplus, now, windowDays = 90 }) {
         ? forecastMonths - monthsUntil(goal.targetDate, nowMs)
         : null;
 
-    const status = computeStatus({
-        dated, requiredMonthly, actualMonthlyRate, forecastDelta,
-        monthlySurplus, currentAmount: goal.currentAmount,
-    });
+    const status = goalVerdict(goal, { monthlySurplus, now: nowMs });
 
     return {
         goalId:            goal.id,
@@ -191,7 +208,8 @@ module.exports = {
     MS_PER_MONTH,
     monthsUntil,
     recentMonthlyRate,
-    computeStatus,
+    evenPaceFraction,
+    goalVerdict,
     planGoal,
     planPortfolio,
     planGoals,
