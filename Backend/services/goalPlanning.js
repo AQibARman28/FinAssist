@@ -129,18 +129,21 @@ function allocateSurplus({ goals, monthlySurplus, monthlyAvgExpenses, now }) {
         const dated       = g.targetDate != null;
         const monthsLeft  = dated ? Math.max(monthsUntil(g.targetDate, nowMs), 0.1) : null;
         const requiredMonthly = dated ? remaining / monthsLeft : null;
+        // What this month can usefully take. Under a month from the deadline
+        // the monthly rate is more than the goal still needs; never suggest that.
+        const dueThisMonth = dated ? Math.min(requiredMonthly, remaining) : null;
         const isEmergency = g.goalType === 'Emergency Fund';
 
         let need;
         if (isEmergency) {
             const gapToBaseline = Math.max(baseline - g.currentAmount, 0);
-            need = Math.min(requiredMonthly ?? gapToBaseline, gapToBaseline);
+            need = Math.min(dueThisMonth ?? gapToBaseline, gapToBaseline);
         } else if (dated) {
-            need = requiredMonthly;
+            need = dueThisMonth;
         } else {
             need = 0; // undated: leftover only
         }
-        return { ...g, remaining, dated, monthsLeft, requiredMonthly, isEmergency, need: Math.max(need, 0) };
+        return { ...g, remaining, dated, monthsLeft, requiredMonthly, dueThisMonth, isEmergency, need: Math.max(need, 0) };
     });
 
     const emergency  = enriched.filter((g) => g.isEmergency);
@@ -164,7 +167,7 @@ function allocateSurplus({ goals, monthlySurplus, monthlyAvgExpenses, now }) {
     for (const g of order) {
         if (!g.dated) continue;
         const allocated = allocMap.get(g.id) || 0;
-        const shortfall = (g.requiredMonthly ?? 0) - allocated;
+        const shortfall = (g.dueThisMonth ?? 0) - allocated;
         if (shortfall > 0.005) {
             const extendMonths = allocated > 0 ? round1((g.remaining / allocated) - g.monthsLeft) : null;
             tradeoffs.push({ goalId: g.id, shortfall: round2(shortfall), extendMonths });

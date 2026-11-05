@@ -140,6 +140,20 @@ describe('allocateSurplus (pure)', () => {
         expect(r.tradeoffs).toHaveLength(0);
         expect(r.overcommitted).toBe(false);
     });
+
+    // Due in under a month, remaining ÷ months-left is more than the goal
+    // still needs. Suggesting that would put more into the goal than its target.
+    test('never suggests more than a goal still needs (deadline under a month away)', () => {
+        const r = allocateSurplus({
+            goals: [
+                { id: 'phone', targetAmount: 3000, currentAmount: 1000, targetDate: at(0.5), goalType: 'Phone' },
+            ],
+            monthlySurplus: 6000, monthlyAvgExpenses: 1000, now: NOW,
+        });
+        expect(r.allocations[0].suggested).toBe(2000);
+        expect(r.freeSurplus).toBe(4000);
+        expect(r.tradeoffs).toHaveLength(0); // fully funded: nothing is short
+    });
 });
 
 describe('GET /api/goals/plan (DB)', () => {
