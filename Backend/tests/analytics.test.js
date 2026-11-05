@@ -124,9 +124,12 @@ const startOfCurrentMonth = () => {
     const n = new Date();
     return new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), 1, 0, 0, 0, 0));
 };
+// The 15th, or earlier today when the 15th is still ahead: always in this
+// month and never in the future (the health score reads the past 90 days, so
+// a future date fell outside it on the 1st to the 14th).
 const someDateThisMonth = () => {
     const n = new Date();
-    return new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), 15, 12, 0, 0, 0));
+    return new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), Math.min(15, n.getUTCDate()), 0, 0, 0, 0));
 };
 
 // ── finance.js helpers ──────────────────────────────────────────────────────
