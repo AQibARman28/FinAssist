@@ -4,7 +4,7 @@
  * getBalance/carriedForward are exercised through the controller/smoke path.
  */
 
-const { summarize, savedInWindow, periodWindow } = require('../services/balance');
+const { summarize, savedInWindow, periodWindow, leftOverFromEarlier } = require('../services/balance');
 
 describe('summarize (pure)', () => {
     test('netIncome = income - expenses; closing folds in carry-forward and savings', () => {
@@ -64,5 +64,20 @@ describe('savedInWindow (pure)', () => {
     });
     test('no contributions → 0', () => {
         expect(savedInWindow([{ contributions: [] }], new Date(0), new Date())).toBe(0);
+    });
+});
+
+// Money left over from earlier months, which a goal can draw on now: what the
+// month opened with, but never more than is in the wallet today.
+describe('leftOverFromEarlier (pure)', () => {
+    test('what the month opened with', () => {
+        expect(leftOverFromEarlier({ available: 14_110, monthly: { carriedForward: 5450 } })).toBe(5450);
+    });
+    test('never more than the wallet holds now', () => {
+        expect(leftOverFromEarlier({ available: 2000, monthly: { carriedForward: 5450 } })).toBe(2000);
+    });
+    test('nothing when the month opened short or the wallet is empty', () => {
+        expect(leftOverFromEarlier({ available: 3000, monthly: { carriedForward: -800 } })).toBe(0);
+        expect(leftOverFromEarlier({ available: -50, monthly: { carriedForward: 900 } })).toBe(0);
     });
 });

@@ -216,3 +216,28 @@ describe('computeHealthScore — composite & renormalization', () => {
         expect(typeof r.message).toBe('string');
     });
 });
+
+// The row's icon follows its words: a factor that names a problem is flagged
+// even when its score averages out above the weak line.
+describe('attention flag', () => {
+    const now = Date.now();
+    test('a budget over its limit is flagged even when adherence scores well', () => {
+        const f = budgetAdherenceFactor([{ limit: 1000, spent: 1100 }, { limit: 5000, spent: 1000 }, { limit: 5000, spent: 0 }]);
+        expect(f.score).toBeGreaterThanOrEqual(50);
+        expect(f.attention).toBe(true);
+        expect(budgetAdherenceFactor([{ limit: 1000, spent: 200 }]).attention).toBe(false);
+    });
+    test('a goal behind or out of reach is flagged even when the average is 50', () => {
+        const onTrack = { currentAmount: 50, targetAmount: 100, targetDate: new Date(now + 50 * DAY), createdAt: new Date(now - 50 * DAY) };
+        const outOfReach = { currentAmount: 0, targetAmount: 100_000, targetDate: new Date(now + 30 * DAY), createdAt: new Date(now) };
+        const f = goalProgressFactor([onTrack, outOfReach], now, 5000);
+        expect(f.score).toBe(50);
+        expect(f.attention).toBe(true);
+        expect(goalProgressFactor([onTrack], now, 5000).attention).toBe(false);
+    });
+    test('score-based factors are flagged below 50, and an uncounted factor never is', () => {
+        expect(savingsRateFactor(1000, 1200).attention).toBe(true);
+        expect(savingsRateFactor(1000, 500).attention).toBe(false);
+        expect(spendingStabilityFactor([100]).attention).toBe(false);
+    });
+});

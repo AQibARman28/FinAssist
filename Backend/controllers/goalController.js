@@ -4,7 +4,7 @@ const { signRecord, encryptNote, decryptNote } = require('../utils/signing');
 const { checkRecords, flag } = require('../utils/integrity');
 const { getCashFlow } = require('../services/cashFlow');
 const { planGoals, allocateSurplus } = require('../services/goalPlanning');
-const { getBalance, releasableAmount } = require('../services/balance');
+const { getBalance, releasableAmount, leftOverFromEarlier } = require('../services/balance');
 const { withWalletLock, WalletBusyError } = require('../services/walletLock');
 const SavingsEntry = require('../models/SavingsEntry');
 const { logAudit } = require('../utils/audit');
@@ -18,12 +18,16 @@ const LIVE = { deletedAt: null };
 // and the write run inside the user's wallet lock.
 const busy = (res, err) => res.status(409).json({ success: false, code: err.code, message: err.message });
 
-async function availableBalance(userId) {
+async function walletBalance(userId) {
     const [allGoals, savingsEntries] = await Promise.all([
         Goal.find({ user: userId }),            // incl. archived — their history counts
         SavingsEntry.find({ user: userId }),
     ]);
-    return (await getBalance(userId, allGoals, savingsEntries)).available;
+    return getBalance(userId, allGoals, savingsEntries);
+}
+
+async function availableBalance(userId) {
+    return (await walletBalance(userId)).available;
 }
 
 // End-of-period date used as a display/forecast targetDate when the user
@@ -365,8 +369,11 @@ const getGoalsDashboard = async (req, res) => {
 const getGoalPlan = async (req, res) => {
     try {
         const userId = req.user._id;
-        const cash = await getCashFlow(userId, 90);
-        const goals = await Goal.find({ user: userId, status: 'Active', ...LIVE });
+        const [cash, goals, balance] = await Promise.all([
+            getCashFlow(userId, 90),
+            Goal.find({ user: userId, status: 'Active', ...LIVE }),
+            walletBalance(userId),
+        ]);
 
         const inputs = [];
         const titles = {};
@@ -383,7 +390,10 @@ const getGoalPlan = async (req, res) => {
             });
         }
 
-        const plan = planGoals({ goals: inputs, monthlySurplus: cash.monthlySurplus, now: Date.now(), windowDays: 90 });
+        const plan = planGoals({
+            goals: inputs, monthlySurplus: cash.monthlySurplus, leftOver: leftOverFromEarlier(balance),
+            now: Date.now(), windowDays: 90,
+        });
         const byId = new Map(goals.map((g) => [g._id.toString(), g]));
         const goalsOut = plan.goals.map((p) => {
             const g = byId.get(p.goalId);

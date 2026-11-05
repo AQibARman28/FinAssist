@@ -165,7 +165,14 @@ async function getBalance(userId, goals, savingsEntries = [], now = new Date()) 
     return { available, wallet: available, savingsBalance, cumulative: { income, expenses, saved, released }, monthly, yearly };
 }
 
+// Money left over from earlier months that a goal can draw on now: what this
+// month opened with, but never more than the wallet holds today. The goal
+// verdict counts it alongside the monthly surplus.
+function leftOverFromEarlier(balance) {
+    return Math.max(0, Math.min(balance.monthly?.carriedForward ?? 0, balance.available ?? 0));
+}
+
 module.exports = {
     summarize, periodWindow, savedInWindow, releasedInWindow, releasableAmount, savingsNet,
-    carriedForwardBefore, periodBreakdown, getBalance,
+    carriedForwardBefore, periodBreakdown, getBalance, leftOverFromEarlier,
 };

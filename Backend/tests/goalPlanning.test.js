@@ -130,6 +130,13 @@ describe('goalVerdict (shared with the health score)', () => {
     test('a whole day without saving its share puts it behind', () => {
         expect(goalVerdict(fresh(2 * DAY), { monthlySurplus: 5000, now: NOW })).toBe(STATUS.AT_RISK);
     });
+    // The demo's case: a 5,000 Emergency Fund due in 25 days, a 5,203 a month
+    // surplus, and 5,450 left over from October already in the wallet.
+    test('money left over from earlier months counts towards reaching it', () => {
+        const goal = { targetAmount: 5000, currentAmount: 0, createdAt: new Date(NOW - 4 * DAY), targetDate: new Date(NOW + 25 * DAY) };
+        expect(goalVerdict(goal, { monthlySurplus: 5203, now: NOW })).toBe(STATUS.NOT_FEASIBLE);
+        expect(goalVerdict(goal, { monthlySurplus: 5203, leftOver: 5450, now: NOW })).not.toBe(STATUS.NOT_FEASIBLE);
+    });
     test('affordability needs the surplus; without it, pace alone decides', () => {
         const goal = { targetAmount: 100_000, currentAmount: 0, createdAt: new Date(NOW), targetDate: new Date(NOW + 1 * MONTH) };
         expect(goalVerdict(goal, { monthlySurplus: 5000, now: NOW })).toBe(STATUS.NOT_FEASIBLE);
@@ -305,7 +312,20 @@ describe('GET /api/goals/plan (DB)', () => {
         const goalFactor = (res) => res.json.mock.calls.at(-1)[0].data.factors.find((f) => f.label === 'Goal progress');
         expect(goalFactor(health).detail).toBe('Your goal is behind');
 
-        // Due in a month but needing far more than the 30,000 a month surplus.
+        // Income from before this month is left over and counts: 100,000 due in
+        // a month needs only 10,000 more than the 90,000 already there.
+        await Income.create({ user: user._id, amount: 90_000, category: incCat._id, description: await encrypt('t', dataKey), date: daysAgo(40), isRecurring: false, isPostTax: true });
+        await Goal.collection.updateOne({ _id: behind._id }, { $set: {
+            targetAmount: 100_000, currentAmount: 0, createdAt: new Date(), targetDate: new Date(Date.now() + 30 * DAY), contributions: [],
+        } });
+        const planL = mockRes();
+        await goalCtl.getGoalPlan(mockReq(user, dataKey), planL);
+        expect(planL.json.mock.calls.at(-1)[0].data.goals[0].status).toBe(STATUS.ON_TRACK);
+        const healthL = mockRes();
+        await aiCtl.financialHealthScore(mockReq(user, dataKey), healthL);
+        expect(goalFactor(healthL).detail).toBe('On track on your goal');
+
+        // Due in a month but needing far more than the surplus and what's left over.
         await Goal.collection.updateOne({ _id: behind._id }, { $set: {
             targetAmount: 1_000_000, currentAmount: 0, createdAt: new Date(), targetDate: new Date(Date.now() + 30 * DAY), contributions: [],
         } });

@@ -9,6 +9,8 @@ const {
 } = require('../utils/finance');
 const { computeHealthScore, HEALTH_WINDOW_DAYS } = require('../services/healthScore');
 const { summarizeCashFlow } = require('../services/cashFlow');
+const SavingsEntry = require('../models/SavingsEntry');
+const { getBalance, leftOverFromEarlier } = require('../services/balance');
 
 // Helper: current calendar month, UTC bounds. Matches the convention used
 // by utils/recurring.js so monthly templates anchored at UTC midnight don't
@@ -229,11 +231,16 @@ const financialHealthScore = async (req, res) => {
         }));
         const weeklySpends = weekAgg.map((w) => w.total);
 
-        // The goals plan's own surplus (same window and totals), so the goal
-        // factor gives each goal the verdict the Goals page shows.
+        // The goals plan's own surplus (same window and totals) and leftover
+        // money, so the goal factor gives each goal the Goals page's verdict.
         const { monthlySurplus } = summarizeCashFlow({ income, expenses: expense, windowDays: HEALTH_WINDOW_DAYS });
+        const [allGoals, savingsEntries] = await Promise.all([
+            Goal.find({ user: userId }),            // incl. archived: their history counts
+            SavingsEntry.find({ user: userId }),
+        ]);
+        const leftOver = leftOverFromEarlier(await getBalance(userId, allGoals, savingsEntries, now));
 
-        const result = computeHealthScore({ income, expense, budgets, goals, weeklySpends, monthlySurplus, now: now.getTime() });
+        const result = computeHealthScore({ income, expense, budgets, goals, weeklySpends, monthlySurplus, leftOver, now: now.getTime() });
         res.json({ success: true, data: result });
     } catch (error) {
         console.error('Financial health score error:', error);

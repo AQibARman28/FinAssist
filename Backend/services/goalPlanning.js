@@ -55,14 +55,16 @@ function recentMonthlyRate(contributions, nowMs, windowDays, createdAt) {
 
 // The one verdict for a goal, shared by the goals plan and the health score so
 // the two never disagree (PRODUCT.md › Plan from real money):
-//   Not feasible — what's left needs more each month than the whole surplus;
+//   Not feasible — what's left, after money already left over from earlier
+//                  months, needs more each month than the whole surplus;
 //   At risk      — affordable, but less saved than an even pace would have
 //                  had by yesterday;
 //   On track     — affordable, and on or ahead of that pace.
 // The recent contribution rate doesn't decide it: a goal set yesterday has no
 // rate yet. Without a surplus (none passed), pace alone decides.
 // goal: { targetAmount, currentAmount, targetDate, createdAt }
-function goalVerdict(goal, { monthlySurplus, now } = {}) {
+// leftOver: money from earlier months still in the wallet (balance.leftOverFromEarlier).
+function goalVerdict(goal, { monthlySurplus, leftOver = 0, now } = {}) {
     const nowMs = now ?? Date.now();
     if (goal.targetDate == null) {
         // Undated goals (defensive — the model currently requires a date):
@@ -72,8 +74,9 @@ function goalVerdict(goal, { monthlySurplus, now } = {}) {
     const remaining = Math.max(goal.targetAmount - goal.currentAmount, 0);
     if (remaining <= 0) return STATUS.ON_TRACK; // already met
 
-    const requiredMonthly = remaining / Math.max(monthsUntil(goal.targetDate, nowMs), 0.1);
-    if (monthlySurplus != null && requiredMonthly > monthlySurplus) return STATUS.NOT_FEASIBLE;
+    const fromSurplus = Math.max(remaining - Math.max(leftOver, 0), 0);
+    const neededMonthly = fromSurplus / Math.max(monthsUntil(goal.targetDate, nowMs), 0.1);
+    if (monthlySurplus != null && fromSurplus > 0 && neededMonthly > monthlySurplus) return STATUS.NOT_FEASIBLE;
 
     // Behind once it trails where the pace stood a day ago, so a goal set
     // today isn't behind seconds later for not having its first day's share.
@@ -82,7 +85,7 @@ function goalVerdict(goal, { monthlySurplus, now } = {}) {
 }
 
 // goal: { id, targetAmount, currentAmount, targetDate(Date|string|null), createdAt?, contributions:[{amount,date}] }
-function planGoal(goal, { monthlySurplus, now, windowDays = 90 }) {
+function planGoal(goal, { monthlySurplus, leftOver = 0, now, windowDays = 90 }) {
     const nowMs = now ?? Date.now();
     const remaining = Math.max(goal.targetAmount - goal.currentAmount, 0);
     const dated = goal.targetDate != null;
@@ -103,7 +106,7 @@ function planGoal(goal, { monthlySurplus, now, windowDays = 90 }) {
         ? forecastMonths - monthsUntil(goal.targetDate, nowMs)
         : null;
 
-    const status = goalVerdict(goal, { monthlySurplus, now: nowMs });
+    const status = goalVerdict(goal, { monthlySurplus, leftOver, now: nowMs });
 
     return {
         goalId:            goal.id,
@@ -124,9 +127,9 @@ function planPortfolio(goalPlans, monthlySurplus) {
     };
 }
 
-function planGoals({ goals, monthlySurplus, now, windowDays = 90 }) {
+function planGoals({ goals, monthlySurplus, leftOver = 0, now, windowDays = 90 }) {
     const nowMs = now ?? Date.now();
-    const plans = goals.map((g) => planGoal(g, { monthlySurplus, now: nowMs, windowDays }));
+    const plans = goals.map((g) => planGoal(g, { monthlySurplus, leftOver, now: nowMs, windowDays }));
     return { goals: plans, portfolio: planPortfolio(plans, monthlySurplus) };
 }
 

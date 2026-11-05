@@ -5,12 +5,15 @@ import { CircleAlert, CircleCheck, Minus, TriangleAlert } from "lucide-react";
 import { Card, Empty, Meter, Skeleton, StateNote } from "../ui";
 import { RollingNumber } from "../home/RollingNumber";
 import { LoadError } from "../LoadNotice";
+import { factorState } from "@/lib/healthFactor";
 
 interface Factor {
     label: string;
     score: number | null;
     weight: number;
     detail: string;
+    // The detail names something to fix (lib/healthFactor.ts).
+    attention?: boolean;
 }
 
 // GET /ai/financial-health-score (services/healthScore.js).
@@ -23,9 +26,6 @@ export interface HealthData {
     detractor: { label: string; score: number } | null;
     message: string;
 }
-
-// A factor below this score is the one to work on (as on the home card).
-const WEAK = 50;
 
 function BandNote({ band }: { band: string }) {
     const cls = "text-sm text-zinc-100";
@@ -78,8 +78,9 @@ export function FinancialHealthScore({ health, loading, failed, onRetry, classNa
                     {health.factors.length > 0 && (
                         <ul className="mt-6 pt-5 border-t border-white/[0.07] space-y-4">
                             {health.factors.map((f, i) => {
-                                const counted = f.score !== null;
-                                const weak = counted && (f.score as number) < WEAK;
+                                const state = factorState(f);
+                                const counted = state !== "uncounted";
+                                const weak = state === "attention";
                                 return (
                                     <li key={f.label}>
                                         <div className="flex items-baseline justify-between gap-3 text-[13.5px]">

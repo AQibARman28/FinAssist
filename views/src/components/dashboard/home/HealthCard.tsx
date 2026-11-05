@@ -1,8 +1,9 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { CircleCheck, TriangleAlert } from "lucide-react";
+import { CircleCheck, Minus, TriangleAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { factorState } from "@/lib/healthFactor";
 import { CardLink, Card, StateNote } from "../ui";
 import { RollingNumber } from "./RollingNumber";
 import { LoadError } from "../LoadNotice";
@@ -10,8 +11,11 @@ import { LoadError } from "../LoadNotice";
 export interface HealthFactor {
     label: string;
     weight: number;
-    score: number;
+    // null: no data yet, so the factor isn't counted.
+    score: number | null;
     detail: string;
+    // The detail names something to fix (lib/healthFactor.ts).
+    attention?: boolean;
 }
 
 export interface Health {
@@ -21,9 +25,6 @@ export interface Health {
     message?: string;
     factors?: HealthFactor[];
 }
-
-// A factor below this score is the one to work on.
-const WEAK = 50;
 
 // The financial health score with what moves it: five weighted factors, each
 // with its own bar. The score is rule-based (PRODUCT.md › Claim only what
@@ -54,25 +55,35 @@ export function HealthCard({ health, loading, failed, onRetry, className }: {
                     {health.message && <p className="mt-3 text-sm text-zinc-300 max-w-prose">{health.message}</p>}
                     {!!health.factors?.length && (
                         <ul className="mt-5 space-y-3">
-                            {health.factors.map((f, i) => (
-                                <li key={f.label}>
-                                    <div className="flex items-baseline justify-between gap-3 text-[13.5px]">
-                                        <span className="font-semibold text-white">{f.label}</span>
-                                        <span className="shrink-0 text-xs text-zinc-500">{f.weight}% of score</span>
-                                    </div>
-                                    <div aria-hidden className="mt-2 mb-1.5 h-1 rounded-full bg-plat/[0.12] overflow-hidden">
-                                        <motion.div
-                                            className={cn("h-full rounded-full", f.score < WEAK ? "bg-amber-400" : "bg-plat")}
-                                            style={{ width: `${Math.max(0, Math.min(100, f.score))}%`, originX: 0 }}
-                                            initial={{ scaleX: 0 }} whileInView={{ scaleX: 1 }} viewport={{ once: true }}
-                                            transition={{ duration: 0.8, delay: 0.2 + i * 0.08, ease: [0.16, 1, 0.3, 1] }}
-                                        />
-                                    </div>
-                                    <StateNote tone={f.score < WEAK ? "warn" : "good"} icon={f.score < WEAK ? TriangleAlert : CircleCheck} className="text-zinc-400">
-                                        {f.detail}<span className="sr-only">, scoring {f.score} out of 100</span>
-                                    </StateNote>
-                                </li>
-                            ))}
+                            {health.factors.map((f, i) => {
+                                const state = factorState(f);
+                                const weak = state === "attention";
+                                return (
+                                    <li key={f.label}>
+                                        <div className="flex items-baseline justify-between gap-3 text-[13.5px]">
+                                            <span className="font-semibold text-white">{f.label}</span>
+                                            <span className="shrink-0 text-xs text-zinc-500">{state === "uncounted" ? "Not counted" : `${f.weight}% of score`}</span>
+                                        </div>
+                                        {state === "uncounted" ? (
+                                            <StateNote tone="neutral" icon={Minus} className="mt-1 text-zinc-400">{f.detail}</StateNote>
+                                        ) : (
+                                            <>
+                                                <div aria-hidden className="mt-2 mb-1.5 h-1 rounded-full bg-plat/[0.12] overflow-hidden">
+                                                    <motion.div
+                                                        className={cn("h-full rounded-full", weak ? "bg-amber-400" : "bg-plat")}
+                                                        style={{ width: `${Math.max(0, Math.min(100, f.score ?? 0))}%`, originX: 0 }}
+                                                        initial={{ scaleX: 0 }} whileInView={{ scaleX: 1 }} viewport={{ once: true }}
+                                                        transition={{ duration: 0.8, delay: 0.2 + i * 0.08, ease: [0.16, 1, 0.3, 1] }}
+                                                    />
+                                                </div>
+                                                <StateNote tone={weak ? "warn" : "good"} icon={weak ? TriangleAlert : CircleCheck} className="text-zinc-400">
+                                                    {f.detail}<span className="sr-only">, scoring {f.score} out of 100</span>
+                                                </StateNote>
+                                            </>
+                                        )}
+                                    </li>
+                                );
+                            })}
                         </ul>
                     )}
                     <div className="mt-4"><CardLink href="/dashboard/analytics">See the breakdown</CardLink></div>
