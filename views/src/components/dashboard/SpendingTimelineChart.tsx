@@ -9,6 +9,7 @@ import {
     Calendar, CalendarRange, CalendarDays, CalendarClock, X, Loader2,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { useApi } from "@/lib/useApi";
 import { cn } from "@/lib/utils";
 import { useCurrency } from "@/lib/useCurrency";
 import { flagOutliers } from "@/lib/outliers";
@@ -64,28 +65,20 @@ export function SpendingTimelineChart({ granularity }: { granularity: Granularit
         [currency],
     );
 
-    const [data, setData] = useState<TimelineData | null>(null);
-    const [loading, setLoading] = useState(true);
+    // One cache entry per granularity: switching back and forth is instant.
+    const timeline = useApi<TimelineData>("/analytics/spending-timeline", { granularity });
+    const data = timeline.data ?? null;
+    const loading = timeline.isLoading;
     const [pinned, setPinned] = useState<Bucket | null>(null);
 
-    // On a granularity switch: show the spinner and drop the pinned bucket
-    // (it belongs to the old series). Adjusted during render (React's "store
-    // the previous prop" pattern) instead of synchronously in the fetch effect.
+    // On a granularity switch, drop the pinned bucket (it belongs to the old
+    // series). Adjusted during render (React's "store the previous prop"
+    // pattern) instead of synchronously in an effect.
     const [prevGranularity, setPrevGranularity] = useState(granularity);
     if (granularity !== prevGranularity) {
         setPrevGranularity(granularity);
-        setLoading(true);
         setPinned(null);
     }
-
-    useEffect(() => {
-        let cancelled = false;
-        api.get(`/analytics/spending-timeline?granularity=${granularity}`)
-            .then((res) => { if (!cancelled) setData(res.data?.data ?? null); })
-            .catch((err) => { if (!cancelled) { console.error("spending-timeline fetch failed", err); setData(null); } })
-            .finally(() => { if (!cancelled) setLoading(false); });
-        return () => { cancelled = true; };
-    }, [granularity]);
 
     const rows: ChartRow[] = useMemo(() => {
         const buckets = data?.buckets ?? [];

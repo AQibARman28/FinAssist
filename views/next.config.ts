@@ -26,6 +26,15 @@ const SECURITY_HEADERS = [
 const nextConfig: NextConfig = {
   output: "standalone",
   poweredByHeader: false,
+  experimental: {
+    // Every page is rendered per request (the root layout reads headers() for
+    // the CSP nonce), and Next's default is to refetch a dynamic page from the
+    // server on EVERY navigation. The dashboard pages are client components
+    // whose server output never changes (their data comes from /api through
+    // lib/useApi.ts), so reuse a visited page for 5 minutes instead of
+    // waiting on a server round trip each time.
+    staleTimes: { dynamic: 300 },
+  },
   async headers() {
     return [{ source: "/:path*", headers: SECURITY_HEADERS }];
   },

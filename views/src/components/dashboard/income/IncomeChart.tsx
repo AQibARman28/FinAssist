@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import {
     BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell,
 } from "recharts";
 import { Loader2 } from "lucide-react";
-import { api } from "@/lib/api";
+import { useApi } from "@/lib/useApi";
 import { useCurrency } from "@/lib/useCurrency";
 
 export type IncomeGranularity = "monthly" | "yearly";
@@ -20,26 +20,10 @@ export function IncomeChart({ granularity }: { granularity: IncomeGranularity })
         [currency],
     );
 
-    const [data, setData] = useState<TimelineData | null>(null);
-    const [loading, setLoading] = useState(true);
-
-    // `loading` starts true; on a granularity switch it is turned back on
-    // during render (React's "store the previous prop" pattern) instead of
-    // synchronously inside the fetch effect.
-    const [prevGranularity, setPrevGranularity] = useState(granularity);
-    if (granularity !== prevGranularity) {
-        setPrevGranularity(granularity);
-        setLoading(true);
-    }
-
-    useEffect(() => {
-        let cancelled = false;
-        api.get(`/incomes/timeline?granularity=${granularity}`)
-            .then((res) => { if (!cancelled) setData(res.data?.data ?? null); })
-            .catch((err) => { if (!cancelled) { console.error("income timeline fetch failed", err); setData(null); } })
-            .finally(() => { if (!cancelled) setLoading(false); });
-        return () => { cancelled = true; };
-    }, [granularity]);
+    // One cache entry per granularity: switching back and forth is instant.
+    const timeline = useApi<TimelineData>("/incomes/timeline", { granularity });
+    const data = timeline.data ?? null;
+    const loading = timeline.isLoading;
 
     const rows = data?.buckets ?? [];
     const hasAny = rows.some((b) => b.total > 0);

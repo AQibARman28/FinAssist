@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { api } from "./api";
+import { clearAll as clearApiCache } from "./apiCache";
 
 // SEC-1 Phase 3: tokens no longer live in JS-readable storage. Authentication
 // is carried by httpOnly + SameSite=Strict cookies set by the API. This store
@@ -24,14 +25,20 @@ interface AuthState {
 
 export const useAuthStore = create<AuthState>()(
     persist(
-        (set) => ({
+        (set, get) => ({
             user: null,
-            setUser: (user) => set({ user }),
+            setUser: (user) => {
+                // A different account (or none): drop every cached API
+                // response so nothing from the previous session is shown.
+                if ((user?._id ?? null) !== (get().user?._id ?? null)) clearApiCache();
+                set({ user });
+            },
             logout: async () => {
                 // Best-effort server-side revoke. If the call fails (network, 401
                 // from already-expired access cookie), the server still clears
                 // the cookies via Set-Cookie; we still wipe local state.
                 try { await api.post("/auth/logout"); } catch { /* ignore */ }
+                clearApiCache();
                 set({ user: null });
             },
         }),

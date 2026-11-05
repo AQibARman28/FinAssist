@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { PieChart } from "lucide-react";
-import { api } from "@/lib/api";
+import { useApi } from "@/lib/useApi";
 import { useAuthStore } from "@/lib/store";
 
 interface RatioData {
@@ -16,21 +15,8 @@ export function ExpenseIncomeRatio() {
     const currency = useAuthStore((s) => s.user?.currency) || "USD";
     const fmt = new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 0 });
 
-    const [data, setData] = useState<RatioData | null>(null);
-    const [loading, setLoading] = useState(true);
-
-    useEffect(() => {
-        (async () => {
-            try {
-                const res = await api.get("/analytics/expense-income-ratio");
-                setData(res.data?.data ?? null);
-            } catch (err) {
-                console.error("Failed to fetch ratio", err);
-            } finally {
-                setLoading(false);
-            }
-        })();
-    }, []);
+    const { data: ratio, isLoading: loading } = useApi<RatioData>("/analytics/expense-income-ratio");
+    const data = ratio ?? null;
 
     if (loading) return <div className="h-40 animate-pulse bg-zinc-900/50 rounded-3xl" />;
 

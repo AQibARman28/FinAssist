@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Target, PiggyBank, TrendingUp, Info, Loader2, Trophy, Compass, AlertTriangle, ArrowRight } from "lucide-react";
-import { api } from "@/lib/api";
+import { useApi } from "@/lib/useApi";
 import { useCurrency } from "@/lib/useCurrency";
 import { GoalForm, type GoalPeriod } from "@/components/dashboard/goals/GoalForm";
 import { GoalCard, type Goal } from "@/components/dashboard/goals/GoalCard";
@@ -12,58 +12,32 @@ import type { GoalPlanRow, PlanData } from "@/components/dashboard/goals/goalPla
 
 type View = "active" | "plan" | "completed";
 
-// Data tagged with the request it answers, so "loading" is derived (the data on
-// hand belongs to another view/period) instead of set synchronously in effects.
-interface Tagged<T> { key: string; value: T; failed: boolean }
-
 export default function GoalsPage() {
     const { format: fmt } = useCurrency();
     const [period, setPeriod] = useState<GoalPeriod>("monthly");
     const [view, setView] = useState<View>("active");
-    const [refreshTrigger, setRefreshTrigger] = useState(0);
-    const [balanceState, setBalanceState] = useState<Tagged<BalanceData | null> | null>(null);
-    const [goalsState, setGoalsState] = useState<Tagged<Goal[]> | null>(null);
-    const [planState, setPlanState] = useState<Tagged<PlanData | null> | null>(null);
-
-    const handleRefresh = useCallback(() => setRefreshTrigger((p) => p + 1), []);
-
+    // Cached reads (lib/useApi.ts). Creating, contributing to, allocating or
+    // deleting a goal is a write, which refreshes all three by itself.
     // The single continuous balance + its monthly/yearly classification.
-    useEffect(() => {
-        let cancelled = false;
-        api.get("/analytics/balance")
-            .then((res) => { if (!cancelled) setBalanceState({ key: "balance", value: res.data?.data ?? null, failed: false }); })
-            .catch((err) => { if (!cancelled) { console.error(err); setBalanceState({ key: "balance", value: null, failed: true }); } });
-        return () => { cancelled = true; };
-    }, [refreshTrigger]);
-
+    const balanceQ = useApi<BalanceData>("/analytics/balance");
     // Cash-flow-aware plan for every active goal (feasibility + forecast).
-    // Re-fetched whenever goals change (create / contribute / allocate / delete).
-    useEffect(() => {
-        let cancelled = false;
-        api.get("/goals/plan")
-            .then((res) => { if (!cancelled) setPlanState({ key: "plan", value: res.data?.data ?? null, failed: false }); })
-            .catch((err) => { if (!cancelled) { console.error(err); setPlanState({ key: "plan", value: null, failed: true }); } });
-        return () => { cancelled = true; };
-    }, [refreshTrigger]);
+    const planQ = useApi<PlanData>("/goals/plan");
+    // Goals list: active is period-scoped; completed lists every accomplished
+    // goal; the plan view renders from /goals/plan instead.
+    const goalsQ = useApi<Goal[]>(
+        view === "plan" ? null : "/goals",
+        view === "completed" ? { status: "Completed" } : { status: "Active", period },
+    );
+    // Children call this after a change; it joins the refetch the write
+    // already started rather than sending a second request.
+    const handleRefresh = () => { void balanceQ.refresh(); void planQ.refresh(); void goalsQ.refresh(); };
 
-    // Goals list: active is period-scoped; completed lists every accomplished goal.
-    const goalsKey = view === "completed" ? "completed" : `active|${period}`;
-    useEffect(() => {
-        if (view === "plan") return; // plan view renders from /goals/plan
-        let cancelled = false;
-        const key = view === "completed" ? "completed" : `active|${period}`;
-        const params = view === "completed" ? { status: "Completed" } : { status: "Active", period };
-        api.get("/goals", { params })
-            .then((res) => { if (!cancelled) setGoalsState({ key, value: res.data?.data ?? [], failed: false }); })
-            .catch((err) => { if (!cancelled) { console.error(err); setGoalsState({ key, value: [], failed: true }); } });
-        return () => { cancelled = true; };
-    }, [period, view, refreshTrigger]);
-
-    const balance = balanceState?.value ?? null;
-    const loadingBalance = balanceState === null;
-    const loadingGoals = goalsState?.key !== goalsKey;
-    const goals = goalsState && goalsState.key === goalsKey ? goalsState.value : [];
-    const plan = planState?.value ?? null;
+    const balance = balanceQ.data ?? null;
+    const loadingBalance = balanceQ.isLoading;
+    const loadingGoals = goalsQ.isLoading;
+    const goalRows = goalsQ.data;
+    const goals = useMemo(() => goalRows ?? [], [goalRows]);
+    const plan = planQ.data ?? null;
     const planById = useMemo(() => new Map<string, GoalPlanRow>((plan?.goals ?? []).map((g) => [g.goalId, g])), [plan]);
 
     const breakdown = balance ? balance[period] : null;
@@ -108,7 +82,7 @@ export default function GoalsPage() {
             {view === "plan" ? (
                 <SavingsPlan
                     plan={plan}
-                    failed={!!planState?.failed}
+                    failed={planQ.error !== undefined}
                     wallet={balance ? balance.available : null}
                     onAllocated={handleRefresh}
                 />

@@ -9,9 +9,11 @@ interface StatCardProps {
     icon: LucideIcon;
     className?: string;
     gradient?: boolean;
+    // First load of the value: show a placeholder bar instead of "$0".
+    loading?: boolean;
 }
 
-export function StatCard({ title, value, trend, trendUp, icon: Icon, className, gradient }: StatCardProps) {
+export function StatCard({ title, value, trend, trendUp, icon: Icon, className, gradient, loading }: StatCardProps) {
     return (
         <div className={cn("p-4 md:p-5 rounded-2xl bg-zinc-900/50 border border-white/5 backdrop-blur-sm relative overflow-hidden group hover:border-purple-500/20 transition-colors", className)}>
             {gradient && (
@@ -31,9 +33,13 @@ export function StatCard({ title, value, trend, trendUp, icon: Icon, className, 
 
             <div>
                 <h3 className="text-zinc-500 text-xs font-medium mb-0.5">{title}</h3>
-                <p className={cn("text-xl md:text-2xl font-bold tracking-tight tabular-nums truncate", gradient ? "text-transparent bg-clip-text bg-gradient-to-r from-white to-zinc-400" : "text-white")}>
-                    {value}
-                </p>
+                {loading ? (
+                    <div aria-hidden className="h-7 md:h-8 w-24 rounded-lg bg-zinc-800/80 animate-pulse" />
+                ) : (
+                    <p className={cn("text-xl md:text-2xl font-bold tracking-tight tabular-nums truncate", gradient ? "text-transparent bg-clip-text bg-gradient-to-r from-white to-zinc-400" : "text-white")}>
+                        {value}
+                    </p>
+                )}
             </div>
         </div>
     );

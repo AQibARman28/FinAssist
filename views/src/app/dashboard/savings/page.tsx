@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { format } from "date-fns";
 import { PiggyBank, Wallet, ArrowDownToLine, ArrowUpFromLine, Loader2, Info } from "lucide-react";
 import { api } from "@/lib/api";
+import { useApi } from "@/lib/useApi";
 import { useCurrency } from "@/lib/useCurrency";
 import { cn } from "@/lib/utils";
 
@@ -23,29 +24,15 @@ interface SavingsData {
 
 export default function SavingsPage() {
     const { format: fmt } = useCurrency();
-    const [data, setData] = useState<SavingsData | null>(null);
-    const [loading, setLoading] = useState(true);
+    // Cached; a deposit or withdrawal is a write, which refreshes it in the
+    // background — the page no longer blanks to a spinner after each one.
+    const savings = useApi<SavingsData>("/savings");
+    const data = savings.data ?? null;
+    const loading = savings.isLoading;
     const [mode, setMode] = useState<"deposit" | "withdraw">("deposit");
     const [amount, setAmount] = useState("");
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [tick, setTick] = useState(0);
-
-    // `loading` starts true for the first fetch; a refresh flips it back on in
-    // the same update that triggers the refetch.
-    const refresh = useCallback(() => {
-        setLoading(true);
-        setTick((t) => t + 1);
-    }, []);
-
-    useEffect(() => {
-        let cancelled = false;
-        api.get("/savings")
-            .then((res) => { if (!cancelled) setData(res.data?.data ?? null); })
-            .catch((err) => { if (!cancelled) { console.error(err); setData(null); } })
-            .finally(() => { if (!cancelled) setLoading(false); });
-        return () => { cancelled = true; };
-    }, [tick]);
 
     const submit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -56,7 +43,6 @@ export default function SavingsPage() {
         try {
             await api.post(`/savings/${mode}`, { amount: value });
             setAmount("");
-            refresh();
         } catch (err) {
             const e2 = err as { response?: { data?: { message?: string } } };
             setError(e2.response?.data?.message || `Couldn't ${mode}.`);

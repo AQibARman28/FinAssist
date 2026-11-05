@@ -1,56 +1,49 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Loader2 } from "lucide-react";
-import { api } from "@/lib/api";
+import { useApi } from "@/lib/useApi";
+import { useCategories } from "@/lib/useCategories";
 import { ExpenseRow, type ExpenseItem, type ExpenseCategory } from "./ExpenseRow";
 
 interface ExpenseListProps {
-    refreshTrigger: number;
-    /** Called after an expense is edited or deleted so the page can refresh totals. */
+    /** Called after an expense is edited or deleted. */
     onChange?: () => void;
 }
 
-export function ExpenseList({ refreshTrigger, onChange }: ExpenseListProps) {
-    const [expenses, setExpenses]   = useState<ExpenseItem[]>([]);
-    const [catMap, setCatMap]       = useState<Record<string, ExpenseCategory>>({});
-    const [isLoading, setIsLoading] = useState(true);
+export function ExpenseList({ onChange }: ExpenseListProps) {
+    // Categories load alongside the expenses so the rows render with
+    // name/icon/color right away — they show ObjectId-ish blanks otherwise.
+    const categories = useCategories<ExpenseCategory & { isArchived?: boolean }>("expense");
+    const list = useApi<ExpenseItem[]>("/expenses", { limit: 100 });
+    const catMap = useMemo(() => {
+        const map: Record<string, ExpenseCategory> = {};
+        for (const c of categories.all) map[c._id] = c;
+        return map;
+    }, [categories.all]);
 
-    useEffect(() => {
-        let cancelled = false;
-        // Pull categories alongside the expenses so the rows render with
-        // name/icon/color right away — they show ObjectId-ish blanks otherwise.
-        Promise.all([
-            api.get("/categories?type=expense&includeArchived=true"),
-            api.get("/expenses?limit=100"),
-        ])
-            .then(([catsRes, expRes]) => {
-                if (cancelled) return;
-                const map: Record<string, ExpenseCategory> = {};
-                for (const c of catsRes.data?.data ?? []) map[c._id] = c;
-                setCatMap(map);
-                setExpenses(expRes.data?.data ?? []);
-            })
-            .catch((err) => { if (!cancelled) console.error(err); })
-            .finally(() => { if (!cancelled) setIsLoading(false); });
-        return () => { cancelled = true; };
-    }, [refreshTrigger]);
+    // An edit or delete shows at once from the server's reply; the refetch
+    // that every write triggers (lib/api.ts) then replaces this overlay.
+    const [edited, setEdited] = useState<{ base: ExpenseItem[] | undefined; items: ExpenseItem[] } | null>(null);
+    const expenses = edited && edited.base === list.data ? edited.items : (list.data ?? []);
 
     const handleUpdated = (updated: ExpenseItem) => {
-        setExpenses((prev) => prev.map((ex) => (ex._id === updated._id ? updated : ex)));
+        setEdited({ base: list.data, items: expenses.map((ex) => (ex._id === updated._id ? updated : ex)) });
         onChange?.();
     };
 
     const handleDeleted = (id: string) => {
-        setExpenses((prev) => prev.filter((ex) => ex._id !== id));
+        setEdited({ base: list.data, items: expenses.filter((ex) => ex._id !== id) });
         onChange?.();
     };
 
-    if (isLoading) {
+    if (list.isLoading || categories.isLoading) {
         return (
-            <div className="p-6 rounded-3xl bg-zinc-900/50 border border-white/5 min-h-[200px] flex items-center justify-center">
-                <Loader2 className="w-5 h-5 animate-spin text-zinc-500" />
+            <div className="p-4 sm:p-6 rounded-3xl bg-zinc-900/50 border border-white/5 min-h-[500px]" aria-hidden>
+                <div className="h-6 w-44 mb-6 rounded-lg bg-white/5 animate-pulse" />
+                <div className="space-y-2">
+                    {[0, 1, 2, 3, 4, 5].map((i) => <div key={i} className="h-16 rounded-2xl bg-white/5 animate-pulse" />)}
+                </div>
             </div>
         );
     }

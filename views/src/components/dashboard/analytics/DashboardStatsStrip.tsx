@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { TrendingUp, TrendingDown, PiggyBank, ArrowUpRight, ArrowDownRight, Minus, ChevronDown, Loader2 } from "lucide-react";
 import { format } from "date-fns";
 import { api } from "@/lib/api";
+import { useApi } from "@/lib/useApi";
 import { useAuthStore } from "@/lib/store";
 import { StatTile } from "./StatTile";
 import { iconFor, type IconName } from "@/lib/categoryIcons";
@@ -42,26 +43,13 @@ export function DashboardStatsStrip() {
     const fmtMoney = new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 0 });
     const fmtPct   = (n: number) => `${(n * 100).toFixed(n > -0.1 && n < 0.1 ? 1 : 0)}%`;
 
-    const [data, setData]       = useState<Stats | null>(null);
-    const [loading, setLoading] = useState(true);
+    const { data: stats, isLoading: loading } = useApi<Stats>("/analytics/dashboard-stats");
+    const data = stats ?? null;
 
     // Click-to-expand: which category is open, plus a per-category cache of its
     // transactions for the current month (same window dashboard-stats uses).
     const [expandedId, setExpandedId] = useState<string | null>(null);
     const [txCache, setTxCache] = useState<Record<string, { loading: boolean; items: CategoryTx[] }>>({});
-
-    useEffect(() => {
-        (async () => {
-            try {
-                const res = await api.get("/analytics/dashboard-stats");
-                setData(res.data?.data ?? null);
-            } catch (err) {
-                console.error("Failed to fetch dashboard stats", err);
-            } finally {
-                setLoading(false);
-            }
-        })();
-    }, []);
 
     const toggleCategory = async (categoryId: string) => {
         if (expandedId === categoryId) { setExpandedId(null); return; }

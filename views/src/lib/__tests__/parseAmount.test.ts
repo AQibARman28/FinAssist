@@ -43,6 +43,33 @@ describe("parseAmount — math expressions", () => {
     });
 });
 
+describe("parseAmount — arithmetic edge cases", () => {
+    it("follows operator precedence, left to right", () => {
+        assert.equal(value("2+3*4"), 14);
+        assert.equal(value("100-20-30"), 50);
+        assert.equal(value("100/5/2"), 10);
+        assert.equal(value("2*(3+4)*2"), 28);
+    });
+    it("accepts unary signs and bare decimals", () => {
+        assert.equal(value("--5"), 5);
+        assert.equal(value("+5"), 5);
+        assert.equal(value("10*-2+30"), 10);
+        assert.equal(value(".5+1"), 1.5);
+    });
+    it("multiplies implicitly next to parentheses", () => {
+        assert.equal(value("2(3)"), 6);
+        assert.equal(value("(1+2)(3)"), 9);
+    });
+    const invalid = ["1.2.3", "100/0", "()", "(1+2", "1+2)", "2 3", "1++", "5*"];
+    for (const input of invalid) {
+        it(`rejects ${JSON.stringify(input)} as invalid`, () => {
+            const r = parseAmount(input);
+            assert.equal(r.ok, false);
+            if (!r.ok) assert.equal(r.reason, "invalid");
+        });
+    }
+});
+
 describe("parseAmount — currency symbols", () => {
     it("strips symbols anywhere", () => {
         assert.equal(value("৳350"), 350);

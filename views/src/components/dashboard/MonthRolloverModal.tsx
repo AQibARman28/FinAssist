@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { CalendarClock, ArrowRight, PiggyBank, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
+import { useApi } from "@/lib/useApi";
 import { useCurrency } from "@/lib/useCurrency";
 import { cn } from "@/lib/utils";
 import { apiErrorCode, apiErrorMessage, apiErrorStatus } from "@/lib/apiError";
@@ -19,30 +20,25 @@ interface RolloverStatus {
 // forward, or move it to Savings. A negative (deficit) only carries forward.
 export function MonthRolloverModal({ onDone }: { onDone?: () => void }) {
     const { format: fmt } = useCurrency();
-    const [status, setStatus] = useState<RolloverStatus | null>(null);
+    const { data: status } = useApi<RolloverStatus>("/wallet/rollover-status");
+    // Closed once a choice lands (the refetched status agrees a moment later)
+    // or the user picks "Decide later" — it reappears on the next visit.
+    const [closed, setClosed] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
-
-    useEffect(() => {
-        let cancelled = false;
-        api.get("/wallet/rollover-status")
-            .then((res) => { if (!cancelled) setStatus(res.data?.data ?? null); })
-            .catch(() => { if (!cancelled) setStatus(null); });
-        return () => { cancelled = true; };
-    }, []);
 
     const choose = async (action: "carry" | "save") => {
         setSubmitting(true);
         setError(null);
         try {
             await api.post("/wallet/rollover", { action });
-            setStatus({ pending: false });
+            setClosed(true);
             onDone?.();
         } catch (err) {
             if (apiErrorCode(err) === "ROLLOVER_ALREADY_HANDLED") {
                 // Already handled for this month (another tab/device, or a
                 // double tap) — nothing left to decide: close and refresh.
-                setStatus({ pending: false });
+                setClosed(true);
                 onDone?.();
                 return;
             }
@@ -56,7 +52,7 @@ export function MonthRolloverModal({ onDone }: { onDone?: () => void }) {
         }
     };
 
-    const open = !!status?.pending;
+    const open = !!status?.pending && !closed;
     const closing = status?.priorClosing ?? 0;
     const positive = closing > 0;
 
@@ -125,7 +121,7 @@ export function MonthRolloverModal({ onDone }: { onDone?: () => void }) {
                                 <p className="text-xs text-red-400">{error}</p>
                                 {/* Never trap the user behind the prompt; it reappears next visit. */}
                                 <button
-                                    onClick={() => setStatus({ pending: false })}
+                                    onClick={() => setClosed(true)}
                                     className="mt-2 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-200 rounded-lg hover:bg-white/5 transition-colors"
                                 >
                                     Decide later

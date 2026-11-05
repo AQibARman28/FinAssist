@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Lightbulb, ChevronRight, ChevronLeft } from "lucide-react";
-import { api } from "@/lib/api";
+import { useApi } from "@/lib/useApi";
 
 interface Tip {
     category: string;
@@ -11,23 +11,11 @@ interface Tip {
 }
 
 export function SmartTipsWidget() {
-    const [tips, setTips] = useState<Tip[]>([]);
-    const [currentIndex, setCurrentIndex] = useState(0);
-    const [loading, setLoading] = useState(true);
-
-    useEffect(() => {
-        const fetchTips = async () => {
-            try {
-                const res = await api.get("/ai/smart-tips");
-                setTips(res.data.data);
-            } catch (err) {
-                console.error("Failed to fetch smart tips", err);
-            } finally {
-                setLoading(false);
-            }
-        };
-        fetchTips();
-    }, []);
+    const { data, isLoading: loading } = useApi<Tip[]>("/ai/smart-tips");
+    const tips = data ?? [];
+    const [tipIndex, setCurrentIndex] = useState(0);
+    // A background refresh can return fewer tips than the index points past.
+    const currentIndex = tips.length ? tipIndex % tips.length : 0;
 
     const nextTip = () => {
         setCurrentIndex((prev) => (prev + 1) % tips.length);

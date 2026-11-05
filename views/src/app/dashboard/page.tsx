@@ -1,24 +1,22 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import { StatCard } from "@/components/dashboard/StatCard";
-import { DashboardChartPanel } from "@/components/dashboard/DashboardChartPanel";
 import { RecentTransactions, type Transaction } from "@/components/dashboard/RecentTransactions";
 import { MonthRolloverModal } from "@/components/dashboard/MonthRolloverModal";
-import { Wallet, CreditCard, TrendingUp, PiggyBank, Target, Bell, Loader2 } from "lucide-react";
-import { api } from "@/lib/api";
+import { SkeletonBlock } from "@/components/dashboard/PageSkeleton";
+import { Wallet, CreditCard, TrendingUp, PiggyBank, Target, Bell } from "lucide-react";
+import { useApi } from "@/lib/useApi";
+import { reloadOnChunkError } from "@/lib/reloadOnChunkError";
 import { useAuthStore } from "@/lib/store";
 
-interface DashboardStats {
-    wallet:             number;
-    savings:            number;
-    totalSaved:         number;
-    monthlyIncome:      number;
-    monthlySpend:       number;
-    recentTransactions: Transaction[];
-    recentActivityCount: number;
-    chartData:          { name: string; amount: number; color?: string }[];
-}
+// The chart panel brings recharts (the app's biggest library after this page's
+// own code). Loaded separately so the numbers above it never wait on it.
+const DashboardChartPanel = dynamic(
+    reloadOnChunkError(() => import("@/components/dashboard/DashboardChartPanel").then((m) => m.DashboardChartPanel)),
+    { loading: () => <SkeletonBlock className="h-[26rem] rounded-3xl" /> },
+);
 
 // One row of GET /expenses/summary/:year/:month (only the fields used here).
 interface SummaryRow {
@@ -36,102 +34,55 @@ function currencyFormatter(code = "USD"): Intl.NumberFormat {
     });
 }
 
+// The current UTC month as request params. ISO strings, not Dates, so the
+// cache key stays the same for the whole month.
+function currentMonthUTC() {
+    const now = new Date();
+    const year  = now.getUTCFullYear();
+    const month = now.getUTCMonth();
+    return {
+        year,
+        month,
+        start: new Date(Date.UTC(year, month,     1, 0, 0, 0, 0)).toISOString(),
+        end:   new Date(Date.UTC(year, month + 1, 0, 23, 59, 59, 999)).toISOString(),
+    };
+}
+
 export default function DashboardPage() {
-    const { user } = useAuthStore();
-    const fmt = currencyFormatter(user?.currency || "USD");
+    const user = useAuthStore((s) => s.user);
+    const fmt = useMemo(() => currencyFormatter(user?.currency || "USD"), [user?.currency]);
+    const [{ year, month, start, end }] = useState(currentMonthUTC);
 
-    const [loading, setLoading] = useState(true);
-    const [refreshTrigger, setRefreshTrigger] = useState(0);
-    const [stats, setStats] = useState<DashboardStats>({
-        wallet:             0,
-        savings:            0,
-        totalSaved:         0,
-        monthlyIncome:      0,
-        monthlySpend:       0,
-        recentTransactions: [],
-        recentActivityCount: 0,
-        chartData:          [],
-    });
+    // Each read is independent and cached (lib/useApi.ts): a revisit renders
+    // at once, one slow endpoint doesn't hold up the rest, and a failed one
+    // just shows zero. The rollover modal's write refreshes them itself.
+    const summary = useApi<{ totalSpent?: number; summary?: SummaryRow[] }>(`/expenses/summary/${year}/${month + 1}`);
+    const recent  = useApi<Transaction[]>("/expenses", { limit: 5 });
+    const goals   = useApi<{ totalSavedAmount?: number }>("/goals/dashboard");
+    const incomes = useApi<{ amount: number }[]>("/incomes", { startDate: start, endDate: end, limit: 100 });
+    const balance = useApi<{ wallet?: number; available?: number; savingsBalance?: number }>("/analytics/balance");
 
-    // Loads on mount and again after the month-rollover modal finishes
-    // (refreshTrigger). State is only written once the requests settle.
-    useEffect(() => {
-        const fetchDashboardData = async () => {
-            try {
-                const now = new Date();
-                const year  = now.getUTCFullYear();
-                const month = now.getUTCMonth();
-                const monthStart = new Date(Date.UTC(year, month,     1, 0, 0, 0, 0));
-                const monthEnd   = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59, 999));
-                const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-
-                // Run in parallel; one failure doesn't break the others.
-                const [expenseSummaryRes, recentTxRes, last7Res, goalsRes, incomeListRes, balanceRes] = await Promise.allSettled([
-                    api.get(`/expenses/summary/${year}/${month + 1}`),
-                    api.get("/expenses", { params: { limit: 5 } }),
-                    api.get("/expenses", {
-                        params: { startDate: sevenDaysAgo.toISOString(), endDate: now.toISOString(), limit: 1 },
-                    }),
-                    api.get("/goals/dashboard"),
-                    api.get("/incomes", {
-                        params: { startDate: monthStart.toISOString(), endDate: monthEnd.toISOString(), limit: 100 },
-                    }),
-                    api.get("/analytics/balance"),
-                ]);
-
-                const monthlySpend = expenseSummaryRes.status === "fulfilled"
-                    ? (expenseSummaryRes.value.data?.data?.totalSpent ?? 0)
-                    : 0;
-                const chartData = expenseSummaryRes.status === "fulfilled"
-                    ? (expenseSummaryRes.value.data?.data?.summary ?? []).map((it: SummaryRow) => ({
-                        name: it.category, amount: it.amount, color: it.categoryColor,
-                    }))
-                    : [];
-
-                const recentTransactions = recentTxRes.status === "fulfilled"
-                    ? (recentTxRes.value.data?.data ?? []).slice(0, 5)
-                    : [];
-
-                // pagination.total is the real count in the date window —
-                // far more useful than "5 txns" no matter what.
-                const recentActivityCount = last7Res.status === "fulfilled"
-                    ? (last7Res.value.data?.pagination?.total ?? 0)
-                    : 0;
-
-                const totalSaved = goalsRes.status === "fulfilled"
-                    ? (goalsRes.value.data?.data?.totalSavedAmount ?? 0)
-                    : 0;
-
-                const monthlyIncome = incomeListRes.status === "fulfilled"
-                    ? (incomeListRes.value.data?.data ?? []).reduce(
-                        (sum: number, inc: { amount: number }) => sum + (inc.amount || 0), 0,
-                    )
-                    : 0;
-
-                const wallet = balanceRes.status === "fulfilled"
-                    ? (balanceRes.value.data?.data?.wallet ?? balanceRes.value.data?.data?.available ?? 0)
-                    : 0;
-                const savings = balanceRes.status === "fulfilled"
-                    ? (balanceRes.value.data?.data?.savingsBalance ?? 0)
-                    : 0;
-
-                setStats({ wallet, savings, totalSaved, monthlyIncome, monthlySpend, recentTransactions, recentActivityCount, chartData });
-            } catch (err) {
-                console.error("Failed to load dashboard data", err);
-            } finally {
-                setLoading(false);
-            }
-        };
-        fetchDashboardData();
-    }, [refreshTrigger]);
-
-    if (loading) {
-        return <div className="flex h-full items-center justify-center p-20"><Loader2 className="w-8 h-8 animate-spin text-purple-500" /></div>;
-    }
+    const chartData = useMemo(
+        () => (summary.data?.summary ?? []).map((it) => ({ name: it.category, amount: it.amount, color: it.categoryColor })),
+        [summary.data],
+    );
+    const monthlyIncome = useMemo(
+        () => (incomes.data ?? []).reduce((sum, inc) => sum + (inc.amount || 0), 0),
+        [incomes.data],
+    );
+    const stats = {
+        wallet:             balance.data?.wallet ?? balance.data?.available ?? 0,
+        savings:            balance.data?.savingsBalance ?? 0,
+        totalSaved:         goals.data?.totalSavedAmount ?? 0,
+        monthlyIncome,
+        monthlySpend:       summary.data?.totalSpent ?? 0,
+        recentTransactions: (recent.data ?? []).slice(0, 5),
+        chartData,
+    };
 
     return (
         <div className="p-4 md:p-6 space-y-5 md:space-y-6 max-w-7xl mx-auto">
-            <MonthRolloverModal onDone={() => setRefreshTrigger((t) => t + 1)} />
+            <MonthRolloverModal />
 
             <div className="flex justify-between items-center mb-2 md:mb-4">
                 <div>
@@ -150,7 +101,9 @@ export default function DashboardPage() {
                     <span className="text-xs uppercase tracking-wider text-zinc-400">Wallet · spendable now</span>
                     <Wallet className="w-5 h-5 text-purple-400" />
                 </div>
-                <div className="text-3xl md:text-4xl font-bold tabular-nums text-white mt-2">{fmt.format(stats.wallet)}</div>
+                {balance.isLoading
+                    ? <div aria-hidden className="h-9 md:h-10 w-40 mt-2 rounded-lg bg-white/5 animate-pulse" />
+                    : <div className="text-3xl md:text-4xl font-bold tabular-nums text-white mt-2">{fmt.format(stats.wallet)}</div>}
                 <p className="text-xs text-zinc-500 mt-1">Carries forward each month · income − expenses − savings</p>
             </div>
 
@@ -159,6 +112,7 @@ export default function DashboardPage() {
                 <StatCard
                     title="Savings"
                     value={fmt.format(stats.savings)}
+                    loading={balance.isLoading}
                     trend="Set aside"
                     trendUp={true}
                     icon={PiggyBank}
@@ -167,12 +121,14 @@ export default function DashboardPage() {
                 <StatCard
                     title="In Goals"
                     value={fmt.format(stats.totalSaved)}
+                    loading={goals.isLoading}
                     icon={Target}
                     className="bg-gradient-to-br from-yellow-900/15 to-black border-yellow-500/15"
                 />
                 <StatCard
                     title="Income (mo)"
                     value={fmt.format(stats.monthlyIncome)}
+                    loading={incomes.isLoading}
                     trend="This Month"
                     trendUp={true}
                     icon={TrendingUp}
@@ -180,6 +136,7 @@ export default function DashboardPage() {
                 <StatCard
                     title="Spend (mo)"
                     value={fmt.format(stats.monthlySpend)}
+                    loading={summary.isLoading}
                     trend="This Month"
                     trendUp={false}
                     icon={CreditCard}
@@ -188,14 +145,22 @@ export default function DashboardPage() {
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6 h-full">
                 <div className="lg:col-span-2">
-                    <DashboardChartPanel data={stats.chartData} />
+                    {summary.isLoading
+                        ? <SkeletonBlock className="h-[26rem] rounded-3xl" />
+                        : <DashboardChartPanel data={stats.chartData} />}
                 </div>
 
                 <div className="lg:col-span-1 p-6 rounded-3xl bg-zinc-900/50 border border-white/5">
                     <div className="flex justify-between items-center mb-6">
                         <h2 className="text-lg font-semibold text-white">Recent Transactions</h2>
                     </div>
-                    <RecentTransactions transactions={stats.recentTransactions} />
+                    {recent.isLoading ? (
+                        <div className="space-y-3" aria-hidden>
+                            {[0, 1, 2, 3, 4].map((i) => <div key={i} className="h-12 rounded-xl bg-white/5 animate-pulse" />)}
+                        </div>
+                    ) : (
+                        <RecentTransactions transactions={stats.recentTransactions} />
+                    )}
                 </div>
             </div>
         </div>

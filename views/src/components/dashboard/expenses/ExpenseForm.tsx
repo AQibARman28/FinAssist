@@ -9,7 +9,7 @@ import { useCurrency } from "@/lib/useCurrency";
 import { parseAmount } from "@/lib/parseAmount";
 
 interface ExpenseFormProps {
-    onAdd: () => void;
+    onAdd?: () => void;
 }
 
 const AMOUNT_REASON: Record<string, string> = {
@@ -64,7 +64,7 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
                 ...(formData.note ? { note: formData.note } : {}),
             });
             setFormData({ ...formData, title: "", amount: "", note: "" });
-            onAdd();
+            onAdd?.();
         } catch (err: unknown) {
             const errs = apiFieldErrors(err);
             if (errs.category) setCategoryError(errs.category);

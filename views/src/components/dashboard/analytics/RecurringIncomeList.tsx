@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { Repeat } from "lucide-react";
-import { api } from "@/lib/api";
+import { useApi } from "@/lib/useApi";
 import { useAuthStore } from "@/lib/store";
 import { iconFor, type IconName } from "@/lib/categoryIcons";
 
@@ -22,23 +21,9 @@ export function RecurringIncomeList() {
     const currency = useAuthStore((s) => s.user?.currency) || "USD";
     const fmt = new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 0 });
 
-    const [items, setItems] = useState<Item[]>([]);
-    const [monthlyTotal, setMonthlyTotal] = useState(0);
-    const [loading, setLoading] = useState(true);
-
-    useEffect(() => {
-        (async () => {
-            try {
-                const res = await api.get("/analytics/recurring-income");
-                setItems(res.data?.data?.items ?? []);
-                setMonthlyTotal(res.data?.data?.monthlyTotal ?? 0);
-            } catch (err) {
-                console.error("Failed to fetch recurring income", err);
-            } finally {
-                setLoading(false);
-            }
-        })();
-    }, []);
+    const { data, isLoading: loading } = useApi<{ items?: Item[]; monthlyTotal?: number }>("/analytics/recurring-income");
+    const items = data?.items ?? [];
+    const monthlyTotal = data?.monthlyTotal ?? 0;
 
     if (loading) return <div className="h-64 animate-pulse bg-zinc-900/50 rounded-3xl" />;
 

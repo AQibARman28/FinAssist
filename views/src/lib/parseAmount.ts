@@ -1,5 +1,3 @@
-import { create, all, type MathJsInstance } from "mathjs";
-
 // Smart amount parser — turns user input ("1.2k", "4*250", "৳350", "12.50+8.99")
 // into a positive number. Shared by the expense form and (Phase 2) quick-add.
 //
@@ -7,8 +5,12 @@ import { create, all, type MathJsInstance } from "mathjs";
 //   1. A character whitelist applied AFTER preprocessing — only digits and the
 //      arithmetic operators survive, so no identifier/function name can reach
 //      the evaluator (rejects `process.exit()`, `1; alert(1)`, `1+console.log`).
-//   2. A mathjs instance with import/parse/evaluate/etc. disabled, per the
-//      "limitedEvaluate" pattern in the mathjs docs (belt-and-suspenders).
+//   2. The evaluator below only knows numbers, + - * /, unary signs and
+//      parentheses — there is nothing else for an input to reach.
+//
+// It replaces mathjs, which put ~170 kB (gzipped) of JavaScript on every
+// dashboard page (the quick-add bubble lives in the shared layout) to do
+// four-function arithmetic.
 
 export type AmountParseResult =
     | { ok: true; value: number; display: string; isExpression: boolean }
@@ -16,27 +18,74 @@ export type AmountParseResult =
 
 const MAX_AMOUNT = 1e12;
 
-// ── Locked-down mathjs instance ─────────────────────────────────────────────
-const math: MathJsInstance = create(all, {});
-// Capture the real evaluate BEFORE the override below — overriding the
-// `evaluate` import replaces math.evaluate itself, so calling it afterwards
-// would hit the disabled stub. This is the mathjs-docs limitedEvaluate pattern.
-const limitedEvaluate = math.evaluate;
-const _disabled = () => {
-    throw new Error("disabled");
-};
-math.import(
-    {
-        import: _disabled,
-        createUnit: _disabled,
-        reviver: _disabled,
-        evaluate: _disabled,
-        parse: _disabled,
-        simplify: _disabled,
-        derivative: _disabled,
-    },
-    { override: true },
-);
+// ── Arithmetic evaluator ────────────────────────────────────────────────────
+//   expr   := term (("+" | "-") term)*
+//   term   := unary (("*" | "/") unary | <implicit ×> "(" expr ")")*
+//   unary  := ("+" | "-") unary | primary
+//   primary:= number | "(" expr ")"
+// Implicit multiplication ("2(3)", "(1+2)(3)") matches what mathjs accepted.
+const TOKEN = /\s*(\d+(?:\.\d*)?|\.\d+|[+\-*/()])/y;
+
+function tokenize(src: string): string[] {
+    const tokens: string[] = [];
+    TOKEN.lastIndex = 0;
+    while (TOKEN.lastIndex < src.length) {
+        const start = TOKEN.lastIndex;
+        const m = TOKEN.exec(src);
+        if (!m) {
+            if (src.slice(start).trim() === "") break;   // trailing whitespace
+            throw new Error("unexpected character");
+        }
+        tokens.push(m[1]);
+    }
+    return tokens;
+}
+
+function evaluate(src: string): number {
+    const tokens = tokenize(src);
+    let pos = 0;
+    const peek = () => tokens[pos];
+    const isNumber = (t: string | undefined) => t !== undefined && /^[\d.]/.test(t);
+
+    const primary = (): number => {
+        const t = tokens[pos++];
+        if (isNumber(t)) return Number(t);
+        if (t === "(") {
+            const v = expr();
+            if (tokens[pos++] !== ")") throw new Error("expected )");
+            return v;
+        }
+        throw new Error("expected a number");
+    };
+    const unary = (): number => {
+        if (peek() === "-") { pos++; return -unary(); }
+        if (peek() === "+") { pos++; return unary(); }
+        return primary();
+    };
+    const term = (): number => {
+        let v = unary();
+        for (;;) {
+            const t = peek();
+            if (t === "*") { pos++; v *= unary(); }
+            else if (t === "/") { pos++; v /= unary(); }
+            else if (t === "(") v *= primary();
+            else return v;
+        }
+    };
+    const expr = (): number => {
+        let v = term();
+        for (;;) {
+            const t = peek();
+            if (t === "+") { pos++; v += term(); }
+            else if (t === "-") { pos++; v -= term(); }
+            else return v;
+        }
+    };
+
+    const v = expr();
+    if (pos !== tokens.length) throw new Error("unexpected token");
+    return v;
+}
 
 // Currency symbols / ISO-ish tokens we strip from anywhere in the input.
 const CURRENCY = /[৳$€£₹]|tk|bdt|usd|eur|gbp|inr|rs(?=\s|\d|$)/g;
@@ -67,7 +116,7 @@ export function parseAmount(input: string): AmountParseResult {
 
     let raw: unknown;
     try {
-        raw = limitedEvaluate(cleaned);
+        raw = evaluate(cleaned);
     } catch {
         return { ok: false, reason: "invalid" };
     }

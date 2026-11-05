@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Zap, HelpCircle, CheckCircle2, CornerDownLeft, X } from "lucide-react";
 import { format, isToday, isYesterday, isTomorrow } from "date-fns";
 import { api } from "@/lib/api";
+import { useCategories } from "@/lib/useCategories";
 import { cn } from "@/lib/utils";
 import { useCurrency } from "@/lib/useCurrency";
 import { CategoryPicker } from "@/components/CategoryPicker";
@@ -17,14 +18,13 @@ const PLACEHOLDERS = [
 ];
 
 interface QuickAddBarProps {
-    onAdd: () => void;
+    onAdd?: () => void;
     onUseForm?: () => void;
 }
 
 export function QuickAddBar({ onAdd, onUseForm }: QuickAddBarProps) {
     const { format: fmtMoney } = useCurrency();
     const [text, setText]                   = useState("");
-    const [cats, setCats]                   = useState<CategoryOption[]>([]);
     const [pickedCat, setPickedCat]         = useState("");   // the user's explicit choice
     const [userTouchedCat, setUserTouched]  = useState(false);
     const [committing, setCommitting]       = useState(false);
@@ -34,21 +34,10 @@ export function QuickAddBar({ onAdd, onUseForm }: QuickAddBarProps) {
     const [phIdx, setPhIdx]                 = useState(0);
     const inputRef = useRef<HTMLInputElement>(null);
 
-    // Categories used purely to *suggest* (never auto-assign) a match.
-    useEffect(() => {
-        let cancelled = false;
-        api.get("/categories?type=expense")
-            .then((res) => {
-                if (cancelled) return;
-                setCats(
-                    (res.data?.data || [])
-                        .filter((c: { isArchived?: boolean }) => !c.isArchived)
-                        .map((c: { _id: string; name: string }) => ({ _id: c._id, name: c.name })),
-                );
-            })
-            .catch(() => { /* picker still works; suggestions just won't fire */ });
-        return () => { cancelled = true; };
-    }, []);
+    // Categories used purely to *suggest* (never auto-assign) a match. If they
+    // fail to load the picker still works; suggestions just won't fire.
+    const { active } = useCategories("expense");
+    const cats = useMemo<CategoryOption[]>(() => active.map((c) => ({ _id: c._id, name: c.name })), [active]);
 
     // Cycle the placeholder examples while the field is empty.
     useEffect(() => {
@@ -100,7 +89,7 @@ export function QuickAddBar({ onAdd, onUseForm }: QuickAddBarProps) {
             reset();
             setShowToast(true);
             setTimeout(() => setShowToast(false), 2200);
-            onAdd();
+            onAdd?.();
         } catch (err) {
             const e = err as { response?: { data?: { message?: string } } };
             setError(e.response?.data?.message || "Failed to add expense");

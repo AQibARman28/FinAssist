@@ -1,55 +1,29 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { QuickAddBar } from "@/components/dashboard/expenses/QuickAddBar";
 import { ExpenseForm } from "@/components/dashboard/expenses/ExpenseForm";
 import { ExpenseList } from "@/components/dashboard/expenses/ExpenseList";
 import Link from "next/link";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { TrendingDown, Calendar, Wallet, PiggyBank, History } from "lucide-react";
-import { api } from "@/lib/api";
+import { useApi } from "@/lib/useApi";
 import { useCurrency } from "@/lib/useCurrency";
 import { format } from "date-fns";
 
 export default function ExpensesPage() {
     const { format: fmtMoney } = useCurrency();
-    const [refreshTrigger, setRefreshTrigger] = useState(0);
-    const [stats, setStats] = useState({
-        totalSpent: 0,
-        dailyAverage: 0,
-        month: "",
-        saved: 0,   // saved into goals this month — set aside, not spent
-    });
-
-    // Re-fetch the stat tiles whenever something on the page adds, edits or
-    // deletes an expense (state is only set from the async callback).
-    useEffect(() => {
-        let cancelled = false;
-        const now = new Date();
-        const year = now.getFullYear();
-        const month = now.getMonth() + 1;
-
-        Promise.all([
-            api.get(`/expenses/summary/${year}/${month}`),
-            api.get(`/analytics/balance`),
-        ])
-            .then(([sumRes, balRes]) => {
-                if (cancelled) return;
-                const total = sumRes.data.data.totalSpent || 0;
-                const saved = balRes.data?.data?.monthly?.saved || 0;
-                setStats({
-                    totalSpent: total,
-                    dailyAverage: total / new Date().getDate(), // Average so far today
-                    month: format(now, "MMMM"),
-                    saved,
-                });
-            })
-            .catch((err) => console.error("Failed to fetch stats", err));
-        return () => { cancelled = true; };
-    }, [refreshTrigger]);
-
-    const handleRefresh = () => {
-        setRefreshTrigger(prev => prev + 1);
+    const [now] = useState(() => new Date());
+    // Every add, edit or delete on this page is a write through lib/api.ts,
+    // which refreshes these tiles (and the list) on its own.
+    const summary = useApi<{ totalSpent?: number }>(`/expenses/summary/${now.getFullYear()}/${now.getMonth() + 1}`);
+    const balance = useApi<{ monthly?: { saved?: number } }>("/analytics/balance");
+    const totalSpent = summary.data?.totalSpent || 0;
+    const stats = {
+        totalSpent,
+        dailyAverage: totalSpent / new Date().getDate(), // Average so far today
+        month: format(now, "MMMM"),
+        saved: balance.data?.monthly?.saved || 0,   // saved into goals this month — set aside, not spent
     };
 
     return (
@@ -70,7 +44,6 @@ export default function ExpensesPage() {
 
             {/* Natural-language quick-add */}
             <QuickAddBar
-                onAdd={handleRefresh}
                 onUseForm={() =>
                     document.getElementById("expense-detail-form")?.scrollIntoView({ behavior: "smooth", block: "center" })
                 }
@@ -81,6 +54,7 @@ export default function ExpensesPage() {
                 <StatCard
                     title="Total Spent"
                     value={fmtMoney(stats.totalSpent)}
+                    loading={summary.isLoading}
                     trend="This Month"
                     trendUp={false}
                     icon={TrendingDown}
@@ -109,6 +83,7 @@ export default function ExpensesPage() {
                 <StatCard
                     title="Daily Average"
                     value={fmtMoney(stats.dailyAverage)}
+                    loading={summary.isLoading}
                     icon={Wallet}
                     className="bg-zinc-900/50"
                 />
@@ -117,9 +92,9 @@ export default function ExpensesPage() {
             {/* Main Content */}
             <div className="grid grid-cols-1 gap-6">
                 <div id="expense-detail-form">
-                    <ExpenseForm onAdd={handleRefresh} />
+                    <ExpenseForm />
                 </div>
-                <ExpenseList refreshTrigger={refreshTrigger} onChange={handleRefresh} />
+                <ExpenseList />
             </div>
         </div>
     );

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { motion, animate, useMotionValue, useTransform } from "framer-motion";
 import Link from "next/link";
 import { Activity, ChevronDown, AlertCircle, Wallet, TrendingUp, Sparkles } from "lucide-react";
-import { api } from "@/lib/api";
+import { useApi } from "@/lib/useApi";
 import { cn } from "@/lib/utils";
 
 interface Factor {
@@ -49,19 +49,10 @@ function CountUp({ value }: { value: number }) {
 }
 
 export function FinancialHealthScore() {
-    const [data, setData]       = useState<HealthData | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError]     = useState(false);
+    const { data: health, isLoading: loading, error: loadError } = useApi<HealthData>("/ai/financial-health-score");
+    const data = health ?? null;
+    const error = loadError !== undefined;
     const [expanded, setExpanded] = useState(false);
-
-    useEffect(() => {
-        let cancelled = false;
-        api.get("/ai/financial-health-score")
-            .then((res) => { if (!cancelled) setData(res.data?.data ?? null); })
-            .catch((err) => { if (!cancelled) { console.error("Failed to fetch health score", err); setError(true); } })
-            .finally(() => { if (!cancelled) setLoading(false); });
-        return () => { cancelled = true; };
-    }, []);
 
     if (loading) return <div className="h-48 animate-pulse bg-zinc-900/50 rounded-3xl" />;
 

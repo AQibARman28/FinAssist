@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { format } from "date-fns";
@@ -10,6 +10,8 @@ import {
 import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/apiError";
 import { useAuthStore } from "@/lib/store";
+import { useApi } from "@/lib/useApi";
+import { useCategories } from "@/lib/useCategories";
 import { cn } from "@/lib/utils";
 import { type IconName } from "@/lib/categoryIcons";
 import { CategoryIcon } from "@/components/CategoryIcon";
@@ -52,56 +54,40 @@ export default function IncomePage() {
     const user = useAuthStore((s) => s.user);
     const fmt  = useCurrencyFormatter(user?.currency || "USD");
 
-    const [incomes, setIncomes] = useState<Income[]>([]);
-    const [catMap, setCatMap]   = useState<Record<string, Category>>({});
-    const [loading, setLoading] = useState(true);
-    const [error, setError]     = useState<string | null>(null);
     const [granularity, setGranularity] = useState<IncomeGranularity>("monthly");
-    const [balance, setBalance] = useState<BalanceData | null>(null);
+    const [actionError, setActionError] = useState<string | null>(null);
+    // Shown as gone at once; the refetch the delete triggers agrees shortly after.
+    const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
 
-    // Initial load. `loading` starts true, so nothing needs setting before the
-    // request; state is only written once it settles.
-    useEffect(() => {
-        const load = async () => {
-            try {
-                // Pull a window covering this and last month so materialization
-                // catches the current period reliably.
-                const now = new Date();
-                const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
-                const end   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999));
-
-                const [cRes, iRes] = await Promise.all([
-                    api.get("/categories?type=income&includeArchived=true"),
-                    api.get("/incomes", {
-                        params: { startDate: start.toISOString(), endDate: end.toISOString(), limit: 100 },
-                    }),
-                ]);
-                const map: Record<string, Category> = {};
-                for (const c of cRes.data?.data ?? []) map[c._id] = c;
-                setCatMap(map);
-
-                const list: Income[] = (iRes.data?.data ?? [])
-                    .slice()
-                    .sort((a: Income, b: Income) => new Date(b.date).getTime() - new Date(a.date).getTime());
-                setIncomes(list);
-                setError(null);
-            } catch (err: unknown) {
-                setError(apiErrorMessage(err, "Failed to load income"));
-            } finally {
-                setLoading(false);
-            }
+    // A window covering this and last month so materialization catches the
+    // current period reliably. Fixed per visit so the cache key is stable.
+    const [range] = useState(() => {
+        const now = new Date();
+        return {
+            startDate: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)).toISOString(),
+            endDate:   new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999)).toISOString(),
         };
-        load();
-    }, []);
-
+    });
+    const categories = useCategories<Category>("income");
+    const incomesQ = useApi<Income[]>("/incomes", { ...range, limit: 100 });
     // The continuous balance (carry-forward + income − expenses − savings).
-    useEffect(() => {
-        let cancelled = false;
-        api.get("/analytics/balance")
-            .then((res) => { if (!cancelled) setBalance(res.data?.data ?? null); })
-            .catch((err) => { if (!cancelled) { console.error(err); setBalance(null); } });
-        return () => { cancelled = true; };
-    }, []);
+    const balance = useApi<BalanceData>("/analytics/balance").data ?? null;
+
+    const catMap = useMemo(() => {
+        const map: Record<string, Category> = {};
+        for (const c of categories.all) map[c._id] = c;
+        return map;
+    }, [categories.all]);
+    const rows = incomesQ.data;
+    const incomes = useMemo(
+        () => (rows ?? [])
+            .filter((i) => !removed.has(i._id))
+            .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
+        [rows, removed],
+    );
+    const loading = incomesQ.isLoading || categories.isLoading;
+    const error = actionError
+        ?? (incomesQ.error !== undefined ? apiErrorMessage(incomesQ.error, "Failed to load income") : null);
 
     const totalIncome = incomes.reduce((sum, inc) => sum + inc.amount, 0);
     const breakdown = balance ? balance[granularity] : null;
@@ -110,9 +96,10 @@ export default function IncomePage() {
         if (!confirm("Delete this income entry?")) return;
         try {
             await api.delete(`/incomes/${id}`);
-            setIncomes((prev) => prev.filter((i) => i._id !== id));
+            setRemoved((prev) => new Set(prev).add(id));
+            setActionError(null);
         } catch (err: unknown) {
-            setError(apiErrorMessage(err, "Failed to delete income"));
+            setActionError(apiErrorMessage(err, "Failed to delete income"));
         }
     };
 

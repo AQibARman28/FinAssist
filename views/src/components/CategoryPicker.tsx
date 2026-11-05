@@ -6,6 +6,8 @@ import {
     Pencil, Trash2, Archive, Search, Eye, EyeOff, Sparkles,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { useApi } from "@/lib/useApi";
+import { useCategories } from "@/lib/useCategories";
 import { cn } from "@/lib/utils";
 import {
     CATEGORY_ICONS, CATEGORY_COLOR_SWATCHES, ICON_NAMES,
@@ -54,15 +56,11 @@ export function CategoryPicker({
     suggestedCategoryId,
     autoSelectDefault = false,
 }: CategoryPickerProps) {
-    const [cats, setCats]             = useState<Category[]>([]);
     const [open, setOpen]             = useState(false);
-    const [loading, setLoading]       = useState(true);
     const [mode, setMode]             = useState<"list" | "create" | "edit">("list");
     const [editingCat, setEditingCat] = useState<Category | null>(null);
     const [query, setQuery]           = useState("");
     const [showArchived, setShowArchived] = useState(false);
-    const [recentIds, setRecentIds]   = useState<string[]>([]);
-    const [mostUsedId, setMostUsedId] = useState<string | null>(null);
     const [deletingId, setDeletingId] = useState<string | null>(null);
     const [rowError, setRowError]     = useState<{ id: string; msg: string } | null>(null);
     const [rowBusy, setRowBusy]       = useState<string | null>(null);
@@ -72,52 +70,38 @@ export function CategoryPicker({
     const autoSelectedRef = useRef(false);
 
     // ── Load categories (incl. archived; the picker gates visibility itself) ──
-    // `loading` starts true; when `type` changes it is switched back on here,
-    // during render (React's "store the previous prop" pattern), rather than
-    // synchronously inside the fetch effect below.
-    const [prevType, setPrevType] = useState(type);
-    if (type !== prevType) {
-        setPrevType(type);
-        setLoading(true);
-    }
-
-    useEffect(() => {
-        let cancelled = false;
-        api.get(`/categories?type=${type}&includeArchived=true`)
-            .then((res) => { if (!cancelled) setCats(res.data?.data || []); })
-            .catch((err) => { if (!cancelled) console.error("CategoryPicker: load failed", err); })
-            .finally(() => { if (!cancelled) setLoading(false); });
-        return () => { cancelled = true; };
-    }, [type]);
+    // From the list the rest of the app shares (lib/useCategories.ts).
+    const categories = useCategories<Category>(type);
+    const loading = categories.isLoading;
+    // A create / edit / archive / delete shows at once from the server's reply;
+    // the refetch that every write triggers (lib/api.ts) then replaces this.
+    const [edited, setEdited] = useState<{ base: Category[]; items: Category[] } | null>(null);
+    const cats = edited && edited.base === categories.all ? edited.items : categories.all;
+    const setCats = (update: (prev: Category[]) => Category[]) => setEdited({ base: categories.all, items: update(cats) });
 
     // ── Usage: recently-used order + most-used (last 30d) for the default ─────
-    useEffect(() => {
-        let cancelled = false;
-        api.get(`${TX_PATH[type]}?limit=50`)
-            .then((res) => {
-                if (cancelled) return;
-                const items: { category?: string; date?: string }[] = res.data?.data ?? [];
-                const seen = new Set<string>();
-                const recent: string[] = [];
-                for (const it of items) {
-                    if (it.category && !seen.has(it.category)) { seen.add(it.category); recent.push(it.category); }
-                }
-                setRecentIds(recent.slice(0, 5));
+    // Usage is a nicety: if it fails to load, both simply stay empty.
+    const usage = useApi<{ category?: string; date?: string }[]>(TX_PATH[type], { limit: 50 });
+    const [openedAt] = useState(() => Date.now());
+    const { recentIds, mostUsedId } = useMemo(() => {
+        const items = usage.data ?? [];
+        const seen = new Set<string>();
+        const recent: string[] = [];
+        for (const it of items) {
+            if (it.category && !seen.has(it.category)) { seen.add(it.category); recent.push(it.category); }
+        }
 
-                const cutoff = Date.now() - 30 * 86_400_000;
-                const counts: Record<string, number> = {};
-                for (const it of items) {
-                    if (it.category && it.date && new Date(it.date).getTime() >= cutoff) {
-                        counts[it.category] = (counts[it.category] || 0) + 1;
-                    }
-                }
-                let best: string | null = null, bestN = 0;
-                for (const [id, n] of Object.entries(counts)) if (n > bestN) { best = id; bestN = n; }
-                setMostUsedId(best);
-            })
-            .catch(() => { /* usage is a nicety; degrade silently */ });
-        return () => { cancelled = true; };
-    }, [type]);
+        const cutoff = openedAt - 30 * 86_400_000;
+        const counts: Record<string, number> = {};
+        for (const it of items) {
+            if (it.category && it.date && new Date(it.date).getTime() >= cutoff) {
+                counts[it.category] = (counts[it.category] || 0) + 1;
+            }
+        }
+        let best: string | null = null, bestN = 0;
+        for (const [id, n] of Object.entries(counts)) if (n > bestN) { best = id; bestN = n; }
+        return { recentIds: recent.slice(0, 5), mostUsedId: best };
+    }, [usage.data, openedAt]);
 
     // ── Opt-in default pre-select (visible, user-overridable) ─────────────────
     useEffect(() => {

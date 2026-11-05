@@ -1,4 +1,6 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from "axios";
+import { invalidateAll } from "./apiCache";
+import { requestStarted, retryDelayMs } from "./netActivity";
 
 // Relative by default: the app and API are same-origin (Next.js rewrites
 // proxy `/api/*` to the backend — see next.config.ts). This keeps the
@@ -15,11 +17,18 @@ export const api = axios.create({
     headers: { "Content-Type": "application/json" },
 });
 
+// _retried: the one 401 → /auth/refresh retry. _attempt: transient-failure
+// retries of a read (lib/netActivity.ts). _done: settles this request in the
+// pending-request tracker; it stays open across retries.
+type RetryableConfig = InternalAxiosRequestConfig & { _retried?: boolean; _attempt?: number; _done?: () => void };
+
 // Defense-in-depth CSRF guard: the server requires X-Requested-With on every
 // state-changing API call. Setting it on every request (including GETs) is
 // harmless and keeps the client side simple.
 api.interceptors.request.use((config) => {
     config.headers.set("X-Requested-With", "FinAssist");
+    const tracked = config as RetryableConfig;
+    tracked._done ??= requestStarted();
     return config;
 });
 
@@ -30,8 +39,6 @@ api.interceptors.request.use((config) => {
 // clear local state and bounce to /login. Concurrent 401s during a single
 // refresh window share one in-flight refresh promise so we don't spam the
 // endpoint.
-type RetryableConfig = InternalAxiosRequestConfig & { _retried?: boolean };
-
 let refreshPromise: Promise<unknown> | null = null;
 
 function endpointSkipsRefresh(url: string | undefined): boolean {
@@ -44,12 +51,33 @@ function endpointSkipsRefresh(url: string | undefined): boolean {
 }
 
 api.interceptors.response.use(
-    (response) => response,
+    (response) => {
+        const config = response.config as RetryableConfig;
+        config._done?.();
+        // A successful write may change anything a cached read shows (a new
+        // expense moves the wallet, budgets, analytics…), so mark it all stale.
+        // Session endpoints change no data; sign-in/out clears the cache.
+        if ((config.method ?? "get").toLowerCase() !== "get" && !endpointSkipsRefresh(config.url)) {
+            invalidateAll();
+        }
+        return response;
+    },
     async (error: AxiosError) => {
         const original = error.config as RetryableConfig | undefined;
         const status = error.response?.status;
 
+        // Backend waking up / flaky mobile network: retry reads with backoff.
+        const delay = original
+            ? retryDelayMs({ method: original.method, status, attempt: original._attempt ?? 0, canceled: axios.isCancel(error) })
+            : null;
+        if (original && delay !== null) {
+            original._attempt = (original._attempt ?? 0) + 1;
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            return api(original);
+        }
+
         if (status !== 401 || !original || original._retried || endpointSkipsRefresh(original.url)) {
+            original?._done?.();
             return Promise.reject(error);
         }
         original._retried = true;
@@ -60,6 +88,7 @@ api.interceptors.response.use(
             refreshPromise = null;
             return api(original);
         } catch (refreshErr) {
+            original._done?.();
             refreshPromise = null;
             // Refresh path failed — session is unrecoverable. Lazy-import the
             // store to avoid a circular dependency at module load time.

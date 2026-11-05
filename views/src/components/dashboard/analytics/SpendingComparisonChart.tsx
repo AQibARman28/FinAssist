@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
-import { api } from "@/lib/api";
+import { useApi } from "@/lib/useApi";
 import { useAuthStore } from "@/lib/store";
 
 interface Row { category: string; Current: number; Previous: number; }
@@ -13,37 +13,32 @@ export function SpendingComparisonChart() {
     const currency = useAuthStore((s) => s.user?.currency) || "USD";
     const fmt = new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 0 });
 
-    const [data, setData] = useState<Row[]>([]);
-    const [loading, setLoading] = useState(true);
+    const [period] = useState(() => {
+        const d = new Date();
+        return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1 };
+    });
+    const { data: monthly, isLoading: loading } = useApi<{ currentExpenses?: CategoryTotal[]; previousExpenses?: CategoryTotal[] }>(
+        "/analytics/monthly-analytics", period,
+    );
 
-    useEffect(() => {
-        (async () => {
-            try {
-                const d = new Date();
-                const res = await api.get(`/analytics/monthly-analytics?year=${d.getUTCFullYear()}&month=${d.getUTCMonth() + 1}`);
-                const current:  CategoryTotal[] = res.data?.data?.currentExpenses  ?? [];
-                const previous: CategoryTotal[] = res.data?.data?.previousExpenses ?? [];
+    const data = useMemo(() => {
+        const current:  CategoryTotal[] = monthly?.currentExpenses  ?? [];
+        const previous: CategoryTotal[] = monthly?.previousExpenses ?? [];
 
-                // Merge by category NAME (not _id ObjectId) so the X-axis
-                // labels read "Food" / "Transport" instead of a 24-hex hash.
-                const allNames = new Set<string>([
-                    ...current.map((c)  => c.category),
-                    ...previous.map((p) => p.category),
-                ]);
-                const rows: Row[] = Array.from(allNames).map((name) => ({
-                    category: name,
-                    Current:  current.find((c)  => c.category === name)?.total  ?? 0,
-                    Previous: previous.find((p) => p.category === name)?.total ?? 0,
-                }));
-                rows.sort((a, b) => (b.Current + b.Previous) - (a.Current + a.Previous));
-                setData(rows);
-            } catch (err) {
-                console.error("Failed to fetch comparison", err);
-            } finally {
-                setLoading(false);
-            }
-        })();
-    }, []);
+        // Merge by category NAME (not _id ObjectId) so the X-axis
+        // labels read "Food" / "Transport" instead of a 24-hex hash.
+        const allNames = new Set<string>([
+            ...current.map((c)  => c.category),
+            ...previous.map((p) => p.category),
+        ]);
+        const rows: Row[] = Array.from(allNames).map((name) => ({
+            category: name,
+            Current:  current.find((c)  => c.category === name)?.total  ?? 0,
+            Previous: previous.find((p) => p.category === name)?.total ?? 0,
+        }));
+        rows.sort((a, b) => (b.Current + b.Previous) - (a.Current + a.Previous));
+        return rows;
+    }, [monthly]);
 
     if (loading) return <div className="h-72 animate-pulse bg-zinc-900/50 rounded-3xl" />;
 

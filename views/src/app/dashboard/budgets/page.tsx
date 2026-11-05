@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { format } from "date-fns";
 import { Wallet, TrendingUp, AlertTriangle, ChevronLeft, ChevronRight, Copy, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
+import { useApi } from "@/lib/useApi";
 import { cn } from "@/lib/utils";
 import { BudgetForm } from "@/components/dashboard/budgets/BudgetForm";
 import { BudgetCard } from "@/components/dashboard/budgets/BudgetCard";
@@ -13,12 +14,6 @@ import {
     summarizeBudgets, previousMonth, nextMonth, type BudgetRow,
 } from "@/components/dashboard/budgets/budgetModel";
 import { useCurrency } from "@/lib/useCurrency";
-
-interface Loaded {
-    key: string;          // "YYYY-M" the rows belong to
-    budgets: BudgetRow[];
-    failed: boolean;
-}
 
 const HEALTH_TONE: Record<string, string> = {
     "Critical":   "text-red-400",
@@ -33,34 +28,23 @@ export default function BudgetsPage() {
         const now = new Date();
         return { year: now.getFullYear(), month: now.getMonth() + 1 };
     });
-    const [refreshKey, setRefreshKey] = useState(0);
-    const [loaded, setLoaded] = useState<Loaded | null>(null);
     const [copying, setCopying] = useState(false);
     const [copyMsg, setCopyMsg] = useState<string | null>(null);
 
-    const key = `${cursor.year}-${cursor.month}`;
-    const loading = loaded?.key !== key;
-    const budgets = useMemo(() => (loaded && loaded.key === key ? loaded.budgets : []), [loaded, key]);
+    // Cached per month: flipping back to a month you've seen is instant.
+    // Creating, editing or copying budgets is a write, which refreshes it.
+    const tracking = useApi<{ budgets?: BudgetRow[] }>(`/budgets/tracking/${cursor.year}/${cursor.month}`);
+    const loading = tracking.isLoading;
+    const failed = tracking.error !== undefined;
+    const rows = tracking.data?.budgets;
+    const budgets = useMemo(() => rows ?? [], [rows]);
     const summary = useMemo(() => summarizeBudgets(budgets), [budgets]);
 
     const monthLabel = format(new Date(cursor.year, cursor.month - 1, 1), "MMMM yyyy");
     const prev = previousMonth(cursor.year, cursor.month);
     const prevLabel = format(new Date(prev.year, prev.month - 1, 1), "MMMM");
 
-    useEffect(() => {
-        let cancelled = false;
-        const k = `${cursor.year}-${cursor.month}`;
-        api.get(`/budgets/tracking/${cursor.year}/${cursor.month}`)
-            .then((res) => { if (!cancelled) setLoaded({ key: k, budgets: res.data?.data?.budgets ?? [], failed: false }); })
-            .catch((err) => {
-                if (cancelled) return;
-                console.error("Failed to fetch budgets", err);
-                setLoaded({ key: k, budgets: [], failed: true });
-            });
-        return () => { cancelled = true; };
-    }, [cursor.year, cursor.month, refreshKey]);
-
-    const refresh = () => setRefreshKey((k) => k + 1);
+    const refresh = () => { void tracking.refresh(); };
     const shiftMonth = (dir: -1 | 1) => {
         setCopyMsg(null);
         setCursor((c) => (dir === -1 ? previousMonth(c.year, c.month) : nextMonth(c.year, c.month)));
@@ -137,7 +121,9 @@ export default function BudgetsPage() {
 
             {/* Budget Grid */}
             {loading ? (
-                <div className="flex justify-center py-20"><Loader2 className="w-6 h-6 animate-spin text-zinc-500" /></div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6" aria-hidden>
+                    {[0, 1, 2].map((i) => <div key={i} className="h-48 rounded-3xl bg-zinc-900/50 border border-white/5 animate-pulse" />)}
+                </div>
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
                     {budgets.map((budget) => (
@@ -146,7 +132,7 @@ export default function BudgetsPage() {
 
                     {budgets.length === 0 && (
                         <div className="col-span-full py-16 text-center border border-dashed border-white/10 rounded-3xl bg-white/5 px-4">
-                            {loaded?.failed ? (
+                            {failed ? (
                                 <p className="text-zinc-500">Couldn&apos;t load budgets. Try again in a moment.</p>
                             ) : (
                                 <>
