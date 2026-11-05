@@ -16,6 +16,9 @@ export interface CacheEntry {
     body?: unknown;
     error?: unknown;
     fetchedAt: number;
+    // When `body` itself arrived. A failed refetch keeps the old body (and this
+    // time), so the screen can say how old the figures it shows are.
+    bodyAt?: number;
 }
 
 type Loader = () => Promise<unknown>;
@@ -82,9 +85,10 @@ export function load(key: string, loader: Loader, maxAgeMs: number): Promise<voi
     const run = (async () => {
         try {
             const body = await loader();
-            if (started === epoch) write(s, { body, fetchedAt: Date.now() });
+            const now = Date.now();
+            if (started === epoch) write(s, { body, fetchedAt: now, bodyAt: now });
         } catch (error) {
-            if (started === epoch) write(s, { body: s.entry.body, error, fetchedAt: Date.now() });
+            if (started === epoch) write(s, { body: s.entry.body, bodyAt: s.entry.bodyAt, error, fetchedAt: Date.now() });
         } finally {
             s.inflight = null;
         }

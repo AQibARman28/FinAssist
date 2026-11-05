@@ -1,64 +1,80 @@
 "use client";
 
-import { motion } from "framer-motion";
-import { PieChart } from "lucide-react";
-import { useApi } from "@/lib/useApi";
-import { useAuthStore } from "@/lib/store";
+import Link from "next/link";
+import { CircleAlert, CircleCheck, TriangleAlert } from "lucide-react";
+import type { MoneyFormatter } from "@/lib/money";
+import { Card, Meter, Skeleton, StateNote } from "../ui";
+import { LoadError } from "../LoadNotice";
 
-interface RatioData {
+// GET /analytics/expense-income-ratio: this calendar month.
+export interface RatioData {
     totalIncome: number;
     totalExpense: number;
-    ratio: number | null;       // Part-7 shape: null when totalIncome is 0
+    ratio: number | null;       // null when totalIncome is 0
 }
 
-export function ExpenseIncomeRatio() {
-    const currency = useAuthStore((s) => s.user?.currency) || "USD";
-    const fmt = new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 0 });
+// Below this share of income spent, the health score's expense-to-income
+// factor gives full marks (services/healthScore.js); past it, points go.
+const COMFORT = 0.7;
 
-    const { data: ratio, isLoading: loading } = useApi<RatioData>("/analytics/expense-income-ratio");
-    const data = ratio ?? null;
-
-    if (loading) return <div className="h-40 animate-pulse bg-zinc-900/50 rounded-3xl" />;
-
-    const pct       = data?.ratio === null ? null : Math.round((data?.ratio ?? 0) * 100);
-    const noIncome  = data?.ratio === null;
-    const isHigh    = pct !== null && pct > 80;
-    const isMedium  = pct !== null && pct > 50;
-    const colorText = noIncome ? "text-zinc-400" : isHigh ? "text-red-400" : isMedium ? "text-yellow-400" : "text-green-400";
-    const colorBar  = isHigh ? "bg-red-500" : isMedium ? "bg-yellow-500" : "bg-green-500";
-
+// How much of this month's income has gone, as one meter and in words. The
+// tick is the line the health score treats as comfortable.
+export function ExpenseIncomeRatio({ ratio, loading, failed, onRetry, fmt, className }: {
+    ratio: RatioData | undefined;
+    loading: boolean;
+    failed: boolean;
+    onRetry: () => void;
+    fmt: MoneyFormatter;
+    className?: string;
+}) {
     return (
-        <div className="p-6 rounded-3xl bg-zinc-900/50 border border-white/5 h-full">
-            <div className="flex justify-between items-start mb-4">
-                <div>
-                    <h3 className="text-lg font-semibold text-white">Spend / Income</h3>
-                    <p className="text-xs text-zinc-500">This calendar month</p>
-                </div>
-                <PieChart className="w-5 h-5 text-zinc-400" />
-            </div>
+        <Card title="Spending vs income" id="spending-vs-income" className={className} aside={<span className="label-caps text-zinc-400">This month</span>}>
+            {loading ? (
+                <div aria-hidden className="space-y-5"><Skeleton className="h-11 w-40 rounded-xl" /><Skeleton className="h-2 rounded-full" /><Skeleton className="h-4 w-56 rounded-md" /></div>
+            ) : failed || !ratio ? (
+                <LoadError what="your spending against income" onRetry={onRetry} className="py-6" />
+            ) : ratio.ratio === null ? (
+                <>
+                    <p className="font-semibold text-white">No income this month yet</p>
+                    <p className="mt-1.5 text-[13.5px] text-zinc-400 max-w-prose tabular-nums">
+                        {ratio.totalExpense > 0
+                            ? <>You&apos;ve spent {fmt.format(ratio.totalExpense)}. Log an income to see what share of it that is.</>
+                            : "Log an income and this shows how much of it you've spent."}
+                    </p>
+                    <Link href="/dashboard/income/new" className="btn-secondary mt-5">Log income</Link>
+                </>
+            ) : (
+                <RatioBody ratio={ratio} r={ratio.ratio} fmt={fmt} />
+            )}
+        </Card>
+    );
+}
 
-            <div className="flex items-end gap-2 mb-2">
-                <span className={`text-4xl font-bold tabular-nums ${colorText}`}>
-                    {noIncome ? "—" : `${pct}%`}
-                </span>
-                <span className="text-sm text-zinc-400 mb-1">
-                    {noIncome ? "no income on file" : "of income spent"}
-                </span>
+function RatioBody({ ratio, r, fmt }: { ratio: RatioData; r: number; fmt: MoneyFormatter }) {
+    const pct = Math.round(r * 100);
+    const left = ratio.totalIncome - ratio.totalExpense;
+    const over = r > 1;
+    const tight = !over && r >= COMFORT;
+    return (
+        <>
+            <p className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <span className="text-[2.75rem] leading-none font-light [font-stretch:112%] tabular-nums text-white">{pct}%</span>
+                <span className="text-[13.5px] text-zinc-300">of this month&apos;s income spent</span>
+            </p>
+            <Meter fraction={Math.min(1, r)} tone={over ? "bad" : tight ? "warn" : "plat"} tick={COMFORT} className="mt-6" />
+            <p className="mt-3 text-[12.5px] text-zinc-400 tabular-nums">
+                {fmt.format(ratio.totalExpense)} spent of {fmt.format(ratio.totalIncome)} income
+            </p>
+            <div className="mt-4">
+                {over
+                    ? <StateNote tone="bad" icon={CircleAlert}>{fmt.format(-left)} more spent than came in</StateNote>
+                    : tight
+                        ? <StateNote tone="warn" icon={TriangleAlert}>Only {fmt.format(left)} of income left</StateNote>
+                        : <StateNote tone="good" icon={CircleCheck}>{fmt.format(left)} of income left</StateNote>}
             </div>
-
-            <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
-                <motion.div
-                    initial={{ width: 0 }}
-                    animate={{ width: noIncome ? "0%" : `${Math.min(pct ?? 0, 100)}%` }}
-                    transition={{ duration: 1, delay: 0.3 }}
-                    className={`h-full ${colorBar}`}
-                />
-            </div>
-
-            <div className="flex justify-between mt-4 text-xs text-zinc-500 tabular-nums">
-                <span>Spent: {fmt.format(data?.totalExpense ?? 0)}</span>
-                <span>Income: {fmt.format(data?.totalIncome ?? 0)}</span>
-            </div>
-        </div>
+            <p className="mt-5 text-[12.5px] text-zinc-400 max-w-prose">
+                The tick is {Math.round(COMFORT * 100)}%: the health score counts spending below that share of income as comfortable.
+            </p>
+        </>
     );
 }

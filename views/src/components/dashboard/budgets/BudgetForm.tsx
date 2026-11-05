@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { Loader2, Save, AlertCircle, Info } from "lucide-react";
+import { useId, useState } from "react";
+import { CircleCheck, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useCurrency } from "@/lib/useCurrency";
 import { CategoryPicker } from "@/components/CategoryPicker";
+import { Card, FieldError, FieldLabel, StateNote } from "@/components/dashboard/ui";
 import { apiErrorMessage, apiFieldErrors } from "@/lib/apiError";
 
 interface BudgetFormProps {
@@ -12,11 +13,12 @@ interface BudgetFormProps {
     year: number;
     monthLabel: string;
     onSuccess: () => void;
+    className?: string;
 }
 
 // Create (or, for a category that already has a budget this month, update) a
 // monthly limit. The category is a real user Category picked by id.
-export function BudgetForm({ month, year, monthLabel, onSuccess }: BudgetFormProps) {
+export function BudgetForm({ month, year, monthLabel, onSuccess, className }: BudgetFormProps) {
     const { currency } = useCurrency();
     const [isLoading, setIsLoading] = useState(false);
     const [category, setCategory] = useState("");
@@ -24,6 +26,7 @@ export function BudgetForm({ month, year, monthLabel, onSuccess }: BudgetFormPro
     const [error, setError] = useState<string | null>(null);
     const [categoryError, setCategoryError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
+    const ids = { category: useId(), limit: useId(), error: useId() };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -55,61 +58,46 @@ export function BudgetForm({ month, year, monthLabel, onSuccess }: BudgetFormPro
     };
 
     return (
-        <div className="p-6 rounded-3xl bg-zinc-900/50 border border-white/5">
-            <div className="flex items-center gap-2 mb-4">
-                <h3 className="text-white font-medium">Set Monthly Budget</h3>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20">{monthLabel}</span>
-            </div>
-
-            <form onSubmit={handleSubmit} className="flex flex-col md:flex-row gap-4 md:items-end">
-                <div className="w-full md:w-1/3 space-y-2">
-                    <label className="text-xs text-zinc-500">Category</label>
+        <Card title="New budget" id="new-budget" aside={<span className="label-caps text-zinc-400">{monthLabel}</span>} className={className}>
+            <form onSubmit={handleSubmit} className="space-y-4">
+                <div>
+                    <p id={ids.category} className="mb-2 text-[13px] font-medium text-zinc-300">Category</p>
                     <CategoryPicker
                         type="expense"
                         value={category}
                         onChange={(id) => { setCategory(id); setCategoryError(null); }}
                         error={categoryError ?? undefined}
                         placeholder="Select category"
+                        labelledBy={ids.category}
                     />
                 </div>
 
-                <div className="w-full md:w-1/3 space-y-2">
-                    <label className="text-xs text-zinc-500">Monthly Limit ({currency})</label>
+                <div>
+                    <FieldLabel htmlFor={ids.limit}>Monthly limit ({currency})</FieldLabel>
                     <input
+                        id={ids.limit}
                         type="number"
                         min={0}
                         step="any"
                         inputMode="decimal"
-                        placeholder="e.g. 500"
+                        placeholder="e.g. 5000"
                         value={limit}
                         onChange={(e) => setLimit(e.target.value)}
-                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/50 transition-colors tabular-nums"
+                        aria-describedby={error && !categoryError ? ids.error : undefined}
+                        aria-invalid={error && !categoryError ? true : undefined}
+                        className="field tabular-nums"
                         required
                     />
+                    {error && !categoryError && <FieldError id={ids.error}>{error}</FieldError>}
                 </div>
 
-                <button
-                    type="submit"
-                    disabled={isLoading}
-                    className="w-full md:w-auto px-6 py-3 bg-purple-600 hover:bg-purple-500 text-white font-medium rounded-xl transition-all shadow-lg shadow-purple-900/20 flex items-center justify-center gap-2 disabled:opacity-50"
-                >
-                    {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Save className="w-4 h-4" />}
-                    <span>Set Limit</span>
+                <button type="submit" disabled={isLoading} className="btn-primary w-full">
+                    {isLoading && <Loader2 className="w-4 h-4 animate-spin" aria-hidden />}
+                    Set limit
                 </button>
-            </form>
 
-            {error && !categoryError && (
-                <div className="mt-4 flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
-                    <AlertCircle className="w-4 h-4 shrink-0" />
-                    <span>{error}</span>
-                </div>
-            )}
-            {notice && !error && (
-                <div className="mt-4 flex items-center gap-2 text-xs text-zinc-400">
-                    <Info className="w-3.5 h-3.5 shrink-0 text-purple-400" />
-                    <span>{notice}</span>
-                </div>
-            )}
-        </div>
+                {notice && !error && <p role="status"><StateNote tone="good" icon={CircleCheck}>{notice}</StateNote></p>}
+            </form>
+        </Card>
     );
 }

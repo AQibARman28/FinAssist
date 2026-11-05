@@ -1,0 +1,33 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "ai-color-palette",
+        "value": "*",
+        "files": [
+          "src/components/dashboard/QuickExpenseFab.tsx"
+        ],
+        "createdAt": "2026-11-03T22:23:42.598Z",
+        "reason": "Claude: pre-existing brand gradient moved verbatim from the original QuickExpenseFab (HEAD line 84) during a perf refactor; same violet-to-purple gradient is used in 7 other files (login, register, settings...); palette redesign out of scope"
+      },
+      {
+        "rule": "design-system-font",
+        "value": "taka sign",
+        "createdAt": "2026-11-05T10:57:51.409Z"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "23px",
+        "createdAt": "2026-11-05T12:00:25.179Z"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "15px",
+        "createdAt": "2026-11-05T12:00:25.303Z"
+      }
+    ]
+  },
+  "buildPath": "comp"
+}

@@ -1,7 +1,9 @@
-"use client";
-
-import { IncomeForm } from "@/components/dashboard/income/IncomeForm";
+import { IncomeForm, IncomeFormFrame } from "@/components/dashboard/income/IncomeForm";
 
 export default function NewIncomePage() {
-    return <IncomeForm mode="create" />;
+    return (
+        <IncomeFormFrame mode="create">
+            <IncomeForm mode="create" />
+        </IncomeFormFrame>
+    );
 }

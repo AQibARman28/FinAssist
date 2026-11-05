@@ -1,15 +1,17 @@
 "use client";
 
-import { useState } from "react";
-import { Plus, Loader2, AlertCircle } from "lucide-react";
+import { useId, useState } from "react";
+import { CircleCheck, Loader2, Plus, TriangleAlert } from "lucide-react";
 import { api } from "@/lib/api";
 import { apiErrorMessage, apiFieldErrors } from "@/lib/apiError";
 import { CategoryPicker } from "@/components/CategoryPicker";
+import { Card, FieldError, FieldLabel, StateNote } from "@/components/dashboard/ui";
 import { useCurrency } from "@/lib/useCurrency";
 import { parseAmount } from "@/lib/parseAmount";
 
 interface ExpenseFormProps {
     onAdd?: () => void;
+    className?: string;
 }
 
 const AMOUNT_REASON: Record<string, string> = {
@@ -19,12 +21,15 @@ const AMOUNT_REASON: Record<string, string> = {
     too_large: "Amount is too large",
 };
 
-export function ExpenseForm({ onAdd }: ExpenseFormProps) {
+// Every field an expense has, for when one line in the quick add isn't
+// enough: a date in the past, a private note, an amount worked out as a sum.
+export function ExpenseForm({ onAdd, className }: ExpenseFormProps) {
     const { format: fmtMoney } = useCurrency();
     const [isLoading, setIsLoading] = useState(false);
     const [serverError, setServerError] = useState<string | null>(null);
     const [categoryError, setCategoryError] = useState<string | null>(null);
     const [amountError, setAmountError] = useState<string | null>(null);
+    const [added, setAdded] = useState(false);
     const [formData, setFormData] = useState({
         title: "",                                  // backend field: description
         amount: "",
@@ -32,15 +37,24 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
         date: new Date().toISOString().split("T")[0],
         note: "",
     });
+    const uid = useId();
+    const ids = {
+        title: `${uid}-title`, amount: `${uid}-amount`, amountNote: `${uid}-amount-note`, amountError: `${uid}-amount-error`,
+        date: `${uid}-date`, category: `${uid}-cat`, categoryLabel: `${uid}-cat-label`, note: `${uid}-note`,
+    };
 
     // Live-parsed amount — drives both the "= ৳1,700" preview and submit.
     const parsed = parseAmount(formData.amount);
+    const amountHint = !parsed.ok && formData.amount.trim() !== "" && parsed.reason !== "empty" ? AMOUNT_REASON[parsed.reason] : null;
+    const amountPreview = parsed.ok && parsed.isExpression ? fmtMoney(parsed.value) : null;
+    const amountDescribedBy = [amountPreview || amountHint ? ids.amountNote : null, amountError ? ids.amountError : null].filter(Boolean).join(" ") || undefined;
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setServerError(null);
         setCategoryError(null);
         setAmountError(null);
+        setAdded(false);
 
         if (!formData.title) return;
         if (!parsed.ok) {
@@ -64,6 +78,8 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
                 ...(formData.note ? { note: formData.note } : {}),
             });
             setFormData({ ...formData, title: "", amount: "", note: "" });
+            setAdded(true);
+            setTimeout(() => setAdded(false), 2200);
             onAdd?.();
         } catch (err: unknown) {
             const errs = apiFieldErrors(err);
@@ -75,61 +91,60 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
     };
 
     return (
-        <div className="p-6 rounded-3xl bg-zinc-900/50 border border-white/5 mb-6">
-            <h3 className="text-white font-medium mb-4">Add New Expense</h3>
+        <Card title="Add with details" id="add-with-details" className={className}>
             <form onSubmit={handleSubmit} className="space-y-4">
-                <div className="flex flex-col md:flex-row gap-4 md:items-end">
-
-                    <div className="w-full md:flex-1 space-y-2 min-w-0">
-                        <label className="text-xs text-zinc-500">What was it for?</label>
+                {/* The form spans the page: one column on phones, two from 640px,
+                    every field in one line from 1280px. */}
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_10rem_11rem_15rem]">
+                    <div className="min-w-0 sm:col-span-2 md:col-span-1">
+                        <FieldLabel htmlFor={ids.title}>What was it for?</FieldLabel>
                         <input
+                            id={ids.title}
                             type="text"
                             placeholder="e.g. Starbucks, Uber"
                             value={formData.title}
-                            onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/50 transition-colors"
+                            onChange={(e) => { setFormData({ ...formData, title: e.target.value }); setAdded(false); }}
+                            className="field"
                             required
                         />
                     </div>
 
-                    <div className="w-full md:w-36 space-y-2 relative">
-                        <label className="text-xs text-zinc-500">Amount</label>
+                    <div className="min-w-0">
+                        <FieldLabel htmlFor={ids.amount}>Amount</FieldLabel>
                         <input
+                            id={ids.amount}
                             type="text"
                             inputMode="text"
                             placeholder="0.00 or 4*250"
                             value={formData.amount}
                             onChange={(e) => { setFormData({ ...formData, amount: e.target.value }); setAmountError(null); }}
-                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/50 transition-colors tabular-nums"
+                            aria-invalid={amountError ? true : undefined}
+                            aria-describedby={amountDescribedBy}
+                            className="field tabular-nums"
                             required
                         />
-                        {/* Live preview / hint floats below without shifting the row. */}
-                        {parsed.ok && parsed.isExpression && (
-                            <div className="absolute top-full left-0 mt-1 text-xs text-zinc-500 tabular-nums">
-                                = {fmtMoney(parsed.value)}
-                            </div>
-                        )}
-                        {!parsed.ok && formData.amount.trim() !== "" && parsed.reason !== "empty" && (
-                            <div className="absolute top-full left-0 mt-1 text-xs text-amber-400/80">
-                                {AMOUNT_REASON[parsed.reason]}
-                            </div>
-                        )}
+                        {amountPreview && <p id={ids.amountNote} className="mt-2 text-[12.5px] text-zinc-400 tabular-nums">= {amountPreview}</p>}
+                        {amountHint && <p id={ids.amountNote} className="mt-2"><StateNote tone="warn" icon={TriangleAlert}>{amountHint}</StateNote></p>}
+                        {amountError && <FieldError id={ids.amountError}>{amountError}</FieldError>}
                     </div>
 
-                    <div className="w-full md:w-44 space-y-2">
-                        <label className="text-xs text-zinc-500">Date</label>
+                    <div className="min-w-0">
+                        <FieldLabel htmlFor={ids.date}>Date</FieldLabel>
                         <input
+                            id={ids.date}
                             type="date"
                             value={formData.date}
                             onChange={(e) => setFormData({ ...formData, date: e.target.value })}
-                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-purple-500/50 transition-colors tabular-nums"
+                            className="field tabular-nums"
                             required
                         />
                     </div>
 
-                    <div className="w-full md:w-48 space-y-2">
-                        <label className="text-xs text-zinc-500">Category</label>
+                    <div className="min-w-0 sm:col-span-2 md:col-span-1">
+                        <label id={ids.categoryLabel} htmlFor={ids.category} className="block mb-2 text-[13px] font-medium text-zinc-300">Category</label>
                         <CategoryPicker
+                            id={ids.category}
+                            labelledBy={ids.categoryLabel}
                             type="expense"
                             value={formData.category}
                             onChange={(id) => { setFormData({ ...formData, category: id }); setCategoryError(null); }}
@@ -138,34 +153,31 @@ export function ExpenseForm({ onAdd }: ExpenseFormProps) {
                         />
                     </div>
 
-                    <button
-                        type="submit"
-                        disabled={isLoading}
-                        className="w-full md:w-auto px-6 py-3 bg-white text-black font-medium rounded-xl hover:bg-zinc-200 transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
-                    >
-                        {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Plus className="w-5 h-5" />}
-                        <span>Add</span>
-                    </button>
-                </div>
-
-                <div className="space-y-2">
-                    <label className="text-xs text-zinc-500">Private note (optional)</label>
-                    <textarea
-                        placeholder="Visible only to you"
-                        value={formData.note}
-                        onChange={(e) => setFormData({ ...formData, note: e.target.value })}
-                        rows={2}
-                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/50 transition-colors resize-y"
-                    />
-                </div>
-
-                {(amountError || (serverError && !categoryError)) && (
-                    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
-                        <AlertCircle className="w-4 h-4 shrink-0" />
-                        <span>{amountError || serverError}</span>
+                    <div className="col-span-full">
+                        <FieldLabel htmlFor={ids.note}>Private note (optional)</FieldLabel>
+                        <textarea
+                            id={ids.note}
+                            placeholder="Visible only to you"
+                            value={formData.note}
+                            onChange={(e) => setFormData({ ...formData, note: e.target.value })}
+                            rows={2}
+                            className="field resize-y"
+                        />
                     </div>
-                )}
+                </div>
+
+                {serverError && !categoryError && <FieldError>{serverError}</FieldError>}
+
+                <div className="pt-1 flex flex-wrap items-center gap-x-4 gap-y-2">
+                    <button type="submit" disabled={isLoading} className="btn-primary">
+                        {isLoading ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden /> : <Plus className="w-4 h-4" aria-hidden />}
+                        Add expense
+                    </button>
+                    <p role="status">
+                        {added && <StateNote tone="good" icon={CircleCheck}>Expense added</StateNote>}
+                    </p>
+                </div>
             </form>
-        </div>
+        </Card>
     );
 }

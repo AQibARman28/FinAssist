@@ -1,12 +1,13 @@
 "use client";
 
-import { motion } from "framer-motion";
-import { Trophy, Target, Plus, Loader2, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useId, useRef, useState } from "react";
+import { format } from "date-fns";
+import { Loader2, Plus, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
-import { cn } from "@/lib/utils";
 import { useCurrency } from "@/lib/useCurrency";
 import { apiErrorMessage } from "@/lib/apiError";
+import { calendarDay } from "@/lib/dates";
+import { FieldError, Meter } from "../ui";
 import { GoalStatusBadge } from "./GoalStatusBadge";
 import { PRIORITY_OPTIONS, priorityLevel, type GoalPlanRow } from "./goalPlanModel";
 
@@ -19,6 +20,7 @@ export interface Goal {
     status: "Active" | "Completed" | "Paused";
     priority?: number;
     targetDate?: string;
+    createdAt?: string;
 }
 
 interface GoalCardProps {
@@ -26,10 +28,30 @@ interface GoalCardProps {
     onUpdate: () => void;
     /** This goal's row from GET /goals/plan (active goals only). */
     plan?: GoalPlanRow;
+    /** The plan's average monthly surplus, for the verdict's wording. */
+    monthlySurplus?: number;
+    now: Date;
+    /** Position in the grid, to stagger the meters. */
+    index?: number;
 }
 
-export function GoalCard({ goal, onUpdate, plan }: GoalCardProps) {
-    const { format: fmt } = useCurrency();
+// Where an even pace from the day the goal was set to its deadline would be
+// today (0–1). Only for goals the plan covers, and only with both dates.
+export function evenPace(goal: Goal, plan: GoalPlanRow | undefined, now: Date): number | undefined {
+    const deadline = plan?.targetDate ?? goal.targetDate;
+    if (!plan || !deadline || !goal.createdAt) return undefined;
+    const start = new Date(goal.createdAt).getTime();
+    const end = new Date(deadline).getTime();
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return undefined;
+    return Math.min(1, Math.max(0, (now.getTime() - start) / (end - start)));
+}
+
+// One goal: what's saved against the target, a platinum meter with a tick at
+// an even pace, the deadline, and the plan's verdict in words. Adding money and
+// priority are edits in place; deleting asks first and says where the money goes.
+export function GoalCard({ goal, onUpdate, plan, monthlySurplus = 0, now, index = 0 }: GoalCardProps) {
+    const money = useCurrency();
+    const fmt = money.format;
     const [isAdding, setIsAdding] = useState(false);
     const [addAmount, setAddAmount] = useState("");
     const [loading, setLoading] = useState(false);
@@ -37,9 +59,21 @@ export function GoalCard({ goal, onUpdate, plan }: GoalCardProps) {
     const [deleting, setDeleting] = useState(false);
     const [savingPriority, setSavingPriority] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const deleteRef = useRef<HTMLButtonElement>(null);
+    const addRef = useRef<HTMLButtonElement>(null);
+    const uid = useId();
+    const ids = { title: `${uid}-title`, priority: `${uid}-priority`, amount: `${uid}-amount`, error: `${uid}-error`, confirm: `${uid}-confirm` };
 
-    const percentage = goal.targetAmount > 0 ? Math.min((goal.currentAmount / goal.targetAmount) * 100, 100) : 0;
-    const isCompleted = goal.status === "Completed" || percentage >= 100;
+    const fraction = goal.targetAmount > 0 ? Math.min(goal.currentAmount / goal.targetAmount, 1) : 0;
+    const percentage = Math.round(fraction * 100);
+    const isCompleted = goal.status === "Completed" || fraction >= 1;
+    const tick = isCompleted ? undefined : evenPace(goal, plan, now);
+    const deadlineRaw = plan?.targetDate ?? goal.targetDate;
+    const deadline = deadlineRaw ? calendarDay(deadlineRaw) : null;
+    const validDeadline = deadline && !Number.isNaN(deadline.getTime()) ? deadline : null;
+    const deadlineText = validDeadline
+        ? `by ${format(validDeadline, validDeadline.getFullYear() === now.getFullYear() ? "d MMM" : "d MMM yyyy")}`
+        : "no deadline";
 
     const handleContribute = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -71,6 +105,7 @@ export function GoalCard({ goal, onUpdate, plan }: GoalCardProps) {
             setError(apiErrorMessage(err, "Failed to delete goal"));
             setDeleting(false);
             setConfirmingDelete(false);
+            deleteRef.current?.focus();
         }
     };
 
@@ -87,62 +122,50 @@ export function GoalCard({ goal, onUpdate, plan }: GoalCardProps) {
         }
     };
 
-    return (
-        <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className={cn(
-                "p-6 rounded-3xl border transition-all relative overflow-hidden group",
-                isCompleted ? "bg-yellow-500/10 border-yellow-500/30 shadow-[0_0_30px_rgba(234,179,8,0.1)]" : "bg-zinc-900/50 border-white/5 hover:border-yellow-500/20",
-            )}
-        >
-            <div className="absolute top-0 right-0 w-32 h-32 bg-yellow-500/5 blur-[60px] rounded-full pointer-events-none" />
+    const cancelAdding = () => {
+        setIsAdding(false);
+        setAddAmount("");
+        requestAnimationFrame(() => addRef.current?.focus());
+    };
 
-            <div className="flex justify-between items-start mb-5 relative gap-3">
-                <div className="flex items-center gap-3 min-w-0">
-                    <div className={cn("p-3 rounded-xl shrink-0", isCompleted ? "bg-yellow-500 text-black" : "bg-zinc-800 text-yellow-500")}>
-                        {isCompleted ? <Trophy className="w-5 h-5" /> : <Target className="w-5 h-5" />}
-                    </div>
-                    <div className="min-w-0">
-                        <h3 className="text-lg font-medium text-white truncate">{goal.title}</h3>
-                        <div className="flex flex-wrap items-center gap-2 mt-0.5">
-                            <span className="text-[11px] uppercase tracking-wider text-zinc-500">{goal.period}</span>
-                            {!isCompleted && plan && <GoalStatusBadge status={plan.status} />}
-                        </div>
-                    </div>
-                </div>
+    return (
+        <section aria-labelledby={ids.title} className="min-w-0 flex flex-col p-5 md:p-7 rounded-3xl bg-graphite shadow-[inset_0_1px_0_rgb(255_255_255/0.04)]">
+            <div className="flex items-start justify-between gap-3 min-h-11">
+                <h3 id={ids.title} className="min-w-0 pt-2.5 truncate font-semibold text-white" title={goal.title}>{goal.title}</h3>
                 <button
+                    ref={deleteRef}
+                    type="button"
                     onClick={() => { setError(null); setConfirmingDelete(true); }}
-                    disabled={deleting || confirmingDelete}
+                    disabled={deleting}
                     aria-label={`Delete goal ${goal.title}`}
-                    className="shrink-0 p-2.5 -mr-1 rounded-lg text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50"
+                    aria-expanded={confirmingDelete}
+                    aria-controls={confirmingDelete ? ids.confirm : undefined}
+                    className="btn-icon -mr-2 hover:text-red-300 hover:bg-red-500/10"
                 >
-                    <Trash2 className="w-4 h-4" />
+                    <Trash2 className="w-4 h-4" aria-hidden />
                 </button>
             </div>
 
             {confirmingDelete && (
-                <div className="relative mb-4 p-3 rounded-xl bg-red-500/5 border border-red-500/20 space-y-2.5">
-                    <p className="text-xs text-zinc-300">
+                <div id={ids.confirm} role="group" aria-label={`Confirm delete ${goal.title}`} className="mt-4 p-4 rounded-xl border border-white/10 bg-white/[0.03]">
+                    <p className="text-[13px] text-zinc-300">
                         Delete &ldquo;{goal.title}&rdquo;?{" "}
                         {goal.currentAmount > 0
-                            ? <>The <span className="text-white font-medium tabular-nums">{fmt(goal.currentAmount)}</span> saved in it goes back to your wallet as of today. </>
+                            ? <>The <span className="text-white tabular-nums">{fmt(goal.currentAmount)}</span> saved in it goes back to your wallet as of today. </>
                             : null}
                         Past months&apos; balances stay as they were.
                     </p>
-                    <div className="flex gap-2">
-                        <button
-                            onClick={handleDelete}
-                            disabled={deleting}
-                            className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-red-500/15 text-red-300 border border-red-500/30 hover:bg-red-500/25 disabled:opacity-50 transition-colors"
-                        >
-                            {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                        <button type="button" onClick={handleDelete} disabled={deleting} className="btn-danger">
+                            {deleting ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden /> : <Trash2 className="w-4 h-4" aria-hidden />}
                             Delete goal
                         </button>
                         <button
-                            onClick={() => setConfirmingDelete(false)}
+                            type="button"
+                            autoFocus
+                            onClick={() => { setConfirmingDelete(false); requestAnimationFrame(() => deleteRef.current?.focus()); }}
                             disabled={deleting}
-                            className="px-3 py-2 text-xs rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-white/5 disabled:opacity-50 transition-colors"
+                            className="btn-quiet"
                         >
                             Cancel
                         </button>
@@ -150,77 +173,85 @@ export function GoalCard({ goal, onUpdate, plan }: GoalCardProps) {
                 </div>
             )}
 
-            <div className="mb-4 relative">
-                <div className="flex justify-between items-end mb-2">
-                    <span className="text-3xl font-bold text-white tracking-tight">{fmt(goal.currentAmount)}</span>
-                    <span className="text-zinc-500 text-sm mb-1">of {fmt(goal.targetAmount)}</span>
-                </div>
-                <div className="h-3 w-full bg-zinc-800 rounded-full overflow-hidden">
-                    <motion.div
-                        initial={{ width: 0 }}
-                        animate={{ width: `${percentage}%` }}
-                        transition={{ duration: 1.2, ease: "circOut" }}
-                        className={cn("h-full rounded-full relative overflow-hidden", isCompleted ? "bg-yellow-400" : "bg-gradient-to-r from-yellow-600 to-yellow-400")}
-                    >
-                        <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-r from-transparent via-white/30 to-transparent -translate-x-full animate-[shimmer_2s_infinite]" />
-                    </motion.div>
-                </div>
+            <p className="mt-5 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-white">
+                <span className="text-[30px] leading-none font-light [font-stretch:112%] tabular-nums">{fmt(goal.currentAmount)}</span>
+                <span className="text-[13.5px] text-zinc-400 tabular-nums">of {fmt(goal.targetAmount)}</span>
+            </p>
+            <Meter fraction={fraction} tick={tick} delay={index * 0.09} className="mt-4 mb-3" />
+            <p className="text-[12.5px] text-zinc-400 tabular-nums">
+                <span className="capitalize">{goal.period}</span> · {deadlineText} · {percentage}%
+            </p>
+
+            <div className="mt-4 space-y-1.5">
+                <GoalStatusBadge completed={isCompleted} row={plan} monthlySurplus={monthlySurplus} fmt={money} now={now} />
                 {!isCompleted && plan && plan.requiredMonthly !== null && (
-                    <p className="text-[11px] text-zinc-500 mt-2 tabular-nums">
-                        Needs {fmt(plan.requiredMonthly)}/mo
-                        {plan.actualMonthlyRate !== null ? ` · saving ${fmt(plan.actualMonthlyRate)}/mo` : " · no recent contributions"}
+                    <p className="text-[12.5px] text-zinc-400 tabular-nums">
+                        {plan.actualMonthlyRate !== null
+                            ? `Adding about ${fmt(Math.round(plan.actualMonthlyRate))} a month (last 90 days)`
+                            : "Nothing added in the last 90 days"}
                     </p>
                 )}
             </div>
 
             {!isCompleted && (
-                <div className="relative flex items-center justify-between gap-2 mb-4">
-                    <label htmlFor={`prio-${goal._id}`} className="text-xs text-zinc-500">Priority</label>
+                <div className="mt-5 flex items-center justify-between gap-3">
+                    <label htmlFor={ids.priority} className="text-[13px] font-medium text-zinc-300">Priority</label>
                     <div className="flex items-center gap-2">
-                        {savingPriority && <Loader2 className="w-3.5 h-3.5 animate-spin text-zinc-500" />}
-                        <select
-                            id={`prio-${goal._id}`}
-                            value={priorityLevel(goal.priority)}
-                            disabled={savingPriority}
-                            onChange={(e) => handlePriority(parseInt(e.target.value, 10))}
-                            className="bg-black/40 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-yellow-500/50 cursor-pointer disabled:opacity-50"
-                        >
-                            {PRIORITY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                        </select>
+                        {savingPriority && <Loader2 className="w-4 h-4 animate-spin text-zinc-400" aria-hidden />}
+                        <div className="w-32">
+                            <select
+                                id={ids.priority}
+                                value={priorityLevel(goal.priority)}
+                                disabled={savingPriority}
+                                onChange={(e) => handlePriority(parseInt(e.target.value, 10))}
+                                className="field cursor-pointer"
+                            >
+                                {PRIORITY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                            </select>
+                        </div>
                     </div>
                 </div>
             )}
 
-            {error && <p className="text-xs text-red-400 mb-3 relative">{error}</p>}
+            {error && <FieldError id={ids.error}>{error}</FieldError>}
 
-            {isAdding ? (
-                <form onSubmit={handleContribute} className="flex gap-2 relative">
-                    <input
-                        autoFocus
-                        type="number"
-                        min={1}
-                        step="any"
-                        placeholder="Amount"
-                        value={addAmount}
-                        onChange={(e) => setAddAmount(e.target.value)}
-                        className="w-full bg-black/40 border border-yellow-500/30 rounded-xl px-4 py-2 text-white text-sm focus:outline-none"
-                    />
-                    <button type="submit" disabled={loading} className="bg-yellow-500 text-black px-4 rounded-xl font-medium text-sm hover:bg-yellow-400 disabled:opacity-50">
-                        {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Save"}
-                    </button>
-                </form>
-            ) : (
-                <button
-                    onClick={() => { setError(null); setIsAdding(true); }}
-                    disabled={isCompleted}
-                    className={cn(
-                        "w-full py-3 rounded-xl border border-dashed flex items-center justify-center gap-2 text-sm font-medium transition-all relative",
-                        isCompleted ? "border-transparent text-yellow-500 cursor-default" : "border-white/10 text-zinc-400 hover:text-white hover:bg-white/5 hover:border-white/20",
+            {!isCompleted && (
+                <div className="mt-auto pt-5">
+                    {isAdding ? (
+                        <form onSubmit={handleContribute} className="flex items-center gap-2">
+                            <label htmlFor={ids.amount} className="sr-only">Amount to add to {goal.title}</label>
+                            <input
+                                id={ids.amount}
+                                autoFocus
+                                type="number"
+                                min={1}
+                                step="any"
+                                inputMode="decimal"
+                                placeholder="Amount"
+                                value={addAmount}
+                                onChange={(e) => setAddAmount(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === "Escape") cancelAdding(); }}
+                                aria-describedby={error ? ids.error : undefined}
+                                aria-invalid={error ? true : undefined}
+                                className="field tabular-nums flex-1 min-w-0"
+                            />
+                            <button type="submit" disabled={loading} className="btn-primary shrink-0">
+                                {loading ? <><Loader2 className="w-4 h-4 animate-spin" aria-hidden /><span className="sr-only">Adding</span></> : "Add"}
+                            </button>
+                            <button type="button" onClick={cancelAdding} disabled={loading} className="btn-quiet shrink-0">Cancel</button>
+                        </form>
+                    ) : (
+                        <button
+                            ref={addRef}
+                            type="button"
+                            onClick={() => { setError(null); setIsAdding(true); }}
+                            className="btn-secondary w-full"
+                        >
+                            <Plus className="w-4 h-4" aria-hidden /> Add money
+                        </button>
                     )}
-                >
-                    {isCompleted ? <span>Goal Achieved! 🎉</span> : <><Plus className="w-4 h-4" /><span>Add Funds</span></>}
-                </button>
+                </div>
             )}
-        </motion.div>
+        </section>
     );
 }

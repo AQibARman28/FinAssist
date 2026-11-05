@@ -1,13 +1,15 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { Save, Loader2, AlertCircle, ArrowLeft } from "lucide-react";
+import { useId, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { ArrowLeft, Check, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { apiErrorBody, apiErrorMessage } from "@/lib/apiError";
 import { cn } from "@/lib/utils";
+import { useCurrency } from "@/lib/useCurrency";
 import { CategoryPicker } from "@/components/CategoryPicker";
+import { Card, FieldError, FieldLabel, Notice, Page, PageHeader, Segmented } from "../ui";
 
 interface IncomeFormProps {
     mode: "create" | "edit";
@@ -15,25 +17,64 @@ interface IncomeFormProps {
     initial?: Partial<FormState>;
 }
 
+type Frequency = "weekly" | "biweekly" | "monthly" | "yearly";
+
 interface FormState {
     amount:             string;
     category:           string;
     description:        string;
     date:               string;             // yyyy-mm-dd
     isRecurring:        boolean;
-    recurringFrequency: "" | "weekly" | "biweekly" | "monthly" | "yearly";
+    recurringFrequency: "" | Frequency;
     isPostTax:          boolean;
     note:               string;
 }
 
-const FREQUENCIES = ["weekly", "biweekly", "monthly", "yearly"] as const;
+const FREQUENCIES: { key: Frequency; label: string }[] = [
+    { key: "weekly",   label: "Week" },
+    { key: "biweekly", label: "2 weeks" },
+    { key: "monthly",  label: "Month" },
+    { key: "yearly",   label: "Year" },
+];
+
+const TAX: { key: "after" | "before"; label: string }[] = [
+    { key: "after",  label: "After tax" },
+    { key: "before", label: "Before tax" },
+];
+
+const REPEAT = [
+    { value: false, title: "Once", sub: "Recorded once, on this date." },
+    { value: true,  title: "Repeats", sub: "Added again on a schedule after this date." },
+] as const;
 
 function todayIso(): string {
     return new Date().toISOString().split("T")[0];
 }
 
+// The page around the form: a way back, the heading, and the form's column,
+// centred and narrow so the fields read top to bottom.
+export function IncomeFormFrame({ mode, children }: { mode: "create" | "edit"; children: React.ReactNode }) {
+    return (
+        <Page className="max-w-[784px]">
+            <div>
+                <Link href="/dashboard/income" aria-label="Back to Income" className="btn-quiet -ml-3 mb-2">
+                    <ArrowLeft className="w-4 h-4" aria-hidden /> Income
+                </Link>
+                <PageHeader
+                    title={mode === "create" ? "Add income" : "Edit income"}
+                    sub={mode === "create"
+                        ? "Record money that came in once, or income that repeats."
+                        : "Changes apply to this entry only. Entries already added from a repeating income stay as they are."}
+                />
+            </div>
+            {children}
+        </Page>
+    );
+}
+
 export function IncomeForm({ mode, incomeId, initial }: IncomeFormProps) {
     const router = useRouter();
+    const { currency } = useCurrency();
     const [form, setForm] = useState<FormState>({
         amount:             initial?.amount             ?? "",
         category:           initial?.category           ?? "",
@@ -47,6 +88,17 @@ export function IncomeForm({ mode, incomeId, initial }: IncomeFormProps) {
     const [submitting, setSubmitting] = useState(false);
     const [error, setError]           = useState<string | null>(null);
     const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+    const uid = useId();
+    const ids = {
+        amount: `${uid}-amount`, date: `${uid}-date`, category: `${uid}-category`, categoryLabel: `${uid}-category-label`,
+        description: `${uid}-description`, repeat: `${uid}-repeat`, cadence: `${uid}-cadence`, tax: `${uid}-tax`, note: `${uid}-note`,
+    };
+    const err = (k: keyof FormState) => fieldErrors[k] || undefined;
+    const errId = (k: keyof FormState) => `${uid}-${k}-error`;
+    const described = (k: keyof FormState) => ({
+        "aria-invalid": err(k) ? true : undefined,
+        "aria-describedby": err(k) ? errId(k) : undefined,
+    });
 
     const setField = <K extends keyof FormState>(k: K, v: FormState[K]) => {
         setForm((prev) => ({ ...prev, [k]: v }));
@@ -60,7 +112,7 @@ export function IncomeForm({ mode, incomeId, initial }: IncomeFormProps) {
 
         if (!form.category) { setFieldErrors({ category: "Pick a category" }); return; }
         if (form.isRecurring && !form.recurringFrequency) {
-            setFieldErrors({ recurringFrequency: "Pick a cadence" }); return;
+            setFieldErrors({ recurringFrequency: "Pick how often it repeats" }); return;
         }
 
         setSubmitting(true);
@@ -94,188 +146,156 @@ export function IncomeForm({ mode, incomeId, initial }: IncomeFormProps) {
     };
 
     return (
-        <div className="p-6 max-w-2xl mx-auto space-y-6">
-            <div className="mb-2 flex items-center gap-3">
-                <Link href="/dashboard/income" className="p-2 rounded-lg text-zinc-500 hover:text-zinc-200 hover:bg-white/5 transition-colors">
-                    <ArrowLeft className="w-5 h-5" />
-                </Link>
-                <div>
-                    <h1 className="text-2xl font-bold text-white">
-                        {mode === "create" ? "Add income" : "Edit income"}
-                    </h1>
-                    <p className="text-zinc-500 text-sm">
-                        {mode === "create"
-                            ? "Record a one-off entry, or set up a recurring stream."
-                            : "Editing this row does not affect generated instances of a recurring source."}
-                    </p>
-                </div>
-            </div>
+        <Card>
+            <form onSubmit={handleSubmit} aria-labelledby="page-title" className="space-y-6">
+                {error && <div role="alert"><Notice tone="bad">{error}</Notice></div>}
 
-            <form onSubmit={handleSubmit} className="p-6 rounded-3xl bg-zinc-900/50 border border-white/5 space-y-5">
-                {error && (
-                    <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm flex items-center gap-2">
-                        <AlertCircle className="w-4 h-4 shrink-0" />
-                        <span>{error}</span>
-                    </div>
-                )}
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                    <Field label="Amount" error={fieldErrors.amount}>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                    <div>
+                        <FieldLabel htmlFor={ids.amount}>Amount ({currency})</FieldLabel>
                         <input
+                            id={ids.amount}
                             type="number"
                             step="0.01"
                             min="0"
+                            inputMode="decimal"
                             placeholder="0.00"
                             value={form.amount}
                             onChange={(e) => setField("amount", e.target.value)}
                             required
-                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/50 transition-colors tabular-nums"
+                            {...described("amount")}
+                            className="field tabular-nums"
                         />
-                    </Field>
-
-                    <Field label="Date" error={fieldErrors.date}>
+                        {err("amount") && <FieldError id={errId("amount")}>{err("amount")}</FieldError>}
+                    </div>
+                    <div>
+                        <FieldLabel htmlFor={ids.date}>Date</FieldLabel>
                         <input
+                            id={ids.date}
                             type="date"
                             value={form.date}
                             onChange={(e) => setField("date", e.target.value)}
                             required
-                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-purple-500/50 transition-colors"
+                            {...described("date")}
+                            className="field tabular-nums [color-scheme:dark]"
                         />
-                    </Field>
+                        {err("date") && <FieldError id={errId("date")}>{err("date")}</FieldError>}
+                    </div>
                 </div>
 
-                <Field label="Category" error={fieldErrors.category}>
+                <div>
+                    {/* The picker renders its own error line under the trigger. */}
+                    <FieldLabel htmlFor={ids.category}><span id={ids.categoryLabel}>Category</span></FieldLabel>
                     <CategoryPicker
                         type="income"
+                        id={ids.category}
+                        labelledBy={ids.categoryLabel}
                         value={form.category}
                         onChange={(id) => setField("category", id)}
-                        error={fieldErrors.category}
+                        error={err("category")}
                     />
-                </Field>
+                </div>
 
-                <Field label="Description" error={fieldErrors.description}>
+                <div>
+                    <FieldLabel htmlFor={ids.description}>Description</FieldLabel>
                     <input
+                        id={ids.description}
                         type="text"
                         placeholder="e.g. October salary"
                         value={form.description}
                         onChange={(e) => setField("description", e.target.value)}
                         maxLength={500}
                         required
-                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/50 transition-colors"
+                        {...described("description")}
+                        className="field"
                     />
-                </Field>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                    <Toggle
-                        label="Recurring"
-                        sublabel={form.isRecurring ? "Materializes on every list within range" : "One-off entry"}
-                        value={form.isRecurring}
-                        onChange={(v) => {
-                            setField("isRecurring", v);
-                            if (!v) setField("recurringFrequency", "");
-                        }}
-                    />
-                    <Toggle
-                        label="Post-tax"
-                        sublabel={form.isPostTax ? "Already net of tax" : "Gross / pre-tax"}
-                        value={form.isPostTax}
-                        onChange={(v) => setField("isPostTax", v)}
-                    />
+                    {err("description") && <FieldError id={errId("description")}>{err("description")}</FieldError>}
                 </div>
 
-                {form.isRecurring && (
-                    <Field label="Cadence" error={fieldErrors.recurringFrequency}>
-                        <div className="grid grid-cols-4 gap-2">
-                            {FREQUENCIES.map((f) => (
-                                <button
-                                    key={f}
-                                    type="button"
-                                    onClick={() => setField("recurringFrequency", f)}
+                <fieldset>
+                    <legend id={ids.repeat} className="mb-2 text-[13px] font-medium text-zinc-300">How often</legend>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {REPEAT.map((o) => {
+                            const chosen = form.isRecurring === o.value;
+                            return (
+                                <label
+                                    key={o.title}
                                     className={cn(
-                                        "px-3 py-2.5 rounded-xl text-sm font-medium capitalize transition-colors",
-                                        form.recurringFrequency === f
-                                            ? "bg-purple-500/10 text-purple-400 border border-purple-500/30"
-                                            : "bg-black/40 text-zinc-400 border border-white/10 hover:border-purple-500/20",
+                                        "relative flex items-start gap-3 min-h-11 px-4 py-3 rounded-xl border cursor-pointer transition-colors",
+                                        "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-plat",
+                                        chosen ? "border-plat/40 bg-white/[0.04]" : "border-white/10 hover:bg-white/[0.03]",
                                     )}
                                 >
-                                    {f}
-                                </button>
-                            ))}
-                        </div>
-                    </Field>
+                                    <input
+                                        type="radio"
+                                        name={ids.repeat}
+                                        checked={chosen}
+                                        onChange={() => {
+                                            setField("isRecurring", o.value);
+                                            if (!o.value) setField("recurringFrequency", "");
+                                        }}
+                                        className="sr-only"
+                                    />
+                                    <span className="min-w-0 flex-1">
+                                        <span className="block font-semibold text-white">{o.title}</span>
+                                        <span className="mt-0.5 block text-[12.5px] text-zinc-400">{o.sub}</span>
+                                    </span>
+                                    <Check aria-hidden className={cn("mt-0.5 w-4 h-4 shrink-0 text-plat transition-opacity", chosen ? "opacity-100" : "opacity-0")} />
+                                </label>
+                            );
+                        })}
+                    </div>
+                </fieldset>
+
+                {form.isRecurring && (
+                    <div>
+                        <p id={ids.cadence} className="mb-2 text-[13px] font-medium text-zinc-300">Repeats every</p>
+                        <Segmented<"" | Frequency>
+                            label="Repeats every"
+                            items={FREQUENCIES}
+                            value={form.recurringFrequency}
+                            onChange={(f) => setField("recurringFrequency", f)}
+                        />
+                        {err("recurringFrequency") && <FieldError id={errId("recurringFrequency")}>{err("recurringFrequency")}</FieldError>}
+                    </div>
                 )}
 
-                <Field label="Note (optional)" error={fieldErrors.note}>
+                <div>
+                    <p id={ids.tax} className="mb-2 text-[13px] font-medium text-zinc-300">Tax</p>
+                    <Segmented
+                        label="Tax"
+                        items={TAX}
+                        value={form.isPostTax ? "after" : "before"}
+                        onChange={(t) => setField("isPostTax", t === "after")}
+                    />
+                    <p className="mt-2 text-[12.5px] text-zinc-400">
+                        {form.isPostTax ? "The amount you actually received, already net of tax." : "Gross pay, before tax comes off."}
+                    </p>
+                </div>
+
+                <div>
+                    <FieldLabel htmlFor={ids.note}>Note (optional)</FieldLabel>
                     <textarea
+                        id={ids.note}
                         value={form.note}
                         onChange={(e) => setField("note", e.target.value)}
                         rows={2}
                         placeholder="Visible only to you"
                         maxLength={2000}
-                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/50 transition-colors resize-y"
+                        {...described("note")}
+                        className="field resize-y"
                     />
-                </Field>
+                    {err("note") && <FieldError id={errId("note")}>{err("note")}</FieldError>}
+                </div>
 
-                <div className="flex gap-3 pt-2">
-                    <button
-                        type="submit"
-                        disabled={submitting}
-                        className="flex items-center gap-2 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 disabled:opacity-50 text-white font-medium px-6 py-3 rounded-xl transition-colors"
-                    >
-                        {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                <div className="flex flex-wrap items-center justify-end gap-2 pt-2">
+                    <Link href="/dashboard/income" className="btn-quiet">Cancel</Link>
+                    <button type="submit" disabled={submitting} className="btn-primary">
+                        {submitting && <Loader2 className="w-4 h-4 animate-spin" aria-hidden />}
                         {mode === "create" ? "Add income" : "Save changes"}
                     </button>
-                    <Link
-                        href="/dashboard/income"
-                        className="px-6 py-3 text-zinc-400 hover:text-zinc-200 rounded-xl transition-colors"
-                    >
-                        Cancel
-                    </Link>
                 </div>
             </form>
-        </div>
-    );
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-function Field({ label, error, children }: { label: string; error?: string; children: React.ReactNode }) {
-    return (
-        <div className="space-y-1.5">
-            <label className="text-xs text-zinc-500">{label}</label>
-            {children}
-            {error && (
-                <div className="flex items-center gap-1.5 text-red-400 text-xs">
-                    <AlertCircle className="w-3 h-3 shrink-0" />
-                    <span>{error}</span>
-                </div>
-            )}
-        </div>
-    );
-}
-
-function Toggle({ label, sublabel, value, onChange }: {
-    label: string; sublabel?: string; value: boolean; onChange: (v: boolean) => void;
-}) {
-    return (
-        <button
-            type="button"
-            onClick={() => onChange(!value)}
-            className="flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-black/40 border border-white/10 hover:border-purple-500/20 transition-colors text-left"
-        >
-            <div className="min-w-0">
-                <div className="text-sm text-white font-medium">{label}</div>
-                {sublabel && <div className="text-xs text-zinc-500 truncate">{sublabel}</div>}
-            </div>
-            <div className={cn(
-                "w-10 h-6 rounded-full p-0.5 transition-colors shrink-0",
-                value ? "bg-purple-500" : "bg-zinc-700",
-            )}>
-                <div className={cn(
-                    "w-5 h-5 rounded-full bg-white transition-transform",
-                    value ? "translate-x-4" : "translate-x-0",
-                )} />
-            </div>
-        </button>
+        </Card>
     );
 }

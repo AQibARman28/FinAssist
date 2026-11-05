@@ -63,3 +63,27 @@ export function previousMonth(year: number, month: number): { year: number; mont
 export function nextMonth(year: number, month: number): { year: number; month: number } {
     return month === 12 ? { year: year + 1, month: 1 } : { year, month: month + 1 };
 }
+
+// How far through the viewed month (year, month 1-12) `now` is, as a share:
+// the point an even pace would have reached. A past month is all gone by; a
+// month still to come hasn't started.
+export function monthPace(year: number, month: number, now: Date): number {
+    const viewed = year * 12 + month;
+    const current = now.getFullYear() * 12 + now.getMonth() + 1;
+    if (viewed < current) return 1;
+    if (viewed > current) return 0;
+    return now.getDate() / new Date(year, month, 0).getDate();
+}
+
+export type BudgetState = "over" | "alert" | "ahead" | "on";
+
+// What to say about one budget: past its limit, past its own alert threshold,
+// spending faster than an even pace, or on pace.
+export function budgetState(
+    b: Pick<BudgetRow, "limit" | "spent" | "isOverLimit" | "isNearLimit">,
+    pace: number,
+): BudgetState {
+    if (b.isOverLimit || b.spent > b.limit) return "over";
+    if (b.isNearLimit) return "alert";
+    return b.limit > 0 && b.spent / b.limit > pace ? "ahead" : "on";
+}

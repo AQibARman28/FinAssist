@@ -1,0 +1,5 @@
+# Session leftovers from the design tool (cache, critiques, live mode, review shots).
+hook.cache.json
+critique/
+live/
+review/

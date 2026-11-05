@@ -1,11 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { format } from "date-fns";
-import { ArrowLeft, Search, Loader2, Receipt, X } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Receipt, Search, SearchX, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { useCurrency } from "@/lib/useCurrency";
+import { calendarDay } from "@/lib/dates";
+import { openQuickAdd } from "@/lib/quickAdd";
+import { cn } from "@/lib/utils";
+import { Card, Empty, HeroFigure, Missing, Page, PageHeader, Segmented, Skeleton, Term } from "@/components/dashboard/ui";
+import { LoadError } from "@/components/dashboard/LoadNotice";
 import { ExpenseRow, type ExpenseItem, type ExpenseCategory } from "@/components/dashboard/expenses/ExpenseRow";
 
 type Expense = ExpenseItem;
@@ -15,6 +20,7 @@ interface Loaded {
     key: string;                       // which period this data belongs to
     expenses: Expense[];
     catMap: Record<string, Category>;
+    failed?: boolean;                  // the read failed: nothing to show, not "nothing recorded"
 }
 
 type Mode = "month" | "year";
@@ -22,6 +28,11 @@ type AmountOp = ">" | ">=" | "<" | "<=" | "=";
 type SortKey = "date-desc" | "date-asc" | "amount-desc" | "amount-asc";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+// Rows per page. The period is fetched whole; paging only keeps the list readable.
+const PAGE_SIZE = 50;
+
+// Toolbar controls: the field well at the toolbar's 44px height.
+const toolbarField = "field w-auto min-h-11 py-2.5";
 
 // Fetch every expense in [startDate, endDate], walking the API's 100/page cap.
 async function fetchAllExpenses(startDate: string, endDate: string): Promise<Expense[]> {
@@ -39,9 +50,18 @@ async function fetchAllExpenses(startDate: string, endDate: string): Promise<Exp
     return out;
 }
 
+// The fine print under a Term's figure, back at reading width and weight.
+function TermNote({ children }: { children: React.ReactNode }) {
+    return <span className="block mt-2 text-[12.5px] leading-[1.45] font-normal [font-stretch:100%] text-zinc-400">{children}</span>;
+}
+
+// Every expense in a month or a year: the period and filters in one
+// toolbar, the total they come to, then the rows, a page at a time.
 export default function ExpenseHistoryPage() {
     const { format: fmt } = useCurrency();
     const [now] = useState(() => new Date());
+    const uid = useId();
+    const ids = { month: `${uid}-month`, year: `${uid}-year`, search: `${uid}-search`, op: `${uid}-op`, amount: `${uid}-amount`, sort: `${uid}-sort` };
 
     // Period selection
     const [mode, setMode] = useState<Mode>("month");
@@ -55,6 +75,7 @@ export default function ExpenseHistoryPage() {
     const [loaded, setLoaded] = useState<Loaded | null>(null);
     const [reloadKey, setReloadKey] = useState(0);
     const loading = loaded?.key !== periodKey;
+    const failed = !loading && !!loaded?.failed;
     const expenses = useMemo(() => loaded?.expenses ?? [], [loaded]);
     const catMap = useMemo(() => loaded?.catMap ?? {}, [loaded]);
 
@@ -92,10 +113,14 @@ export default function ExpenseHistoryPage() {
             .catch((err) => {
                 if (cancelled) return;
                 console.error(err);
-                setLoaded({ key, expenses: [], catMap: {} });
+                // A failed background refresh keeps the rows already on screen;
+                // a failed first read says so instead of showing an empty period.
+                setLoaded((prev) => (prev && prev.key === key && !prev.failed ? prev : { key, expenses: [], catMap: {}, failed: true }));
             });
         return () => { cancelled = true; };
     }, [mode, year, month, reloadKey]);
+
+    const retry = () => { setLoaded(null); setReloadKey((k) => k + 1); };
 
     // Optimistic local update, then a background re-fetch (picks up a newly
     // created category, or drops a row whose date moved out of the period).
@@ -124,9 +149,11 @@ export default function ExpenseHistoryPage() {
                 if (amountOp === "="  && e.amount !== threshold)   return false;
             }
             // Free-text search across description, category, amount, date
+            // (the date both as "Nov 2, 2026" and as the rows show it, "Mon 2 Nov").
             if (q) {
                 const cat = catMap[e.category]?.name ?? "";
-                const dateStr = format(new Date(e.date), "MMM d, yyyy");
+                const day = calendarDay(e.date);
+                const dateStr = `${format(day, "MMM d, yyyy")} ${format(day, "EEE d MMM yyyy")}`;
                 const hay = `${e.description} ${cat} ${e.amount} ${dateStr}`.toLowerCase();
                 if (!hay.includes(q)) return false;
             }
@@ -146,108 +173,78 @@ export default function ExpenseHistoryPage() {
 
     const total = useMemo(() => visible.reduce((s, e) => s + e.amount, 0), [visible]);
 
+    const filtersActive = search.trim() !== "" || amountVal !== "";
+    const clearFilters = () => { setSearch(""); setAmountVal(""); };
+    const periodLabel = mode === "month" ? `${MONTHS[month]} ${year}` : String(year);
+    const isCurrentPeriod = year === now.getFullYear() && (mode === "year" || month === now.getMonth());
+
+    // Paging. Any change to the period, filters or sort goes back to page 1.
+    const viewKey = `${periodKey}|${search}|${amountOp}|${amountVal}|${sortKey}`;
+    const [paging, setPaging] = useState({ key: viewKey, page: 1 });
+    const pages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
+    const page = Math.min(paging.key === viewKey ? paging.page : 1, pages);
+    const shown = visible.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+    const resultsRef = useRef<HTMLDivElement>(null);
+    const listRef = useRef<HTMLUListElement>(null);
+    const goToPage = (next: number) => {
+        if (next < 1 || next > pages || next === page) return;
+        setPaging({ key: viewKey, page: next });
+        // Back to the top of the results, with focus on the new rows.
+        resultsRef.current?.scrollIntoView({ block: "start" });
+        listRef.current?.focus({ preventScroll: true });
+    };
+
     return (
-        <div className="p-6 max-w-5xl mx-auto space-y-6">
-            {/* Header */}
-            <div className="flex items-center justify-between flex-wrap gap-3">
-                <div>
-                    <Link href="/dashboard/expenses" className="inline-flex items-center gap-1.5 text-sm text-zinc-500 hover:text-zinc-300 transition-colors mb-2">
-                        <ArrowLeft className="w-4 h-4" /> Back to expenses
-                    </Link>
-                    <h1 className="text-2xl font-bold text-white">Transaction History</h1>
-                    <p className="text-zinc-500 text-sm">Every expense you&apos;ve recorded — browse, search, and filter.</p>
-                </div>
+        <Page>
+            <div className="flex flex-col gap-2">
+                <Link href="/dashboard/expenses" className="btn-quiet self-start -ml-3 text-[13.5px]">
+                    <ArrowLeft className="w-4 h-4" aria-hidden /> Back to expenses
+                </Link>
+                <PageHeader
+                    title="Transaction history"
+                    sub="Every expense you've recorded. Pick a month or a year, then search, filter and sort."
+                />
             </div>
 
-            {/* Period selector */}
-            <div className="p-4 rounded-3xl bg-zinc-900/50 border border-white/5 flex flex-wrap items-center gap-3">
-                <div className="flex items-center gap-1 p-1 rounded-xl bg-black/30 border border-white/5">
-                    {(["month", "year"] as const).map((m) => (
-                        <button
-                            key={m}
-                            onClick={() => setMode(m)}
-                            className={`px-4 py-1.5 rounded-lg text-sm font-medium capitalize transition-colors ${mode === m ? "bg-purple-500 text-white" : "text-zinc-400 hover:text-white"}`}
-                        >
-                            {m}
-                        </button>
-                    ))}
-                </div>
-
-                {mode === "month" && (
-                    <select
-                        value={month}
-                        onChange={(e) => setMonth(parseInt(e.target.value, 10))}
-                        className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-purple-500/50 cursor-pointer"
-                    >
-                        {MONTHS.map((m, i) => <option key={m} value={i}>{m}</option>)}
-                    </select>
-                )}
-
-                <select
-                    value={year}
-                    onChange={(e) => setYear(parseInt(e.target.value, 10))}
-                    className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-purple-500/50 cursor-pointer tabular-nums"
-                >
-                    {years.map((y) => <option key={y} value={y}>{y}</option>)}
-                </select>
-            </div>
-
-            {/* Search + amount filter + sort */}
-            <div className="p-4 rounded-3xl bg-zinc-900/50 border border-white/5 space-y-3">
-                <div className="relative">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-                    <input
-                        type="text"
-                        placeholder="Search by description, category, amount, or date…"
-                        value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                        className="w-full bg-black/40 border border-white/10 rounded-xl pl-10 pr-9 py-2.5 text-sm text-white placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/50"
-                    />
-                    {search && (
-                        <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300" aria-label="Clear search">
-                            <X className="w-4 h-4" />
-                        </button>
-                    )}
-                </div>
-
+            {/* The period and the filters, in one toolbar above the results. */}
+            <div role="search" aria-label="Filter expenses" className="flex flex-col gap-3">
                 <div className="flex flex-wrap items-center gap-3">
-                    {/* Amount threshold */}
-                    <div className="flex items-center gap-2">
-                        <span className="text-xs text-zinc-500">Costs</span>
-                        <select
-                            value={amountOp}
-                            onChange={(e) => setAmountOp(e.target.value as AmountOp)}
-                            className="bg-black/40 border border-white/10 rounded-lg px-2 py-2 text-sm text-zinc-200 focus:outline-none focus:border-purple-500/50 cursor-pointer"
-                        >
-                            <option value=">">{"> greater than"}</option>
-                            <option value=">=">{"≥ at least"}</option>
-                            <option value="<">{"< less than"}</option>
-                            <option value="<=">{"≤ at most"}</option>
-                            <option value="=">{"= equals"}</option>
-                        </select>
-                        <input
-                            type="number"
-                            min={0}
-                            step="any"
-                            placeholder="amount"
-                            value={amountVal}
-                            onChange={(e) => setAmountVal(e.target.value)}
-                            className="w-28 bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm text-white tabular-nums placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/50"
-                        />
-                        {amountVal && (
-                            <button onClick={() => setAmountVal("")} className="text-xs text-zinc-500 hover:text-zinc-300">clear</button>
-                        )}
-                    </div>
+                    <Segmented
+                        label="Period"
+                        items={[{ key: "month", label: "Month" }, { key: "year", label: "Year" }]}
+                        value={mode}
+                        onChange={setMode}
+                    />
+                    {mode === "month" && (
+                        <>
+                            <label htmlFor={ids.month} className="sr-only">Month</label>
+                            <select
+                                id={ids.month}
+                                value={month}
+                                onChange={(e) => setMonth(parseInt(e.target.value, 10))}
+                                className={cn(toolbarField, "cursor-pointer")}
+                            >
+                                {MONTHS.map((m, i) => <option key={m} value={i}>{m}</option>)}
+                            </select>
+                        </>
+                    )}
+                    <label htmlFor={ids.year} className="sr-only">Year</label>
+                    <select
+                        id={ids.year}
+                        value={year}
+                        onChange={(e) => setYear(parseInt(e.target.value, 10))}
+                        className={cn(toolbarField, "cursor-pointer tabular-nums")}
+                    >
+                        {years.map((y) => <option key={y} value={y}>{y}</option>)}
+                    </select>
 
-                    <div className="flex-1" />
-
-                    {/* Sort */}
-                    <div className="flex items-center gap-2">
-                        <span className="text-xs text-zinc-500">Sort</span>
+                    <div className="flex items-center gap-2 sm:ml-auto">
+                        <label htmlFor={ids.sort} className="text-[13px] text-zinc-400">Sort</label>
                         <select
+                            id={ids.sort}
                             value={sortKey}
                             onChange={(e) => setSortKey(e.target.value as SortKey)}
-                            className="bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-purple-500/50 cursor-pointer"
+                            className={cn(toolbarField, "cursor-pointer")}
                         >
                             <option value="date-desc">Date — newest first</option>
                             <option value="date-asc">Date — oldest first</option>
@@ -256,39 +253,152 @@ export default function ExpenseHistoryPage() {
                         </select>
                     </div>
                 </div>
-            </div>
 
-            {/* Results */}
-            <div className="p-6 rounded-3xl bg-zinc-900/50 border border-white/5 min-h-[400px]">
-                <div className="flex justify-between items-center mb-4">
-                    <span className="text-sm text-zinc-400">{visible.length} record{visible.length === 1 ? "" : "s"}</span>
-                    <span className="text-sm text-zinc-400">Total <span className="text-white font-medium tabular-nums">{fmt(total)}</span></span>
+                <div className="flex flex-wrap items-center gap-3">
+                    <div className="relative flex-[1_1_18rem] min-w-0">
+                        <label htmlFor={ids.search} className="sr-only">Search expenses</label>
+                        <Search aria-hidden className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400 pointer-events-none" />
+                        <input
+                            id={ids.search}
+                            type="text"
+                            placeholder="Search by description, category, amount, or date…"
+                            value={search}
+                            onChange={(e) => setSearch(e.target.value)}
+                            className="field min-h-11 py-2.5 pl-11 pr-12"
+                        />
+                        {search && (
+                            <button type="button" onClick={() => setSearch("")} aria-label="Clear search" className="btn-icon absolute right-0 top-1/2 -translate-y-1/2">
+                                <X className="w-4 h-4" aria-hidden />
+                            </button>
+                        )}
+                    </div>
+
+                    {/* Amount threshold */}
+                    <div className="flex items-center gap-2">
+                        <label htmlFor={ids.op} className="text-[13px] text-zinc-400">Costs</label>
+                        <select
+                            id={ids.op}
+                            value={amountOp}
+                            onChange={(e) => setAmountOp(e.target.value as AmountOp)}
+                            className={cn(toolbarField, "cursor-pointer")}
+                        >
+                            <option value=">">{"> greater than"}</option>
+                            <option value=">=">{"≥ at least"}</option>
+                            <option value="<">{"< less than"}</option>
+                            <option value="<=">{"≤ at most"}</option>
+                            <option value="=">{"= equals"}</option>
+                        </select>
+                        <label htmlFor={ids.amount} className="sr-only">Amount</label>
+                        <input
+                            id={ids.amount}
+                            type="number"
+                            min={0}
+                            step="any"
+                            placeholder="amount"
+                            value={amountVal}
+                            onChange={(e) => setAmountVal(e.target.value)}
+                            className={cn(toolbarField, "w-32 tabular-nums")}
+                        />
+                        {amountVal && (
+                            <button type="button" onClick={() => setAmountVal("")} className="btn-quiet text-[13px]">Clear</button>
+                        )}
+                    </div>
                 </div>
-
-                {loading ? (
-                    <div className="py-20 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-zinc-500" /></div>
-                ) : visible.length === 0 ? (
-                    <div className="py-20 text-center">
-                        <Receipt className="w-12 h-12 text-zinc-600 mx-auto mb-4" />
-                        <p className="text-zinc-500">No matching expenses.</p>
-                        <p className="text-zinc-600 text-sm mt-1">
-                            {expenses.length === 0 ? "Nothing recorded for this period." : "Try a different search or filter."}
-                        </p>
-                    </div>
-                ) : (
-                    <div className="space-y-2">
-                        {visible.map((e) => (
-                            <ExpenseRow
-                                key={e._id}
-                                expense={e}
-                                category={catMap[e.category]}
-                                onUpdated={handleUpdated}
-                                onDeleted={handleDeleted}
-                            />
-                        ))}
-                    </div>
-                )}
             </div>
-        </div>
+
+            {/* What the period and filters come to. */}
+            <div className="flex flex-wrap items-end gap-x-14 gap-y-6 py-1 md:py-2">
+                <HeroFigure
+                    size="md"
+                    label={filtersActive ? `Matching in ${periodLabel}` : `Spent in ${periodLabel}`}
+                    value={fmt(total)}
+                    loading={loading}
+                    failed={failed}
+                />
+                <dl>
+                    <Term label="Expenses">
+                        {loading
+                            ? <span aria-hidden className="inline-block h-[0.9em] w-14 rounded-md bg-white/[0.05] animate-pulse align-middle" />
+                            : failed ? <Missing /> : visible.length}
+                        {!loading && !failed && filtersActive && <TermNote>of {expenses.length} in {periodLabel}</TermNote>}
+                    </Term>
+                </dl>
+            </div>
+
+            <div ref={resultsRef} className="scroll-mt-6">
+                <Card
+                    title={periodLabel}
+                    id="history-results"
+                    aside={!loading && !failed && pages > 1 ? <span className="label-caps text-zinc-400 tabular-nums">Page {page} of {pages}</span> : undefined}
+                >
+                    {loading ? (
+                        <div aria-hidden className="space-y-3">
+                            {[0, 1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-14 rounded-xl" />)}
+                        </div>
+                    ) : failed ? (
+                        <LoadError what={`your expenses for ${periodLabel}`} onRetry={retry} />
+                    ) : visible.length === 0 ? (
+                        expenses.length === 0 ? (
+                            <Empty
+                                icon={Receipt}
+                                title={`Nothing recorded in ${periodLabel}`}
+                                action={isCurrentPeriod
+                                    ? <button type="button" onClick={openQuickAdd} className="btn-primary">Add an expense</button>
+                                    : undefined}
+                            >
+                                {isCurrentPeriod ? "Expenses you add show up here." : "Pick another month or year above."}
+                            </Empty>
+                        ) : (
+                            <Empty
+                                icon={SearchX}
+                                title="No matching expenses"
+                                action={<button type="button" onClick={clearFilters} className="btn-secondary">Clear filters</button>}
+                            >
+                                Nothing in {periodLabel} matches your search or amount filter.
+                            </Empty>
+                        )
+                    ) : (
+                        <>
+                            <ul ref={listRef} tabIndex={-1} aria-labelledby="history-results" className="-mt-3.5 outline-none">
+                                {shown.map((e) => (
+                                    <li key={e._id} className="border-t border-white/[0.07] first:border-t-0">
+                                        <ExpenseRow
+                                            expense={e}
+                                            category={catMap[e.category]}
+                                            onUpdated={handleUpdated}
+                                            onDeleted={handleDeleted}
+                                        />
+                                    </li>
+                                ))}
+                            </ul>
+
+                            {pages > 1 && (
+                                <nav aria-label="Pages" className="mt-4 pt-4 border-t border-white/[0.07] flex items-center justify-between gap-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => goToPage(page - 1)}
+                                        aria-disabled={page === 1}
+                                        className="btn-secondary aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+                                    >
+                                        <ChevronLeft className="w-4 h-4" aria-hidden /> Previous
+                                    </button>
+                                    <p aria-live="polite" className="text-[12.5px] text-zinc-400 tabular-nums text-center">
+                                        {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, visible.length)} of {visible.length}
+                                    </p>
+                                    <button
+                                        type="button"
+                                        onClick={() => goToPage(page + 1)}
+                                        aria-disabled={page === pages}
+                                        className="btn-secondary aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+                                    >
+                                        Next <ChevronRight className="w-4 h-4" aria-hidden />
+                                    </button>
+                                </nav>
+                            )}
+                        </>
+                    )}
+                </Card>
+            </div>
+        </Page>
     );
 }

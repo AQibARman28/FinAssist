@@ -1,8 +1,11 @@
 "use client";
 
-import { ArrowDown, ArrowUp, PiggyBank, Wallet } from "lucide-react";
+import { motion } from "framer-motion";
+import { CircleAlert, TriangleAlert } from "lucide-react";
 import { useCurrency } from "@/lib/useCurrency";
 import { cn } from "@/lib/utils";
+import { Card, Skeleton, StateNote } from "./ui";
+import { LoadError } from "./LoadNotice";
 
 // Shape returned per-period by GET /analytics/balance.
 export interface PeriodBreakdown {
@@ -28,61 +31,142 @@ export interface BalanceData {
     yearly: PeriodBreakdown;
 }
 
-// Renders the running-balance math for one period:
-//   Carried forward + Income − Expenses − Savings(green) + Returned = Balance
-// Savings is highlighted green because it isn't spent — it's set aside.
+const EASE = [0.16, 1, 0.3, 1] as const;
+
+// Platinum in three steps: spent is the full metal, saved half, and what is
+// left sits close to the track (DESIGN.md › One Accent).
+const STEPS = {
+    spent: "bg-plat",
+    saved: "bg-plat/50",
+    left:  "bg-plat/[0.18]",
+} as const;
+
+// One period's money in two readings. First where the income went, as one
+// bar split into spent / saved / left. Then the running-balance sum that ends
+// at the wallet:
+//   Carried forward + Income − Spent − Saved + Returned − Moved to savings = Wallet
 // "Returned" is money from a deleted goal flowing back into the wallet on the
 // day the goal was deleted (earlier months are left untouched).
-export function SavingsBreakdown({ breakdown, periodLabel }: { breakdown: PeriodBreakdown; periodLabel?: string }) {
+export function SavingsBreakdown({
+    breakdown, periodLabel = "this month", loading = false, failed = false, onRetry, id = "balance-breakdown", className,
+}: {
+    breakdown: PeriodBreakdown | null;
+    periodLabel?: string;
+    loading?: boolean;
+    failed?: boolean;
+    onRetry?: () => void;
+    id?: string;
+    className?: string;
+}) {
     const { format: fmt } = useCurrency();
-    const carryLabel = "Carried forward";
+    const title = `Balance ${periodLabel}`;
+
+    if (loading) {
+        return (
+            <Card title={title} id={id} className={className}>
+                <div aria-hidden className="space-y-4">
+                    <Skeleton className="h-4 w-52 rounded-md" />
+                    <Skeleton className="h-2 rounded-full" />
+                    <div className="grid grid-cols-3 gap-3">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-10 rounded-lg" />)}</div>
+                    <div className="pt-4 space-y-3">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-5 rounded-md" />)}</div>
+                </div>
+            </Card>
+        );
+    }
+    if (failed || !breakdown) {
+        return (
+            <Card title={title} id={id} className={className}>
+                {onRetry
+                    ? <LoadError what="your balance" onRetry={onRetry} className="py-6" />
+                    : <p className="text-sm text-zinc-300">Couldn&apos;t load your balance.</p>}
+            </Card>
+        );
+    }
+
     const released = breakdown.released ?? 0;
+    const income = Math.max(0, breakdown.income);
+    const spent = Math.max(0, breakdown.expenses);
+    const saved = Math.max(0, breakdown.saved) + Math.max(0, breakdown.savingsOut);
+    const out = spent + saved;
+    const left = Math.max(0, income - out);
+    const overBy = out - income;
+    const shares = overBy <= 0 && income > 0;
+    const parts = ([
+        { key: "spent", label: "Spent", value: spent },
+        { key: "saved", label: "Saved", value: saved },
+        { key: "left", label: "Left", value: left },
+    ] as const).filter((p) => p.key !== "left" || shares);
+    const drawn = parts.filter((p) => p.value > 0);
 
     return (
-        <div className="p-5 rounded-3xl bg-zinc-900/50 border border-white/5 space-y-1">
-            <div className="flex items-center justify-between mb-2">
-                <h3 className="text-white font-medium">Balance{periodLabel ? ` · ${periodLabel}` : ""}</h3>
-                <Wallet className="w-4 h-4 text-zinc-500" />
-            </div>
+        <Card title={title} id={id} className={cn("flex flex-col", className)}>
+            <p className="text-[13.5px] text-zinc-300">
+                {income > 0
+                    ? <>Of the <span className="text-white tabular-nums">{fmt(income)}</span> that came in {periodLabel}</>
+                    : <>Nothing has come in {periodLabel} yet.</>}
+            </p>
 
-            <Row icon={<ArrowDown className="w-3.5 h-3.5" />} label={carryLabel} value={fmt(breakdown.carriedForward)} tone="carry" />
-            <Row icon={<ArrowUp className="w-3.5 h-3.5" />} label="Income" value={`+ ${fmt(breakdown.income)}`} tone="income" />
-            <Row icon={<ArrowDown className="w-3.5 h-3.5" />} label="Expenses (out of pocket)" value={`− ${fmt(breakdown.expenses)}`} tone="expense" />
-            {breakdown.saved > 0 && (
-                <Row icon={<PiggyBank className="w-3.5 h-3.5" />} label="Saved to goals" value={`− ${fmt(breakdown.saved)}`} tone="savings" />
-            )}
-            {released > 0 && (
-                <Row icon={<ArrowUp className="w-3.5 h-3.5" />} label="Returned from deleted goals" value={`+ ${fmt(released)}`} tone="income" />
-            )}
-            {breakdown.savingsOut > 0 && (
-                <Row icon={<PiggyBank className="w-3.5 h-3.5" />} label="Moved to savings" value={`− ${fmt(breakdown.savingsOut)}`} tone="savings" />
+            {drawn.length > 0 && (
+                <motion.div
+                    aria-hidden
+                    className="mt-3 flex gap-[2px] h-2 rounded-full overflow-hidden"
+                    style={{ originX: 0 }}
+                    initial={{ scaleX: 0 }} whileInView={{ scaleX: 1 }} viewport={{ once: true }}
+                    transition={{ duration: 0.9, delay: 0.15, ease: EASE }}
+                >
+                    {drawn.map((p) => (
+                        <span key={p.key} className={cn("h-full min-w-[3px]", STEPS[p.key])} style={{ flex: `${p.value} 1 0` }} />
+                    ))}
+                </motion.div>
             )}
 
-            <div className="flex items-center justify-between pt-3 mt-2 border-t border-white/10">
-                <span className="text-sm font-medium text-zinc-300">Wallet (spendable)</span>
-                <span className={cn("text-lg font-bold tabular-nums", breakdown.closing < 0 ? "text-red-400" : "text-white")}>
-                    {fmt(breakdown.closing)}
-                </span>
+            <ul className={cn("grid gap-3", parts.length === 3 ? "grid-cols-3" : "grid-cols-2", drawn.length > 0 ? "mt-4" : "mt-3")}>
+                {parts.map((p) => (
+                    <li key={p.key} className="min-w-0">
+                        <span className="flex items-center gap-2 text-[12.5px] text-zinc-400 tabular-nums">
+                            <span aria-hidden className={cn("w-2.5 h-2.5 shrink-0 rounded-[3px]", STEPS[p.key])} />
+                            <span className="truncate">{p.label}{shares && <> · {Math.round((p.value / income) * 100)}%</>}</span>
+                        </span>
+                        <span className="mt-1 block text-white tabular-nums truncate">{fmt(p.value)}</span>
+                    </li>
+                ))}
+            </ul>
+
+            {overBy > 0 && (
+                <StateNote tone="warn" icon={TriangleAlert} className="mt-4 items-start [&>svg]:mt-[2px] tabular-nums">
+                    <span>{fmt(overBy)} more went out than came in {periodLabel}.</span>
+                </StateNote>
+            )}
+
+            <div className="mt-auto pt-6">
+                <dl className="pt-5 border-t border-white/[0.07] space-y-2.5 text-[13.5px]">
+                    <Line label="Carried forward" value={fmt(breakdown.carriedForward)} />
+                    <Line label="Income" value={`+ ${fmt(breakdown.income)}`} />
+                    <Line label="Spent" value={`− ${fmt(breakdown.expenses)}`} />
+                    {breakdown.saved > 0 && <Line label="Saved to goals" value={`− ${fmt(breakdown.saved)}`} />}
+                    {released > 0 && <Line label="Returned from deleted goals" value={`+ ${fmt(released)}`} />}
+                    {breakdown.savingsOut > 0 && <Line label="Moved to savings" value={`− ${fmt(breakdown.savingsOut)}`} />}
+                </dl>
+                <dl className="mt-4 pt-4 border-t border-white/[0.07] flex flex-wrap items-end justify-between gap-x-3 gap-y-2">
+                    <dt>
+                        <span className="label-caps text-zinc-300">Wallet</span>
+                        <span className="block mt-1 text-[12.5px] text-zinc-400">What you can spend</span>
+                    </dt>
+                    <dd className="text-right">
+                        <span className="block text-[26px] leading-none font-light [font-stretch:112%] tabular-nums text-white">{fmt(breakdown.closing)}</span>
+                        {breakdown.closing < 0 && <StateNote tone="bad" icon={CircleAlert} className="mt-2">Below zero</StateNote>}
+                    </dd>
+                </dl>
             </div>
-        </div>
+        </Card>
     );
 }
 
-const TONE: Record<string, string> = {
-    carry:   "text-zinc-400",
-    income:  "text-zinc-300",
-    expense: "text-red-400/80",
-    savings: "text-emerald-400",
-};
-
-function Row({ icon, label, value, tone }: { icon: React.ReactNode; label: string; value: string; tone: keyof typeof TONE }) {
+function Line({ label, value }: { label: string; value: string }) {
     return (
-        <div className="flex items-center justify-between gap-3 py-1.5">
-            <span className={cn("flex items-center gap-2 text-sm min-w-0", TONE[tone])}>
-                <span className="shrink-0">{icon}</span>
-                <span className="truncate">{label}</span>
-            </span>
-            <span className={cn("text-sm tabular-nums shrink-0", TONE[tone])}>{value}</span>
+        <div className="flex items-baseline justify-between gap-3">
+            <dt className="text-zinc-400 min-w-0 truncate">{label}</dt>
+            <dd className="text-zinc-100 tabular-nums shrink-0">{value}</dd>
         </div>
     );
 }

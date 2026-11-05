@@ -2,9 +2,9 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { motion } from "framer-motion";
-import { MailCheck, ArrowRight, AlertCircle, Check } from "lucide-react";
+import { ArrowLeft, ArrowRight, Loader2, MailCheck } from "lucide-react";
 import { api } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import { FieldLabel, Notice } from "@/components/dashboard/ui";
 
 interface VerifyCodeProps {
     email: string;
@@ -16,6 +16,10 @@ interface VerifyCodeProps {
 }
 
 const RESEND_COOLDOWN = 30; // seconds
+
+// One-time codes are set in Geist Mono with wide tracking (DESIGN.md › Inputs).
+// The left padding gains the tracking's width so the digits sit centred.
+const CODE_FIELD = "field min-h-14 text-center font-mono text-[20px] tracking-[0.3em] pl-[calc(1rem+0.3em)]";
 
 export function VerifyCode({ email, onVerified, autoResend = false, onBack }: VerifyCodeProps) {
     const [code, setCode] = useState("");
@@ -79,73 +83,56 @@ export function VerifyCode({ email, onVerified, autoResend = false, onBack }: Ve
     return (
         <motion.div
             key="verify"
-            initial={{ opacity: 0, x: 20 }}
+            initial={{ opacity: 0, x: 12 }}
             animate={{ opacity: 1, x: 0 }}
-            className="space-y-6"
+            transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+            className="space-y-5"
         >
-            <div className="text-center mb-2">
-                <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-purple-500/10 border border-purple-500/20 mb-3">
-                    <MailCheck className="w-6 h-6 text-purple-400" />
-                </div>
-                <p className="text-zinc-300 text-sm font-medium">Check your email</p>
-                <p className="text-zinc-500 text-xs mt-1">
-                    We sent a 6-digit code to <span className="text-zinc-300">{email}</span>
+            <div>
+                <p className="text-[14px] text-zinc-300">
+                    We sent a 6-digit code to <span className="font-semibold text-white break-all">{email}</span>.
                 </p>
+                {error && <div role="alert" className="mt-4"><Notice tone="bad" className="pr-4">{error}</Notice></div>}
+                {/* Always present, so a new message is announced. */}
+                <div role="status">
+                    {info && !error && <Notice tone="neutral" icon={MailCheck} className="mt-4 pr-4">{info}</Notice>}
+                </div>
             </div>
 
-            {error && (
-                <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4 shrink-0" /> {error}
+            <form onSubmit={handleVerify} className="space-y-5">
+                <div>
+                    <FieldLabel htmlFor="verify-code">Verification code</FieldLabel>
+                    <input
+                        id="verify-code"
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        pattern="[0-9]{6}"
+                        maxLength={6}
+                        placeholder="000000"
+                        value={code}
+                        onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+                        className={CODE_FIELD}
+                        required
+                        autoFocus
+                    />
                 </div>
-            )}
-            {info && !error && (
-                <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm flex items-center gap-2">
-                    <Check className="w-4 h-4 shrink-0" /> {info}
-                </div>
-            )}
 
-            <form onSubmit={handleVerify} className="space-y-6">
-                <input
-                    type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]{6}"
-                    maxLength={6}
-                    placeholder="000000"
-                    value={code}
-                    onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
-                    className="w-full bg-zinc-900/50 border-b border-zinc-800 focus:border-purple-500 text-zinc-300 placeholder:text-zinc-600 text-center text-2xl tracking-[0.5em] py-3 outline-none transition-all duration-300 rounded-t-sm"
-                    required
-                    autoFocus
-                />
-
-                <motion.button
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                    type="submit"
-                    disabled={isLoading || code.length !== 6}
-                    className={cn(
-                        "w-full flex items-center justify-center gap-2 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-medium py-3 rounded-full shadow-lg shadow-purple-900/20 transition-all duration-300",
-                        (isLoading || code.length !== 6) && "opacity-60 cursor-not-allowed",
-                    )}
-                >
-                    {isLoading ? (
-                        <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    ) : (
-                        <>Verify &amp; continue <ArrowRight className="w-4 h-4" /></>
-                    )}
-                </motion.button>
+                <button type="submit" disabled={isLoading || code.length !== 6} className="btn-primary w-full min-h-12">
+                    {isLoading
+                        ? <><Loader2 className="w-4 h-4 animate-spin" aria-hidden /><span className="sr-only">Verifying</span></>
+                        : <>Verify and continue <ArrowRight className="w-4 h-4" aria-hidden /></>}
+                </button>
             </form>
 
-            <div className="flex items-center justify-between text-xs text-zinc-500">
+            {/* Quiet actions, pulled out by their padding so their text lines up with the form. */}
+            <div className="-mx-3 flex items-center justify-between gap-2">
                 {onBack ? (
-                    <button type="button" onClick={onBack} className="hover:text-zinc-300 transition-colors">← Back</button>
+                    <button type="button" onClick={onBack} className="btn-quiet">
+                        <ArrowLeft className="w-4 h-4" aria-hidden /> Back
+                    </button>
                 ) : <span />}
-                <button
-                    type="button"
-                    onClick={resend}
-                    disabled={cooldown > 0}
-                    className={cn("transition-colors", cooldown > 0 ? "text-zinc-600 cursor-not-allowed" : "text-purple-400 hover:text-purple-300")}
-                >
+                <button type="button" onClick={resend} disabled={cooldown > 0} className="btn-quiet tabular-nums">
                     {cooldown > 0 ? `Resend code in ${cooldown}s` : "Resend code"}
                 </button>
             </div>

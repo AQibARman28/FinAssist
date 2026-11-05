@@ -1,75 +1,83 @@
 "use client";
 
 import { useMemo } from "react";
-import {
-    BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell,
-} from "recharts";
-import { Loader2 } from "lucide-react";
+import { format } from "date-fns";
 import { useApi } from "@/lib/useApi";
 import { useCurrency } from "@/lib/useCurrency";
+import { calendarDay } from "@/lib/dates";
+import { ColumnChart, type ColumnRow } from "../ColumnChart";
+import { Card, Empty, Segmented, Skeleton } from "../ui";
+import { LoadError } from "../LoadNotice";
 
 export type IncomeGranularity = "monthly" | "yearly";
 
 interface Bucket { period: string; label: string; total: number; }
 interface TimelineData { granularity: IncomeGranularity; buckets: Bucket[]; grandTotal: number; }
 
-export function IncomeChart({ granularity }: { granularity: IncomeGranularity }) {
-    const { currency, format: fmtFull } = useCurrency();
-    const fmtAxis = useMemo(
-        () => new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 0, notation: "compact" }),
-        [currency],
-    );
+const GRANULARITY: { key: IncomeGranularity; label: string }[] = [
+    { key: "monthly", label: "Monthly" },
+    { key: "yearly", label: "Yearly" },
+];
+
+// Income over time as platinum columns (DESIGN.md › Bars): this year month by
+// month, or the last few years. The column read first is the current period,
+// the last one; the server counts it only up to today.
+export function IncomeChart({ granularity, onGranularity, className }: {
+    granularity: IncomeGranularity;
+    onGranularity: (g: IncomeGranularity) => void;
+    className?: string;
+}) {
+    const money = useCurrency();
 
     // One cache entry per granularity: switching back and forth is instant.
     const timeline = useApi<TimelineData>("/incomes/timeline", { granularity });
-    const data = timeline.data ?? null;
-    const loading = timeline.isLoading;
 
-    const rows = data?.buckets ?? [];
-    const hasAny = rows.some((b) => b.total > 0);
-
-    if (loading) {
-        return <div className="h-[300px] flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-zinc-500" /></div>;
-    }
-    if (!hasAny) {
-        return (
-            <div className="h-[300px] flex items-center justify-center text-zinc-600 text-sm">
-                No income recorded {granularity === "monthly" ? "this year" : "in recent years"}
-            </div>
-        );
-    }
+    const rows = useMemo<ColumnRow[]>(
+        () => (timeline.data?.buckets ?? []).map((b) => ({
+            key: b.period,
+            label: b.label,
+            // Buckets start at UTC midnight; calendarDay keeps the month the server meant.
+            title: granularity === "monthly" ? format(calendarDay(b.period), "MMMM yyyy") : b.label,
+            values: [b.total],
+        })),
+        [timeline.data, granularity],
+    );
+    const hasAny = rows.some((r) => r.values[0] > 0);
+    const title = granularity === "monthly" ? "Income by month" : "Income by year";
+    const span = rows.length > 0 ? `${rows[0].title ?? rows[0].label} to ${rows[rows.length - 1].title ?? rows[rows.length - 1].label}` : "";
 
     return (
-        <div className="h-[300px]" aria-label={`${granularity} income chart`}>
-            <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                    <defs>
-                        <linearGradient id="incomeBarFill" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="0%" stopColor="#34d399" stopOpacity={0.95} />
-                            <stop offset="100%" stopColor="#10b981" stopOpacity={0.5} />
-                        </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-                    <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: "#71717a", fontSize: 12 }} dy={8} minTickGap={8} />
-                    <YAxis axisLine={false} tickLine={false} tick={{ fill: "#71717a", fontSize: 12 }} dx={-6} tickFormatter={(v: number) => fmtAxis.format(v)} width={64} />
-                    <Tooltip
-                        cursor={{ fill: "rgba(16,185,129,0.08)" }}
-                        content={(p) => {
-                            if (!p.active || !p.payload?.length) return null;
-                            const b = p.payload[0].payload as Bucket;
-                            return (
-                                <div className="p-3 rounded-xl bg-zinc-900/95 backdrop-blur border border-white/10 shadow-2xl shadow-black/50">
-                                    <div className="text-sm font-medium text-white">{b.label}</div>
-                                    <div className="text-sm font-semibold text-emerald-400 tabular-nums mt-0.5">{fmtFull(b.total)}</div>
-                                </div>
-                            );
-                        }}
+        <Card
+            title={title}
+            id="income-chart"
+            className={className}
+            aside={<Segmented label="Show income" items={GRANULARITY} value={granularity} onChange={onGranularity} />}
+        >
+            {timeline.isLoading ? (
+                <div aria-hidden className="space-y-4">
+                    <div className="flex justify-end"><Skeleton className="h-[60px] w-40 rounded-xl" /></div>
+                    <Skeleton className="h-[220px] md:h-[260px] rounded-xl" />
+                </div>
+            ) : timeline.error !== undefined ? (
+                <LoadError what="your income over time" onRetry={() => void timeline.refresh()} className="py-16" />
+            ) : !hasAny ? (
+                <Empty title={granularity === "monthly" ? "No income recorded this year" : "No income recorded in recent years"} className="py-20">
+                    Each {granularity === "monthly" ? "month" : "year"} you record income gets a column here.
+                </Empty>
+            ) : (
+                <>
+                    <ColumnChart
+                        rows={rows}
+                        series={[{ label: "Income", tone: "plat" }]}
+                        fmt={money}
+                        title={`${title}, ${span}`}
+                        initial={rows.length - 1}
                     />
-                    <Bar dataKey="total" radius={[6, 6, 0, 0]} fill="url(#incomeBarFill)" maxBarSize={64}>
-                        {rows.map((b) => <Cell key={b.period} />)}
-                    </Bar>
-                </BarChart>
-            </ResponsiveContainer>
-        </div>
+                    <p className="mt-3 text-[12.5px] text-zinc-400">
+                        {granularity === "monthly" ? "This month" : "This year"} counts income received up to today.
+                    </p>
+                </>
+            )}
+        </Card>
     );
 }

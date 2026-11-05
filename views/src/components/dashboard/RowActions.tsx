@@ -42,21 +42,21 @@ export function RowActions({ itemLabel, onEdit, onDelete, confirmText = "Delete?
     if (confirming) {
         return (
             <div className={cn("flex flex-wrap items-center justify-end gap-1.5", className)} role="group" aria-label={`Confirm delete ${itemLabel}`}>
-                <span className="text-xs text-zinc-300 mr-0.5">{confirmText}</span>
+                <span className="text-[13px] text-zinc-300 mr-0.5">{confirmText}</span>
                 <button
                     type="button"
                     onClick={confirmDelete}
                     disabled={busy}
-                    className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-red-500/15 text-red-300 border border-red-500/30 hover:bg-red-500/25 disabled:opacity-50 transition-colors"
+                    className="btn-danger px-3 text-[13px]"
                 >
-                    {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                    {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden /> : <Trash2 className="w-3.5 h-3.5" aria-hidden />}
                     Delete
                 </button>
                 <button
                     type="button"
                     onClick={() => setConfirming(false)}
                     disabled={busy}
-                    className="px-3 py-2 text-xs rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-white/5 disabled:opacity-50 transition-colors"
+                    className="btn-quiet text-[13px]"
                 >
                     Cancel
                 </button>
@@ -72,18 +72,18 @@ export function RowActions({ itemLabel, onEdit, onDelete, confirmText = "Delete?
                     type="button"
                     onClick={onEdit}
                     aria-label={`Edit ${itemLabel}`}
-                    className="p-2.5 rounded-lg text-zinc-500 hover:text-zinc-200 hover:bg-white/5 transition-colors"
+                    className="btn-icon"
                 >
-                    <Pencil className="w-4 h-4" />
+                    <Pencil className="w-4 h-4" aria-hidden />
                 </button>
             )}
             <button
                 type="button"
                 onClick={() => { setError(null); setConfirming(true); }}
                 aria-label={`Delete ${itemLabel}`}
-                className="p-2.5 rounded-lg text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                className="btn-icon hover:text-red-300 hover:bg-red-500/10"
             >
-                <Trash2 className="w-4 h-4" />
+                <Trash2 className="w-4 h-4" aria-hidden />
             </button>
         </div>
     );

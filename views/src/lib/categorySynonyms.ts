@@ -12,12 +12,12 @@ export const CATEGORY_SYNONYMS: Record<string, string[]> = {
     food: [
         "lunch", "dinner", "breakfast", "brunch", "groceries", "grocery",
         "coffee", "tea", "snack", "snacks", "pizza", "burger", "restaurant",
-        "cafe", "meal", "eat", "dining", "food",
+        "cafe", "meal", "eat", "dining", "food", "canteen", "fuchka", "chotpoti",
     ],
     transport: [
         "uber", "taxi", "cab", "bus", "train", "metro", "tram", "fuel", "gas",
         "petrol", "diesel", "ride", "fare", "parking", "toll", "commute",
-        "transport",
+        "transport", "rickshaw", "cng",
     ],
     entertainment: [
         "movie", "movies", "cinema", "game", "games", "concert", "show", "gig",
@@ -30,6 +30,7 @@ export const CATEGORY_SYNONYMS: Record<string, string[]> = {
     bills: [
         "bill", "bills", "electricity", "electric", "water", "internet", "wifi",
         "rent", "phone", "mobile", "subscription", "utility", "utilities",
+        "recharge", "hostel",
     ],
     healthcare: [
         "doctor", "medicine", "medicines", "pharmacy", "hospital", "clinic",

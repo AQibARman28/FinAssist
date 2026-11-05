@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
-    ChevronDown, Plus, Check, AlertCircle, Loader2,
-    Pencil, Trash2, Archive, Search, Eye, EyeOff, Sparkles,
+    ChevronDown, Plus, Check, Loader2,
+    Pencil, Trash2, Archive, Search, Eye, EyeOff,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
@@ -14,6 +14,7 @@ import {
     type IconName,
 } from "@/lib/categoryIcons";
 import { CategoryIcon } from "@/components/CategoryIcon";
+import { FieldError, FieldLabel } from "@/components/dashboard/ui";
 
 interface Category {
     _id: string;
@@ -32,6 +33,13 @@ interface CategoryPickerProps {
     error?: string;
     placeholder?: string;
     disabled?: boolean;
+    /** The trigger button's id, so a `<label htmlFor>` can point at it. */
+    id?: string;
+    /**
+     * The id of a visible caption ("Category"). The trigger is then named by
+     * that caption followed by its own text ("Category, Food").
+     */
+    labelledBy?: string;
     /**
      * SEAM for EXP-1 Phase 4 (learning categorizer): when provided, the matching
      * row is pre-highlighted as a suggestion. No caller passes this yet; the
@@ -49,10 +57,22 @@ interface CategoryPickerProps {
 
 const TX_PATH = { expense: "/expenses", income: "/incomes" } as const;
 
+// A category's own colour: a small square beside its name, nothing more
+// (DESIGN.md › The Data Colour Rule).
+function Swatch({ color }: { color?: string }) {
+    return <span aria-hidden className="w-2.5 h-2.5 shrink-0 rounded-[3px]" style={{ backgroundColor: color }} />;
+}
+
+// The popover's footer and small row controls: platinum for the one action,
+// quiet for the rest.
+const footerAction = "inline-flex items-center gap-2 min-h-11 px-3 rounded-xl text-[13.5px] font-semibold text-plat hover:text-white hover:bg-white/[0.05] transition-colors focus-ring";
+
 export function CategoryPicker({
     value, onChange, type, error,
     placeholder = "Select category",
     disabled = false,
+    id,
+    labelledBy,
     suggestedCategoryId,
     autoSelectDefault = false,
 }: CategoryPickerProps) {
@@ -68,6 +88,10 @@ export function CategoryPicker({
     const rootRef        = useRef<HTMLDivElement>(null);
     const searchRef      = useRef<HTMLInputElement>(null);
     const autoSelectedRef = useRef(false);
+    const autoId = useId();
+    const triggerId = id ?? `${autoId}-trigger`;
+    const errorId = `${autoId}-error`;
+    const searchId = `${autoId}-search`;
 
     // ── Load categories (incl. archived; the picker gates visibility itself) ──
     // From the list the rest of the app shares (lib/useCategories.ts).
@@ -210,43 +234,58 @@ export function CategoryPicker({
         } finally { setRowBusy(null); }
     };
 
+    const rowProps = (c: Category) => ({
+        cat: c,
+        selected: c._id === value,
+        suggested: c._id === suggestedCategoryId,
+        deleting: deletingId === c._id,
+        busy: rowBusy === c._id,
+        error: rowError?.id === c._id ? rowError.msg : null,
+        onSelect: () => select(c._id),
+        onEdit: () => { setEditingCat(c); setMode("edit"); },
+        onAskDelete: () => { setDeletingId(c._id); setRowError(null); },
+        onCancelDelete: () => { setDeletingId(null); setRowError(null); },
+        onArchive: () => handleArchive(c),
+        onForceDelete: () => handleForceDelete(c),
+        onUnarchive: () => handleUnarchive(c),
+    });
+
     return (
         <div ref={rootRef} className="relative">
             <button
+                id={triggerId}
                 type="button"
                 onClick={() => { if (!disabled) { setOpen((o) => !o); setTimeout(() => searchRef.current?.focus(), 0); } }}
                 disabled={disabled}
+                aria-expanded={open}
+                aria-labelledby={labelledBy ? `${labelledBy} ${triggerId}` : undefined}
+                aria-describedby={error ? errorId : undefined}
                 className={cn(
-                    "w-full flex items-center gap-3 bg-black/40 border rounded-xl px-4 py-3 text-left transition-colors",
-                    error ? "border-red-500/50" : "border-white/10",
-                    !disabled && "hover:border-purple-500/30 focus:outline-none focus:border-purple-500/50",
-                    disabled && "opacity-50 cursor-not-allowed",
+                    "field flex items-center gap-3 text-left",
+                    // A button can't carry aria-invalid; the error line is tied to it instead.
+                    error ? "border-red-400/60" : !disabled && "hover:border-white/20",
+                    !disabled && "cursor-pointer",
                 )}
             >
                 {selected ? (
                     <>
-                        <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: selected.color }} />
-                        <CategoryIcon icon={selected.icon} className="w-4 h-4 text-zinc-400 shrink-0" />
-                        <span className="text-white font-medium truncate">{selected.name}</span>
+                        <Swatch color={selected.color} />
+                        <CategoryIcon icon={selected.icon} className="w-4 h-4 text-zinc-400 shrink-0" aria-hidden />
+                        <span className="min-w-0 truncate text-white">{selected.name}</span>
                     </>
                 ) : (
-                    <span className="text-zinc-500 flex-1">{placeholder}</span>
+                    <span className="flex-1 min-w-0 truncate text-zinc-400">{placeholder}</span>
                 )}
-                <ChevronDown className={cn("w-4 h-4 text-zinc-500 ml-auto transition-transform", open && "rotate-180")} />
+                <ChevronDown aria-hidden className={cn("w-4 h-4 shrink-0 ml-auto text-zinc-400 transition-transform", open && "rotate-180")} />
             </button>
 
-            {error && (
-                <div className="mt-1.5 flex items-center gap-1.5 text-red-400 text-xs">
-                    <AlertCircle className="w-3 h-3 shrink-0" />
-                    <span>{error}</span>
-                </div>
-            )}
+            {error && <FieldError id={errorId}>{error}</FieldError>}
 
             {open && (
-                <div className="absolute top-full left-0 mt-2 z-50 w-full min-w-[20rem] bg-zinc-900 border border-white/10 rounded-xl shadow-2xl shadow-black/50 max-h-[28rem] flex flex-col overflow-hidden">
+                <div className="absolute top-full left-0 mt-2 z-50 w-full min-w-[min(20rem,calc(100vw-2rem))] max-h-[28rem] flex flex-col overflow-hidden rounded-2xl bg-graphite-raised border border-white/10 shadow-[0_25px_50px_-12px_rgb(0_0_0/0.5)]">
                     {loading ? (
-                        <div className="flex items-center justify-center py-8 text-zinc-500">
-                            <Loader2 className="w-4 h-4 animate-spin" />
+                        <div aria-hidden className="p-3 space-y-2">
+                            {[0, 1, 2, 3].map((i) => <div key={i} className="h-11 rounded-xl bg-white/[0.05] animate-pulse" />)}
                         </div>
                     ) : mode === "create" ? (
                         <CategoryForm type={type} onCancel={() => setMode("list")} onSaved={handleCreated} />
@@ -255,78 +294,51 @@ export function CategoryPicker({
                     ) : (
                         <>
                             {/* Type-to-filter */}
-                            <div className="p-2 border-b border-white/5 shrink-0">
-                                <div className="flex items-center gap-2 bg-black/40 rounded-lg px-2.5 py-1.5">
-                                    <Search className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+                            <div className="p-2 shrink-0 border-b border-white/[0.07]">
+                                <label htmlFor={searchId} className="sr-only">Search categories</label>
+                                <div className="relative">
+                                    <Search aria-hidden className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400 pointer-events-none" />
                                     <input
+                                        id={searchId}
                                         ref={searchRef}
                                         value={query}
                                         onChange={(e) => setQuery(e.target.value)}
                                         placeholder="Search categories"
-                                        className="bg-transparent text-sm text-white placeholder:text-zinc-600 focus:outline-none w-full"
+                                        className="field min-h-11 py-2 pl-10"
                                     />
                                 </div>
                             </div>
 
-                            <div className="overflow-y-auto flex-1 py-1">
+                            <div className="overflow-y-auto flex-1 p-1.5">
                                 {visible.length === 0 ? (
-                                    <div className="px-4 py-3 text-sm text-zinc-500">
+                                    <p className="px-3 py-3 text-[13.5px] text-zinc-400">
                                         {query.trim() ? "No matches." : `No ${type} categories yet — create one below.`}
-                                    </div>
+                                    </p>
                                 ) : (
                                     <>
                                         {recentCats.length > 0 && (
                                             <>
-                                                <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wider text-zinc-600">Recent</div>
-                                                {recentCats.map((c) => (
-                                                    <CategoryRow
-                                                        key={`r-${c._id}`} cat={c} selected={c._id === value}
-                                                        suggested={c._id === suggestedCategoryId}
-                                                        deleting={deletingId === c._id} busy={rowBusy === c._id}
-                                                        error={rowError?.id === c._id ? rowError.msg : null}
-                                                        onSelect={() => select(c._id)}
-                                                        onEdit={() => { setEditingCat(c); setMode("edit"); }}
-                                                        onAskDelete={() => { setDeletingId(c._id); setRowError(null); }}
-                                                        onCancelDelete={() => { setDeletingId(null); setRowError(null); }}
-                                                        onArchive={() => handleArchive(c)} onForceDelete={() => handleForceDelete(c)}
-                                                        onUnarchive={() => handleUnarchive(c)}
-                                                    />
-                                                ))}
-                                                <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wider text-zinc-600">All</div>
+                                                <p className="px-3 pt-2 pb-1.5 label-caps text-zinc-400">Recent</p>
+                                                {recentCats.map((c) => <CategoryRow key={`r-${c._id}`} {...rowProps(c)} />)}
+                                                <p className="px-3 pt-3 pb-1.5 label-caps text-zinc-400">All</p>
                                             </>
                                         )}
-                                        {restCats.map((c) => (
-                                            <CategoryRow
-                                                key={c._id} cat={c} selected={c._id === value}
-                                                suggested={c._id === suggestedCategoryId}
-                                                deleting={deletingId === c._id} busy={rowBusy === c._id}
-                                                error={rowError?.id === c._id ? rowError.msg : null}
-                                                onSelect={() => select(c._id)}
-                                                onEdit={() => { setEditingCat(c); setMode("edit"); }}
-                                                onAskDelete={() => { setDeletingId(c._id); setRowError(null); }}
-                                                onCancelDelete={() => { setDeletingId(null); setRowError(null); }}
-                                                onArchive={() => handleArchive(c)} onForceDelete={() => handleForceDelete(c)}
-                                                onUnarchive={() => handleUnarchive(c)}
-                                            />
-                                        ))}
+                                        {restCats.map((c) => <CategoryRow key={c._id} {...rowProps(c)} />)}
                                     </>
                                 )}
                             </div>
 
-                            <div className="flex items-center justify-between border-t border-white/5 shrink-0">
-                                <button
-                                    type="button"
-                                    onClick={() => setMode("create")}
-                                    className="flex items-center gap-2 px-4 py-3 text-sm text-purple-400 hover:bg-purple-500/10 transition-colors"
-                                >
-                                    <Plus className="w-4 h-4" /> New category
+                            <div className="flex items-center justify-between gap-2 px-1.5 py-1 shrink-0 border-t border-white/[0.07]">
+                                <button type="button" onClick={() => setMode("create")} className={footerAction}>
+                                    <Plus className="w-4 h-4" aria-hidden /> New category
                                 </button>
                                 <button
                                     type="button"
                                     onClick={() => setShowArchived((s) => !s)}
-                                    className="flex items-center gap-1.5 px-3 py-3 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+                                    aria-pressed={showArchived}
+                                    className="btn-quiet text-[13px]"
                                 >
-                                    {showArchived ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                    {showArchived ? <EyeOff className="w-4 h-4" aria-hidden /> : <Eye className="w-4 h-4" aria-hidden />}
                                     {showArchived ? "Hide archived" : "Show archived"}
                                 </button>
                             </div>
@@ -362,27 +374,21 @@ function CategoryRow({
 }: CategoryRowProps) {
     if (deleting) {
         return (
-            <div className="px-4 py-2.5 bg-white/5">
-                <div className="text-xs text-zinc-300 mb-2">
+            <div className="my-1 p-3 rounded-xl bg-white/[0.05]">
+                <p className="text-[13px] text-zinc-300">
                     {cat.isArchived ? `Delete "${cat.name}" permanently?` : `Remove "${cat.name}"?`}
-                </div>
-                {error && (
-                    <div className="text-[11px] text-red-400 flex items-start gap-1.5 mb-2">
-                        <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" /><span>{error}</span>
-                    </div>
-                )}
-                <div className="flex gap-2">
+                </p>
+                {error && <FieldError>{error}</FieldError>}
+                <div className="mt-2.5 flex flex-wrap gap-1.5">
                     {!cat.isArchived && (
-                        <button type="button" onClick={onArchive} disabled={busy}
-                            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg bg-white/5 text-zinc-200 hover:bg-white/10 disabled:opacity-50">
-                            {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Archive className="w-3 h-3" />} Archive
+                        <button type="button" onClick={onArchive} disabled={busy} className="btn-secondary px-3 text-[13px]">
+                            {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden /> : <Archive className="w-3.5 h-3.5" aria-hidden />} Archive
                         </button>
                     )}
-                    <button type="button" onClick={onForceDelete} disabled={busy}
-                        className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 disabled:opacity-50">
-                        {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />} Delete
+                    <button type="button" onClick={onForceDelete} disabled={busy} className="btn-danger px-3 text-[13px]">
+                        {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden /> : <Trash2 className="w-3.5 h-3.5" aria-hidden />} Delete
                     </button>
-                    <button type="button" onClick={onCancelDelete} className="px-2.5 py-1.5 text-xs text-zinc-400 hover:text-zinc-200">
+                    <button type="button" onClick={onCancelDelete} className="btn-quiet text-[13px]">
                         Cancel
                     </button>
                 </div>
@@ -391,44 +397,38 @@ function CategoryRow({
     }
 
     return (
-        <div className={cn("group flex items-center pr-1", cat.isArchived && "opacity-60")}>
+        <div className={cn("group flex items-center gap-0.5 rounded-xl", cat.isArchived && "opacity-70")}>
             <button
                 type="button"
                 onClick={onSelect}
+                aria-current={selected ? "true" : undefined}
                 className={cn(
-                    "flex-1 min-w-0 flex items-center gap-3 px-4 py-2.5 text-left transition-colors",
-                    selected ? "bg-purple-500/10 text-purple-300" : "text-zinc-300 hover:bg-white/5",
+                    "flex-1 min-w-0 flex items-center gap-3 min-h-11 px-3 rounded-xl text-left text-[14px] transition-colors focus-ring",
+                    selected ? "bg-white/[0.07] text-white" : "text-zinc-200 hover:bg-white/[0.05] hover:text-white",
+                    suggested && !selected && "ring-1 ring-inset ring-plat/40",
                 )}
             >
-                <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: cat.color }} />
-                <CategoryIcon icon={cat.icon} className="w-4 h-4 shrink-0" />
-                <span className="font-medium truncate">{cat.name}</span>
-                {suggested && (
-                    <span className="flex items-center gap-1 text-[10px] text-amber-300/90 bg-amber-400/10 px-1.5 py-0.5 rounded-full shrink-0">
-                        <Sparkles className="w-2.5 h-2.5" /> suggested
-                    </span>
-                )}
-                {cat.isArchived && (
-                    <span className="text-[10px] uppercase tracking-wider text-zinc-500 shrink-0">archived</span>
-                )}
-                {selected && <Check className="w-4 h-4 ml-auto text-purple-400 shrink-0" />}
+                <Swatch color={cat.color} />
+                <CategoryIcon icon={cat.icon} className="w-4 h-4 shrink-0 text-zinc-400" aria-hidden />
+                <span className="min-w-0 truncate font-medium">{cat.name}</span>
+                {suggested && <span className="shrink-0 label-caps text-zinc-400">Suggested</span>}
+                {cat.isArchived && <span className="shrink-0 label-caps text-zinc-400">Archived</span>}
+                {selected && <Check className="w-4 h-4 ml-auto shrink-0 text-plat" aria-hidden />}
             </button>
 
-            <div className="flex items-center gap-0.5 pr-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+            {/* Visible on hover and keyboard focus; always visible on touch screens. */}
+            <div className="flex items-center opacity-0 group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity">
                 {cat.isArchived ? (
-                    <button type="button" onClick={onUnarchive} disabled={busy} aria-label={`Un-archive ${cat.name}`}
-                        className="p-1.5 rounded-lg text-zinc-500 hover:text-emerald-400 hover:bg-white/5">
-                        {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Eye className="w-3.5 h-3.5" />}
+                    <button type="button" onClick={onUnarchive} disabled={busy} aria-label={`Un-archive ${cat.name}`} className="btn-icon">
+                        {busy ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden /> : <Eye className="w-4 h-4" aria-hidden />}
                     </button>
                 ) : (
-                    <button type="button" onClick={onEdit} aria-label={`Edit ${cat.name}`}
-                        className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-200 hover:bg-white/5">
-                        <Pencil className="w-3.5 h-3.5" />
+                    <button type="button" onClick={onEdit} aria-label={`Edit ${cat.name}`} className="btn-icon">
+                        <Pencil className="w-4 h-4" aria-hidden />
                     </button>
                 )}
-                <button type="button" onClick={onAskDelete} aria-label={`Delete ${cat.name}`}
-                    className="p-1.5 rounded-lg text-zinc-500 hover:text-red-400 hover:bg-red-500/10">
-                    <Trash2 className="w-3.5 h-3.5" />
+                <button type="button" onClick={onAskDelete} aria-label={`Delete ${cat.name}`} className="btn-icon hover:text-red-300 hover:bg-red-500/10">
+                    <Trash2 className="w-4 h-4" aria-hidden />
                 </button>
             </div>
         </div>
@@ -451,6 +451,8 @@ function CategoryForm({ type, initial, onCancel, onSaved }: CategoryFormProps) {
     const [icon, setIcon]   = useState<IconName>(initial?.icon ?? "more");
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const nameId = useId();
+    const errorId = useId();
 
     const handleSubmit = async () => {
         if (!name.trim()) return;
@@ -469,65 +471,71 @@ function CategoryForm({ type, initial, onCancel, onSaved }: CategoryFormProps) {
     };
 
     return (
-        <div className="p-4 space-y-3 overflow-y-auto">
-            <div className="text-sm font-medium text-white">{isEdit ? `Edit "${initial.name}"` : "New category"}</div>
-            <input
-                autoFocus
-                type="text"
-                placeholder="Category name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                onKeyDown={(e) => {
-                    if (e.key === "Enter") { e.preventDefault(); handleSubmit(); }
-                    else if (e.key === "Escape") { e.preventDefault(); onCancel(); }
-                }}
-                maxLength={60}
-                className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/50"
-            />
+        <div className="p-4 space-y-4 overflow-y-auto">
+            <p className="font-semibold text-white">{isEdit ? `Edit "${initial.name}"` : "New category"}</p>
 
             <div>
-                <div className="text-xs text-zinc-500 mb-1.5">Color</div>
-                <div className="flex flex-wrap gap-1.5">
-                    {CATEGORY_COLOR_SWATCHES.map((c) => (
-                        <button key={c} type="button" onClick={() => setColor(c)} aria-label={`color ${c}`}
-                            className={cn("w-6 h-6 rounded-full transition-all",
-                                color === c ? "ring-2 ring-white ring-offset-2 ring-offset-zinc-900 scale-110" : "hover:scale-110")}
-                            style={{ backgroundColor: c }} />
-                    ))}
-                </div>
+                <FieldLabel htmlFor={nameId}>Name</FieldLabel>
+                <input
+                    id={nameId}
+                    autoFocus
+                    type="text"
+                    placeholder="Category name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    onKeyDown={(e) => {
+                        if (e.key === "Enter") { e.preventDefault(); handleSubmit(); }
+                        else if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+                    }}
+                    maxLength={60}
+                    aria-invalid={error ? true : undefined}
+                    aria-describedby={error ? errorId : undefined}
+                    className="field min-h-11 py-2.5"
+                />
             </div>
 
-            <div>
-                <div className="text-xs text-zinc-500 mb-1.5">Icon</div>
-                <div className="grid grid-cols-7 gap-1.5">
+            <fieldset>
+                <legend className="mb-1.5 text-[13px] font-medium text-zinc-300">Color</legend>
+                {/* The colour is the user's own label for the category, so the
+                    palette keeps its hues. Each dot sits in a 44px target. */}
+                <div className="-mx-1.5 flex flex-wrap">
+                    {CATEGORY_COLOR_SWATCHES.map((c) => (
+                        <button key={c} type="button" onClick={() => setColor(c)} aria-label={`color ${c}`} aria-pressed={color === c}
+                            className="grid place-items-center w-11 h-11 rounded-full focus-ring">
+                            <span aria-hidden
+                                className={cn("w-6 h-6 rounded-full transition-transform",
+                                    color === c ? "ring-2 ring-plat ring-offset-2 ring-offset-graphite-raised" : "hover:scale-110")}
+                                style={{ backgroundColor: c }} />
+                        </button>
+                    ))}
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend className="mb-1.5 text-[13px] font-medium text-zinc-300">Icon</legend>
+                <div className="grid grid-cols-6 gap-1">
                     {ICON_NAMES.map((n) => {
                         const I = CATEGORY_ICONS[n];
                         const sel = icon === n;
                         return (
-                            <button key={n} type="button" onClick={() => setIcon(n)} aria-label={n}
-                                className={cn("w-8 h-8 flex items-center justify-center rounded-lg transition-colors",
-                                    sel ? "bg-purple-500/20 text-purple-300 ring-1 ring-purple-500/50"
-                                        : "bg-black/40 text-zinc-400 hover:text-zinc-200 hover:bg-white/5")}>
-                                <I className="w-4 h-4" />
+                            <button key={n} type="button" onClick={() => setIcon(n)} aria-label={n} aria-pressed={sel}
+                                className={cn("h-11 grid place-items-center rounded-xl transition-colors focus-ring",
+                                    sel ? "bg-plat text-plat-ink" : "bg-black/30 text-zinc-400 hover:text-white hover:bg-white/[0.07]")}>
+                                <I className="w-4 h-4" aria-hidden />
                             </button>
                         );
                     })}
                 </div>
-            </div>
+            </fieldset>
 
-            {error && (
-                <div className="text-red-400 text-xs flex items-center gap-1.5">
-                    <AlertCircle className="w-3 h-3 shrink-0" /><span>{error}</span>
-                </div>
-            )}
+            {error && <FieldError id={errorId}>{error}</FieldError>}
 
-            <div className="flex gap-2 pt-1">
-                <button type="button" onClick={handleSubmit} disabled={submitting || !name.trim()}
-                    className="flex-1 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-sm font-medium px-3 py-2 rounded-lg transition-colors flex items-center justify-center gap-1.5">
-                    {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : isEdit ? <Check className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+            <div className="flex gap-2">
+                <button type="button" onClick={handleSubmit} disabled={submitting || !name.trim()} className="btn-primary flex-1">
+                    {submitting ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden /> : isEdit ? <Check className="w-4 h-4" aria-hidden /> : <Plus className="w-4 h-4" aria-hidden />}
                     {isEdit ? "Save" : "Create"}
                 </button>
-                <button type="button" onClick={onCancel} className="px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200 rounded-lg transition-colors">
+                <button type="button" onClick={onCancel} className="btn-quiet">
                     Cancel
                 </button>
             </div>

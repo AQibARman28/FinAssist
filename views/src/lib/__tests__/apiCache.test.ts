@@ -54,6 +54,25 @@ describe("apiCache — loading", () => {
         assert.equal(readEntry("k").error, undefined);
     });
 
+    it("remembers when the body on screen was fetched, through a failed refetch", async () => {
+        let fail = false;
+        const loader = counter(() => { if (fail) throw new Error("down"); return { data: "ok" }; });
+        await load("k", loader, 0);
+        const bodyAt = readEntry("k").bodyAt;
+        assert.equal(typeof bodyAt, "number");
+        await new Promise((r) => setTimeout(r, 5));
+        fail = true;
+        await load("k", loader, 0);
+        assert.equal(readEntry("k").bodyAt, bodyAt);
+        assert.ok(readEntry("k").fetchedAt > (bodyAt as number));
+    });
+
+    it("has no body time when the first load fails", async () => {
+        await load("k", counter(() => { throw new Error("down"); }), 0);
+        assert.equal(readEntry("k").body, undefined);
+        assert.equal(readEntry("k").bodyAt, undefined);
+    });
+
     it("notifies subscribers when an entry changes", async () => {
         let notified = 0;
         const unsubscribe = subscribe("k", () => { notified++; });

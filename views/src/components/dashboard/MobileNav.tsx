@@ -1,22 +1,45 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { Menu, X, LogOut } from "lucide-react";
+import { CreditCard, LayoutDashboard, LogOut, Menu, Plus, Wallet, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/lib/store";
+import { useDialogFocus } from "@/lib/useDialogFocus";
+import { openQuickAdd } from "@/lib/quickAdd";
 import { menuItems } from "./navItems";
 
-// Mobile navigation (hidden on md+, where the Sidebar takes over). A sticky top
-// bar with a hamburger that opens the full menu as a slide-out drawer. Honors
-// the iOS safe-area insets so it sits below the status bar in standalone/PWA.
+const TABS = [
+    { href: "/dashboard", label: "Home", icon: LayoutDashboard },
+    { href: "/dashboard/expenses", label: "Expenses", icon: CreditCard },
+] as const;
+const TABS_AFTER = [{ href: "/dashboard/budgets", label: "Budgets", icon: Wallet }] as const;
+
+const tab = "grid justify-items-center content-center gap-1 min-h-12 rounded-xl text-[10.5px] font-medium focus-ring";
+
+function TabLink({ href, label, icon: Icon, active }: { href: string; label: string; icon: typeof Menu; active: boolean }) {
+    return (
+        <Link href={href} aria-current={active ? "page" : undefined} className={cn(tab, active ? "text-white" : "text-zinc-400")}>
+            <Icon className="w-[21px] h-[21px]" strokeWidth={active ? 2.25 : 1.75} aria-hidden />
+            {label}
+        </Link>
+    );
+}
+
+// Phone navigation (hidden on md+, where the icon rail takes over): a bottom
+// tab bar within thumb reach, with quick add raised in the middle. "More"
+// opens every section as a drawer. It clears the home indicator.
 export function MobileNav() {
     const pathname = usePathname();
     const router = useRouter();
     const logout = useAuthStore((s) => s.logout);
     const [open, setOpen] = useState(false);
+    const drawerRef = useRef<HTMLElement>(null);
+    // A real dialog for keyboard and screen-reader users: focus moves in, Tab
+    // stays inside, Esc closes, focus returns to the More button.
+    useDialogFocus(open, drawerRef, () => setOpen(false));
 
     const handleLogout = async () => {
         setOpen(false);
@@ -26,24 +49,29 @@ export function MobileNav() {
 
     const isActive = (href: string) =>
         pathname === href || (href !== "/dashboard" && pathname?.startsWith(href + "/"));
+    const inMore = !([...TABS, ...TABS_AFTER] as readonly { href: string }[]).some((t) => isActive(t.href));
 
     return (
         <>
-            {/* Top bar — mobile only */}
-            <header
-                className="md:hidden sticky top-0 z-40 flex items-center justify-between px-4 bg-black/70 backdrop-blur-xl border-b border-white/5"
-                style={{ paddingTop: "env(safe-area-inset-top)", height: "calc(3.5rem + env(safe-area-inset-top))" }}
+            <nav
+                aria-label="Main"
+                className="md:hidden fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 items-end gap-1 px-2 pt-2 bg-zinc-950/90 backdrop-blur-xl border-t border-white/[0.08]"
+                style={{ paddingBottom: "calc(0.5rem + env(safe-area-inset-bottom))", paddingLeft: "max(0.5rem, env(safe-area-inset-left))", paddingRight: "max(0.5rem, env(safe-area-inset-right))" }}
             >
-                <Link href="/dashboard" className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-purple-500 shadow-[0_0_10px_#a855f7]" />
-                    <span className="text-lg font-light tracking-wide text-white">FinAssist</span>
-                </Link>
-                <button onClick={() => setOpen(true)} aria-label="Open menu" className="p-2 -mr-2 text-zinc-300 hover:text-white">
-                    <Menu className="w-6 h-6" />
+                {TABS.map((t) => <TabLink key={t.href} {...t} active={isActive(t.href)} />)}
+                <button type="button" onClick={openQuickAdd} className={cn(tab, "text-zinc-300")}>
+                    <span aria-hidden className="metal-chip -mt-6 grid place-items-center w-[52px] h-[52px] rounded-full">
+                        <Plus className="w-6 h-6" />
+                    </span>
+                    Add
                 </button>
-            </header>
+                {TABS_AFTER.map((t) => <TabLink key={t.href} {...t} active={isActive(t.href)} />)}
+                <button type="button" onClick={() => setOpen(true)} aria-expanded={open} aria-current={inMore ? "page" : undefined} className={cn(tab, inMore ? "text-white" : "text-zinc-400")}>
+                    <Menu className="w-[21px] h-[21px]" aria-hidden />
+                    More
+                </button>
+            </nav>
 
-            {/* Slide-out drawer */}
             <AnimatePresence>
                 {open && (
                     <>
@@ -55,46 +83,51 @@ export function MobileNav() {
                             className="md:hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm"
                         />
                         <motion.aside
-                            initial={{ x: "-100%" }}
-                            animate={{ x: 0 }}
-                            exit={{ x: "-100%" }}
-                            transition={{ type: "tween", duration: 0.25, ease: "easeOut" }}
-                            className="md:hidden fixed left-0 top-0 bottom-0 z-50 w-72 max-w-[82%] bg-zinc-950 border-r border-white/10 flex flex-col"
-                            style={{ paddingTop: "env(safe-area-inset-top)" }}
+                            ref={drawerRef}
+                            role="dialog"
+                            aria-modal="true"
+                            aria-label="Menu"
+                            initial={{ y: "100%" }}
+                            animate={{ y: 0 }}
+                            exit={{ y: "100%" }}
+                            transition={{ type: "tween", duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+                            className="md:hidden fixed inset-x-0 bottom-0 z-50 max-h-[85dvh] flex flex-col rounded-t-[28px] bg-graphite border-t border-white/10"
+                            style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
                         >
-                            <div className="flex items-center justify-between p-6">
-                                <div className="flex items-center gap-2">
-                                    <div className="w-2 h-2 rounded-full bg-purple-500 shadow-[0_0_10px_#a855f7]" />
-                                    <span className="text-xl font-light tracking-wide text-white">FinAssist</span>
-                                </div>
-                                <button onClick={() => setOpen(false)} aria-label="Close menu" className="p-2 text-zinc-400 hover:text-white">
-                                    <X className="w-5 h-5" />
+                            <div className="flex items-center justify-between px-6 pt-5 pb-2">
+                                <span className="label-caps text-zinc-400">Menu</span>
+                                <button
+                                    type="button"
+                                    onClick={() => setOpen(false)}
+                                    aria-label="Close menu"
+                                    className="-mr-2 grid place-items-center w-11 h-11 rounded-xl text-zinc-400 hover:text-white focus-ring"
+                                >
+                                    <X className="w-5 h-5" aria-hidden />
                                 </button>
                             </div>
 
-                            <nav className="flex-1 px-4 space-y-1.5 overflow-y-auto">
+                            <nav aria-label="All sections" className="grid grid-cols-2 gap-2 px-4 pb-3 overflow-y-auto">
                                 {menuItems.map((item) => (
                                     <Link
                                         key={item.href}
                                         href={item.href}
                                         onClick={() => setOpen(false)}
+                                        aria-current={isActive(item.href) ? "page" : undefined}
                                         className={cn(
-                                            "flex items-center gap-3 px-4 py-3 rounded-xl transition-all",
-                                            isActive(item.href)
-                                                ? "bg-purple-500/10 text-purple-400 shadow-[0_0_20px_rgba(168,85,247,0.15)]"
-                                                : "text-zinc-400 hover:text-zinc-200 hover:bg-white/5",
+                                            "flex items-center gap-3 min-h-14 px-4 rounded-2xl transition-colors focus-ring",
+                                            isActive(item.href) ? "bg-plat text-plat-ink" : "bg-white/[0.04] text-zinc-200 hover:bg-white/[0.08]",
                                         )}
                                     >
-                                        <item.icon className={cn("w-5 h-5", isActive(item.href) ? "stroke-[2.5px]" : "stroke-2")} />
-                                        <span className="font-medium">{item.label}</span>
+                                        <item.icon className="w-5 h-5" aria-hidden />
+                                        <span className="text-sm font-medium">{item.label}</span>
                                     </Link>
                                 ))}
                             </nav>
 
-                            <div className="p-4 border-t border-white/5" style={{ paddingBottom: "calc(1rem + env(safe-area-inset-bottom))" }}>
-                                <button onClick={handleLogout} className="flex items-center gap-3 px-4 py-3 w-full rounded-xl text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-colors">
-                                    <LogOut className="w-5 h-5" />
-                                    <span className="font-medium">Sign Out</span>
+                            <div className="px-4 pt-1 pb-4 border-t border-white/[0.06]">
+                                <button type="button" onClick={handleLogout} className="mt-3 flex items-center gap-3 min-h-12 px-4 w-full rounded-2xl text-zinc-400 hover:text-red-300 hover:bg-red-500/10 transition-colors focus-ring">
+                                    <LogOut className="w-5 h-5" aria-hidden />
+                                    <span className="text-sm font-medium">Sign out</span>
                                 </button>
                             </div>
                         </motion.aside>

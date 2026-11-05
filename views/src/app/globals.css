@@ -1,29 +1,262 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #09090b;
+  --foreground: #f2f2f0;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
+  --font-sans: var(--font-archivo);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* The Timeline world (DESIGN.md): graphite grounds, platinum as the one accent. */
+@theme {
+  --color-graphite: #121215;        /* card surface */
+  --color-graphite-raised: #19191d; /* popovers, raised controls */
+  --color-plat: #d9d9de;            /* the accent: active nav, primary buttons, bars */
+  --color-plat-ink: #111113;        /* text on platinum */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Archivo has no Taka sign. This face holds only ৳ (U+09F3), cut from Noto Sans
+   Bengali (SIL OFL, licence in public/fonts/taka-sign-OFL.txt) with its weight
+   axis, so ৳ follows the text's weight. 90% sets its height level with
+   Archivo's digits. Every other character still comes from Archivo. */
+@font-face {
+  font-family: "Taka Sign";
+  src: url("/fonts/taka-sign.woff") format("woff");
+  font-weight: 100 900;
+  font-display: swap;
+  unicode-range: U+09F3;
+  size-adjust: 90%;
 }
 
 body {
-  background: #09090b; /* zinc-950 — the app is dark; don't flash light */
+  background: var(--background);
   color: var(--foreground);
-  /* Use the Geist font that layout.tsx loads (was incorrectly overridden to Arial). */
-  font-family: var(--font-geist-sans), system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  font-family: "Taka Sign", var(--font-archivo), system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+/* The parts the browser draws (date pickers, select menus, scrollbars, the
+   caret) are dark and platinum too. */
+:root {
+  color-scheme: dark;
+  scrollbar-color: #3a3a40 transparent;
+}
+input, textarea {
+  caret-color: var(--color-plat);
+}
+
+::selection {
+  background: var(--color-plat);
+  color: var(--color-plat-ink);
+}
+
+/* Buttons (DESIGN.md › Buttons). Width and spacing stay with the caller.
+   Primary: the platinum pill. Secondary: a 5% wash with a 10% edge. Quiet:
+   muted text that washes on hover. Danger: the red step for a confirmed
+   delete. Icon: a 44px square for a single icon. */
+@utility btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding-inline: 20px;
+  border-radius: 9999px;
+  background-color: var(--color-plat);
+  color: var(--color-plat-ink);
+  font-size: 14px;
+  font-weight: 600;
+  transition: background-color 0.15s, scale 0.15s;
+  &:where(:not(:disabled)):hover { background-color: #fff; }
+  &:where(:not(:disabled)):active { scale: 0.97; }
+  &:disabled { opacity: 0.4; cursor: not-allowed; }
+  &:focus-visible { outline: 2px solid var(--color-plat); outline-offset: 2px; }
+}
+@utility btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding-inline: 16px;
+  border-radius: 12px;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  background-color: rgb(255 255 255 / 0.05);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background-color 0.15s;
+  &:where(:not(:disabled)):hover { background-color: rgb(255 255 255 / 0.1); }
+  &:disabled { opacity: 0.5; cursor: not-allowed; }
+  &:focus-visible { outline: 2px solid var(--color-plat); outline-offset: 2px; }
+}
+@utility btn-quiet {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding-inline: 12px;
+  border-radius: 12px;
+  color: var(--color-zinc-400);
+  font-size: 14px;
+  font-weight: 500;
+  transition: background-color 0.15s, color 0.15s;
+  &:where(:not(:disabled)):hover { background-color: rgb(255 255 255 / 0.05); color: var(--color-zinc-100); }
+  &:disabled { opacity: 0.5; cursor: not-allowed; }
+  &:focus-visible { outline: 2px solid var(--color-plat); outline-offset: 2px; }
+}
+@utility btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding-inline: 16px;
+  border-radius: 12px;
+  border: 1px solid rgb(255 100 103 / 0.3);
+  background-color: rgb(255 100 103 / 0.15);
+  color: #ffc9c9;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background-color 0.15s;
+  &:where(:not(:disabled)):hover { background-color: rgb(255 100 103 / 0.25); }
+  &:disabled { opacity: 0.5; cursor: not-allowed; }
+  &:focus-visible { outline: 2px solid var(--color-red-400); outline-offset: 2px; }
+}
+@utility btn-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  color: var(--color-zinc-400);
+  transition: background-color 0.15s, color 0.15s;
+  &:where(:not(:disabled)):hover { background-color: rgb(255 255 255 / 0.05); color: #fff; }
+  &:disabled { opacity: 0.5; cursor: not-allowed; }
+  &:focus-visible { outline: 2px solid var(--color-plat); outline-offset: 2px; }
+}
+
+/* Inputs, selects and text areas: a recessed well with a 10% edge that turns
+   half platinum on focus. Codes add font-mono and wide tracking. */
+@utility field {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  background-color: rgb(0 0 0 / 0.4);
+  color: #fff;
+  font-size: 16px;
+  transition: border-color 0.15s;
+  &::placeholder { color: var(--color-zinc-400); }
+  &:focus { border-color: rgb(217 217 222 / 0.5); outline: none; }
+  &:focus-visible { outline: 2px solid var(--color-plat); outline-offset: 2px; }
+  &[aria-invalid="true"] { border-color: rgb(255 100 103 / 0.6); }
+  &:disabled { opacity: 0.5; cursor: not-allowed; }
+}
+
+/* The keyboard focus ring: platinum, one definition so every control shows
+   the same ring. */
+@utility focus-ring {
+  &:focus-visible {
+    outline: 2px solid var(--color-plat);
+    outline-offset: 2px;
+  }
+}
+
+/* Labels set like the lettering on a metal card: wide, spaced capitals. */
+@utility label-caps {
+  font-size: 11px;
+  line-height: 1.25;
+  font-weight: 500;
+  font-stretch: 118%;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+/* Money at display size: extra-wide and light. Proportional digits, so a big
+   figure never looks loose. */
+@utility figure-wide {
+  font-weight: 200;
+  font-stretch: 122%;
+  letter-spacing: -0.012em;
+}
+
+/* The brushed-metal wallet card: a rendered titanium plate
+   (public/textures/brushed-titanium.webp, made by scripts/render-metal.py)
+   under a light that sits at --mx/--my and follows the pointer
+   (WalletCard.tsx); on arrival it sweeps in once and settles. */
+@property --mx { syntax: "<percentage>"; inherits: false; initial-value: 28%; }
+@property --my { syntax: "<percentage>"; inherits: false; initial-value: 0%; }
+@keyframes metal-arrive {
+  from { --mx: -40%; --my: -20%; }
+  to   { --mx: 28%;  --my: 0%; }
+}
+.metal-card {
+  background:
+    radial-gradient(110% 120% at var(--mx) var(--my), rgb(255 255 255 / 0.16), rgb(255 255 255 / 0) 50%),
+    url("/textures/brushed-titanium.webp") center / cover,
+    #1d1d20;
+  box-shadow: 0 40px 60px -30px rgb(0 0 0 / 0.95);
+  animation: metal-arrive 1.6s cubic-bezier(0.45, 0, 0.2, 1) 0.5s backwards;
+}
+/* The runway readout rolls up to each day the student scrubs to. */
+@keyframes runway-in {
+  from { opacity: 0.2; transform: translateY(5px); }
+  to   { opacity: 1;   transform: none; }
+}
+/* The runway's arrival: the days spent rise from the baseline left to right,
+   then the days ahead and the income marks fade in. CSS animations run on the
+   clock, so the chart always settles even when a tab's frames are paused. */
+@keyframes runway-rise { from { transform: scaleY(0); } }
+@keyframes runway-fade { from { opacity: 0; } }
+.runway-rise {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: runway-rise 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.runway-fade {
+  animation: runway-fade 0.5s ease-out both;
+}
+/* The spending ring inks itself in clockwise, one slice after another. */
+@keyframes ring-draw { from { stroke-dasharray: 0 490; } }
+.ring-draw {
+  animation: ring-draw 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Small brushed-platinum chips: the FA monogram, the wallet card's FA mark and
+   the phone tab bar's Add button
+   (public/textures/brushed-platinum.webp, same renderer). */
+.metal-chip {
+  background: url("/textures/brushed-platinum.webp") center / cover, #d4d4d2;
+  box-shadow: 0 10px 22px -10px rgb(0 0 0 / 0.9);
+  color: #2a2a2e;
+}
+
+/* Reduced motion: skeletons hold still, spinners turn slowly (they still say
+   "working"), the card arrives without its sweep. Sliding panels and fades are
+   handled by MotionConfig. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse {
+    animation: none;
+  }
+  .animate-spin {
+    animation-duration: 2.5s;
+  }
+  .metal-card,
+  .runway-rise,
+  .runway-fade,
+  .ring-draw {
+    animation: none;
+  }
 }

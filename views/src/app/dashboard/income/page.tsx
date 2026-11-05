@@ -2,21 +2,21 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { motion, AnimatePresence } from "framer-motion";
-import { format } from "date-fns";
-import {
-    Plus, Loader2, MoreVertical, Pencil, Trash2, Repeat, AlertCircle,
-} from "lucide-react";
+import { useRouter } from "next/navigation";
+import { format, startOfDay, subMonths } from "date-fns";
+import { BadgeCheck, Plus, ShieldAlert } from "lucide-react";
 import { api } from "@/lib/api";
-import { apiErrorMessage } from "@/lib/apiError";
-import { useAuthStore } from "@/lib/store";
 import { useApi } from "@/lib/useApi";
 import { useCategories } from "@/lib/useCategories";
-import { cn } from "@/lib/utils";
-import { type IconName } from "@/lib/categoryIcons";
-import { CategoryIcon } from "@/components/CategoryIcon";
+import { useCurrency } from "@/lib/useCurrency";
+import { calendarDay, formatDay } from "@/lib/dates";
+import { summarizeLoadState } from "@/lib/loadState";
+import type { MoneyFormatter } from "@/lib/money";
 import { IncomeChart, type IncomeGranularity } from "@/components/dashboard/income/IncomeChart";
 import { SavingsBreakdown, type BalanceData } from "@/components/dashboard/SavingsBreakdown";
+import { RowActions } from "@/components/dashboard/RowActions";
+import { LoadError, LoadNotice } from "@/components/dashboard/LoadNotice";
+import { Card, Empty, HeroFigure, Missing, Page, PageHeader, Skeleton, Term } from "@/components/dashboard/ui";
 
 interface Income {
     _id: string;
@@ -28,50 +28,57 @@ interface Income {
     recurringFrequency?: string;
     isPostTax: boolean;
     parentRecurringId: string | null;
+    integrity?: "missing" | "invalid";  // set by the server when the record's signature check fails
 }
 
 interface Category {
     _id: string;
     name: string;
     color: string;
-    icon: IconName;
 }
 
-function truncate(s: string, n = 40): string {
-    return s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s;
+interface MonthGroup {
+    key: string;
+    label: string;
+    items: Income[];
+    total: number;
 }
 
-function useCurrencyFormatter(currency = "USD") {
-    return new Intl.NumberFormat(undefined, {
-        style: "currency",
-        currency,
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-    });
-}
+const EVERY: Record<string, string> = {
+    weekly: "weekly",
+    biweekly: "every two weeks",
+    monthly: "monthly",
+    yearly: "yearly",
+};
 
+const monthKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}`;
+
+// Income (DESIGN.md › Timeline): what came in this month as the headline,
+// then income over time beside where it went, then every entry from this
+// month and last, newest first.
 export default function IncomePage() {
-    const user = useAuthStore((s) => s.user);
-    const fmt  = useCurrencyFormatter(user?.currency || "USD");
+    const router = useRouter();
+    const money = useCurrency();
+    const [now] = useState(() => new Date());
 
     const [granularity, setGranularity] = useState<IncomeGranularity>("monthly");
-    const [actionError, setActionError] = useState<string | null>(null);
     // Shown as gone at once; the refetch the delete triggers agrees shortly after.
     const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
 
     // A window covering this and last month so materialization catches the
     // current period reliably. Fixed per visit so the cache key is stable.
     const [range] = useState(() => {
-        const now = new Date();
+        const d = new Date();
         return {
-            startDate: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)).toISOString(),
-            endDate:   new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999)).toISOString(),
+            startDate: new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, 1)).toISOString(),
+            endDate:   new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0, 23, 59, 59, 999)).toISOString(),
         };
     });
     const categories = useCategories<Category>("income");
     const incomesQ = useApi<Income[]>("/incomes", { ...range, limit: 100 });
     // The continuous balance (carry-forward + income − expenses − savings).
-    const balance = useApi<BalanceData>("/analytics/balance").data ?? null;
+    const balanceQ = useApi<BalanceData>("/analytics/balance");
+    const balance = balanceQ.data ?? null;
 
     const catMap = useMemo(() => {
         const map: Record<string, Category> = {};
@@ -85,200 +92,190 @@ export default function IncomePage() {
             .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
         [rows, removed],
     );
-    const loading = incomesQ.isLoading || categories.isLoading;
-    const error = actionError
-        ?? (incomesQ.error !== undefined ? apiErrorMessage(incomesQ.error, "Failed to load income") : null);
-
-    const totalIncome = incomes.reduce((sum, inc) => sum + inc.amount, 0);
-    const breakdown = balance ? balance[granularity] : null;
-
-    const handleDelete = async (id: string) => {
-        if (!confirm("Delete this income entry?")) return;
-        try {
-            await api.delete(`/incomes/${id}`);
-            setRemoved((prev) => new Set(prev).add(id));
-            setActionError(null);
-        } catch (err: unknown) {
-            setActionError(apiErrorMessage(err, "Failed to delete income"));
+    // A recurring copy carries no cadence of its own; its source may be in the list.
+    const cadenceOf = useMemo(() => {
+        const map = new Map<string, string>();
+        for (const i of rows ?? []) if (i.isRecurring && i.recurringFrequency) map.set(i._id, i.recurringFrequency);
+        return map;
+    }, [rows]);
+    const groups = useMemo(() => {
+        const out: MonthGroup[] = [];
+        for (const inc of incomes) {
+            const day = calendarDay(inc.date);
+            const key = monthKey(day);
+            let g = out[out.length - 1];
+            if (!g || g.key !== key) {
+                g = { key, label: format(day, "MMMM"), items: [], total: 0 };
+                out.push(g);
+            }
+            g.items.push(inc);
+            g.total += inc.amount;
         }
+        return out;
+    }, [incomes]);
+    const lastMonth = subMonths(now, 1);
+    const lastMonthTotal = groups.find((g) => g.key === monthKey(lastMonth))?.total ?? 0;
+
+    const loading = incomesQ.isLoading || categories.isLoading;
+    const reads = [incomesQ, balanceQ];
+    const loadState = summarizeLoadState(reads);
+    const retry = () => { for (const r of reads) if (r.error !== undefined || r.refreshFailed) void r.refresh(); };
+
+    // RowActions asks first and shows the error in the row if this rejects.
+    const handleDelete = async (id: string) => {
+        await api.delete(`/incomes/${id}`);
+        setRemoved((prev) => new Set(prev).add(id));
     };
 
+    const failedBalance = balanceQ.error !== undefined;
+    const termValue = (v: number | undefined, isLoading: boolean, failed: boolean) =>
+        isLoading ? <span aria-hidden className="inline-block h-[0.9em] w-28 rounded-md bg-white/[0.05] animate-pulse align-middle" />
+            : failed || v === undefined ? <Missing /> : money.format(v);
+
     return (
-        <div className="p-4 md:p-6 max-w-7xl mx-auto space-y-5 md:space-y-6">
-            <div className="flex justify-between items-end mb-8 flex-wrap gap-3">
-                <div>
-                    <h1 className="text-xl md:text-2xl font-bold text-white">Income</h1>
-                    <p className="text-zinc-500 text-sm">Earnings recorded for the current and previous month.</p>
-                </div>
-                <Link
-                    href="/dashboard/income/new"
-                    className="flex items-center gap-2 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-medium px-4 py-2.5 rounded-xl transition-colors"
-                >
-                    <Plus className="w-4 h-4" />
-                    Add income
+        <Page>
+            <PageHeader title="Income" sub="What came in this month and last, and where it went.">
+                <Link href="/dashboard/income/new" className="btn-primary">
+                    <Plus className="w-4 h-4" aria-hidden /> Add income
                 </Link>
+            </PageHeader>
+
+            <div className="empty:hidden"><LoadNotice state={loadState} onRetry={retry} /></div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 items-end gap-8 lg:gap-14 py-2 md:py-4">
+                <HeroFigure
+                    className="lg:col-span-7"
+                    label="Income this month"
+                    value={balance ? money.format(balance.monthly.income) : null}
+                    loading={balanceQ.isLoading}
+                    failed={failedBalance}
+                >
+                    Received so far in {format(now, "MMMM")}.
+                </HeroFigure>
+                <dl className="lg:col-span-5 grid grid-cols-2 gap-6">
+                    <Term label="Last month">
+                        {termValue(lastMonthTotal, loading, incomesQ.error !== undefined)}
+                    </Term>
+                    <Term label="This year">
+                        {termValue(balance?.yearly.income, balanceQ.isLoading, failedBalance)}
+                    </Term>
+                </dl>
             </div>
 
-            {error && (
-                <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4 shrink-0" />
-                    <span>{error}</span>
-                </div>
-            )}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 md:gap-6">
+                <IncomeChart className="lg:col-span-8" granularity={granularity} onGranularity={setGranularity} />
+                <SavingsBreakdown
+                    className="lg:col-span-4"
+                    breakdown={balance ? balance[granularity] : null}
+                    periodLabel={granularity === "monthly" ? "this month" : "this year"}
+                    loading={balanceQ.isLoading}
+                    failed={failedBalance}
+                    onRetry={() => void balanceQ.refresh()}
+                />
+            </div>
 
-            <div className="p-5 rounded-3xl border bg-gradient-to-br from-emerald-900/15 to-black border-emerald-500/15 flex items-center justify-between">
-                <span className="text-xs uppercase tracking-wider text-zinc-500">Total income</span>
+            <Card
+                title="Entries"
+                id="income-entries"
+                aside={<span className="label-caps text-zinc-400">{format(lastMonth, "MMM")} – {format(now, "MMM")}</span>}
+            >
                 {loading ? (
-                    <Loader2 className="w-5 h-5 animate-spin text-zinc-500" />
+                    <div aria-hidden className="space-y-3">
+                        {Array.from({ length: 5 }, (_, i) => <Skeleton key={i} className="h-12 rounded-xl" />)}
+                    </div>
+                ) : incomesQ.error !== undefined ? (
+                    <LoadError what="your income" onRetry={() => void incomesQ.refresh()} />
+                ) : incomes.length === 0 ? (
+                    <Empty
+                        title="No income recorded yet"
+                        action={<Link href="/dashboard/income/new" className="btn-primary"><Plus className="w-4 h-4" aria-hidden /> Add income</Link>}
+                    >
+                        Add what comes in, once or on a schedule, and FinAssist works out what&apos;s safe to spend each day.
+                    </Empty>
                 ) : (
-                    <span className="text-2xl font-bold tabular-nums text-emerald-400">{fmt.format(totalIncome)}</span>
-                )}
-            </div>
-
-            <div className="p-6 rounded-3xl bg-zinc-900/50 border border-white/5">
-                <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-                    <h2 className="text-white font-medium">Income over time</h2>
-                    <div className="flex items-center gap-1 p-1 rounded-xl bg-black/30 border border-white/5">
-                        {(["monthly", "yearly"] as const).map((g) => (
-                            <button
-                                key={g}
-                                onClick={() => setGranularity(g)}
-                                className={cn(
-                                    "px-4 py-1.5 rounded-lg text-sm font-medium capitalize transition-colors",
-                                    granularity === g ? "bg-emerald-500 text-black" : "text-zinc-400 hover:text-white",
-                                )}
-                            >
-                                {g}
-                            </button>
+                    <div className="space-y-8">
+                        {groups.map((g) => (
+                            <section key={g.key} aria-labelledby={`income-${g.key}`}>
+                                <div className="flex items-baseline justify-between gap-3 pb-3 border-b border-white/[0.07]">
+                                    <h3 id={`income-${g.key}`} className="label-caps text-zinc-400">{g.label}</h3>
+                                    <p className="text-[12.5px] text-zinc-400 tabular-nums">
+                                        {g.items.length} {g.items.length === 1 ? "entry" : "entries"} · <span className="text-zinc-200">{money.format(g.total)}</span>
+                                    </p>
+                                </div>
+                                <ul>
+                                    {g.items.map((inc) => (
+                                        <IncomeRow
+                                            key={inc._id}
+                                            income={inc}
+                                            cat={catMap[inc.category]}
+                                            cadence={inc.recurringFrequency ?? (inc.parentRecurringId ? cadenceOf.get(inc.parentRecurringId) : undefined)}
+                                            now={now}
+                                            fmt={money}
+                                            onEdit={() => router.push(`/dashboard/income/${inc._id}`)}
+                                            onDelete={() => handleDelete(inc._id)}
+                                        />
+                                    ))}
+                                </ul>
+                            </section>
                         ))}
                     </div>
-                </div>
-                <IncomeChart granularity={granularity} />
-            </div>
-
-            {breakdown && <SavingsBreakdown breakdown={breakdown} periodLabel={granularity === "monthly" ? "this month" : "this year"} />}
-
-            <div className="p-6 rounded-3xl bg-zinc-900/50 border border-white/5 min-h-[400px]">
-                {loading ? (
-                    <div className="flex items-center justify-center py-16">
-                        <Loader2 className="w-5 h-5 animate-spin text-zinc-500" />
-                    </div>
-                ) : incomes.length === 0 ? (
-                    <div className="text-center py-16">
-                        <p className="text-zinc-500 mb-3">No income recorded yet.</p>
-                        <Link href="/dashboard/income/new" className="text-purple-400 hover:text-purple-300 text-sm">
-                            Add your first income →
-                        </Link>
-                    </div>
-                ) : (
-                    <div className="space-y-1">
-                        <AnimatePresence>
-                            {incomes.map((inc) => (
-                                <IncomeRow
-                                    key={inc._id}
-                                    income={inc}
-                                    cat={catMap[inc.category]}
-                                    fmt={fmt}
-                                    onDelete={() => handleDelete(inc._id)}
-                                />
-                            ))}
-                        </AnimatePresence>
-                    </div>
                 )}
-            </div>
-        </div>
+            </Card>
+        </Page>
     );
 }
 
+// One entry in the Recent spending row style: the day set large on the left,
+// the name, a caption with its category, how it repeats and its signature
+// state, and the amount in tabular figures. On phones the edit and delete
+// controls sit on the caption line, so the name keeps its width.
 function IncomeRow({
-    income, cat, fmt, onDelete,
+    income, cat, cadence, now, fmt, onEdit, onDelete,
 }: {
     income: Income;
     cat?: Category;
-    fmt: Intl.NumberFormat;
-    onDelete: () => void;
+    cadence?: string;
+    now: Date;
+    fmt: MoneyFormatter;
+    onEdit: () => void;
+    onDelete: () => Promise<unknown>;
 }) {
-    const [menuOpen, setMenuOpen] = useState(false);
-    const isRecurringSource = income.isRecurring && !income.parentRecurringId;
-    const isMaterialized    = !!income.parentRecurringId;
+    const day = calendarDay(income.date);
+    const isSource = income.isRecurring && !income.parentRecurringId;
+    const isCopy = !!income.parentRecurringId;
+    const repeat = isSource
+        ? `Repeats ${EVERY[income.recurringFrequency ?? ""] ?? "on a schedule"}`
+        : isCopy ? (cadence && EVERY[cadence] ? `Auto-added, ${EVERY[cadence]}` : "Auto-added") : null;
+    const upcoming = day > startOfDay(now);
+    const caption = [cat?.name ?? "Uncategorized", repeat, !income.isPostTax && "Before tax", upcoming && "Upcoming"]
+        .filter(Boolean).join(" · ");
 
     return (
-        <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, x: -16 }}
-            className="group flex items-center gap-4 p-4 rounded-2xl bg-black/20 hover:bg-white/5 border border-transparent hover:border-white/5 transition-all"
-        >
-            <div className="text-xs text-zinc-500 tabular-nums w-20 shrink-0">
-                {format(new Date(income.date), "MMM d")}
-            </div>
-
-            <div
-                className="p-2.5 rounded-xl shrink-0"
-                style={{ backgroundColor: cat ? `${cat.color}22` : "rgba(255,255,255,0.05)" }}
-            >
-                <CategoryIcon icon={cat?.icon} className="w-4 h-4" style={cat ? { color: cat.color } : undefined} />
-            </div>
-
-            <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-white font-medium text-sm truncate" title={income.description}>
-                        {truncate(income.description)}
-                    </span>
-                    {isRecurringSource && (
-                        <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-purple-400 bg-purple-500/10 border border-purple-500/20 px-2 py-0.5 rounded-full">
-                            <Repeat className="w-3 h-3" />
-                            {income.recurringFrequency}
-                        </span>
-                    )}
-                    {isMaterialized && (
-                        <span className="text-[10px] uppercase tracking-wider text-zinc-500 bg-white/5 px-2 py-0.5 rounded-full">
-                            instance
-                        </span>
-                    )}
-                    {!income.isPostTax && (
-                        <span className="text-[10px] uppercase tracking-wider text-amber-400/80 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full">
-                            pre-tax
-                        </span>
-                    )}
-                </div>
-                <div className="text-xs text-zinc-500 mt-0.5">{cat?.name ?? "Uncategorized"}</div>
-            </div>
-
-            <div className="text-emerald-400 font-medium text-sm tabular-nums">
+        <li className="grid grid-cols-[48px_minmax(0,1fr)_auto] sm:grid-cols-[48px_minmax(0,1fr)_auto_auto] items-center gap-x-4 py-3.5 border-t border-white/[0.07] first:border-t-0">
+            <span aria-hidden className="col-start-1 row-start-1 row-span-2 grid justify-items-center leading-none text-zinc-400">
+                <b className="text-[23px] font-light [font-stretch:112%] text-white">{day.getDate()}</b>
+                <span className="mt-1.5 text-[10.5px] font-medium tracking-[0.14em] [font-stretch:118%] uppercase">{format(day, "EEE")}</span>
+            </span>
+            <span className="col-start-2 row-start-1 min-w-0 truncate font-semibold text-white" title={income.description}>
+                <span className="sr-only">{formatDay(income.date, now)}, </span>{income.description}
+            </span>
+            <span className="col-start-3 row-start-1 sm:row-span-2 justify-self-end font-medium text-white tabular-nums">
                 +{fmt.format(income.amount)}
-            </div>
-
-            <div className="relative">
-                <button
-                    onClick={() => setMenuOpen((o) => !o)}
-                    className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-200 hover:bg-white/5 transition-colors"
-                >
-                    <MoreVertical className="w-4 h-4" />
-                </button>
-                {menuOpen && (
-                    <>
-                        <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-                        <div className="absolute right-0 top-full mt-1 z-50 w-36 bg-zinc-900 border border-white/10 rounded-xl shadow-2xl shadow-black/50 overflow-hidden py-1">
-                            <Link
-                                href={`/dashboard/income/${income._id}`}
-                                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-white/5"
-                                onClick={() => setMenuOpen(false)}
-                            >
-                                <Pencil className="w-4 h-4" /> Edit
-                            </Link>
-                            <button
-                                onClick={() => { setMenuOpen(false); onDelete(); }}
-                                className={cn(
-                                    "w-full flex items-center gap-2 px-3 py-2 text-sm text-red-400 hover:bg-red-500/10",
-                                )}
-                            >
-                                <Trash2 className="w-4 h-4" /> Delete
-                            </button>
-                        </div>
-                    </>
-                )}
-            </div>
-        </motion.div>
+            </span>
+            <span className="col-start-2 row-start-2 mt-0.5 flex items-center gap-2 min-w-0 text-[12.5px] text-zinc-400">
+                {cat?.color && <span aria-hidden className="w-2.5 h-2.5 shrink-0 rounded-[3px]" style={{ backgroundColor: cat.color }} />}
+                <span className="truncate">{caption}</span>
+                {income.integrity
+                    ? <span className="inline-flex items-center gap-1 shrink-0 text-amber-200"><ShieldAlert className="w-3.5 h-3.5 text-amber-300" aria-hidden />Failed check</span>
+                    : <span className="hidden sm:inline-flex items-center gap-1 shrink-0"><BadgeCheck className="w-3.5 h-3.5 text-emerald-400" aria-hidden />Signed</span>}
+            </span>
+            <RowActions
+                className="col-start-3 row-start-2 sm:col-start-4 sm:row-start-1 sm:row-span-2 justify-self-end -mr-2"
+                itemLabel={income.description}
+                onEdit={onEdit}
+                onDelete={onDelete}
+                confirmText={isSource ? "Delete? Entries already added stay." : "Delete?"}
+            />
+        </li>
     );
 }

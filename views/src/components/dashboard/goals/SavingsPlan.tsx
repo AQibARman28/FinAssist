@@ -1,13 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { format } from "date-fns";
-import { Compass, Sparkles, AlertTriangle, Loader2, Info } from "lucide-react";
+import { CircleAlert, CircleCheck, CircleDashed, Info, Scale, TriangleAlert } from "lucide-react";
 import { useCurrency } from "@/lib/useCurrency";
-import { cn } from "@/lib/utils";
-import { GoalStatusBadge, TONE_TEXT } from "./GoalStatusBadge";
+import { calendarDay } from "@/lib/dates";
+import type { MoneyFormatter } from "@/lib/money";
+import { Card, Meter, Notice, Skeleton, StateNote, Term } from "../ui";
+import { LoadError } from "../LoadNotice";
+import { GoalStatusBadge } from "./GoalStatusBadge";
 import { AllocationSuggestion } from "./AllocationSuggestion";
-import { describeForecast, type GoalPlanRow, type PlanData } from "./goalPlanModel";
+import { describeForecast, type GoalPlanRow, type PlanData, type Tone } from "./goalPlanModel";
 
 interface SavingsPlanProps {
     plan: PlanData | null;
@@ -15,135 +18,187 @@ interface SavingsPlanProps {
     /** Spendable wallet (cap for allocations), if known. */
     wallet: number | null;
     onAllocated: () => void;
+    onRetry?: () => void;
 }
+
+const FORECAST_ICON: Record<Tone, typeof CircleCheck> = {
+    good: CircleCheck, warn: TriangleAlert, bad: CircleAlert, neutral: CircleDashed,
+};
 
 // GOAL-1 plan view: cash-flow-aware feasibility for every active goal
-// (GET /goals/plan) plus the recommend-and-confirm allocation decider.
-export function SavingsPlan({ plan, failed, wallet, onAllocated }: SavingsPlanProps) {
-    const { format: fmt } = useCurrency();
+// (GET /goals/plan) plus the recommend-and-confirm allocation decider. Three
+// cards in one column: the month's cash flow and what the goals claim of it,
+// the suggested split when asked for, then each goal against its deadline.
+export function SavingsPlan({ plan, failed, wallet, onAllocated, onRetry }: SavingsPlanProps) {
+    const money = useCurrency();
+    const fmt = money.format;
+    const [now] = useState(() => new Date());
     const [showAllocation, setShowAllocation] = useState(false);
+    const suggestRef = useRef<HTMLButtonElement>(null);
 
     if (failed) {
-        return <div className="p-6 rounded-3xl bg-zinc-900/50 border border-white/5 text-zinc-500 text-sm">Couldn&apos;t load your savings plan.</div>;
+        return (
+            <Card title="Savings plan" id="savings-plan">
+                {onRetry
+                    ? <LoadError what="your savings plan" onRetry={onRetry} />
+                    : <p className="text-sm text-zinc-300">Couldn&apos;t load your savings plan.</p>}
+            </Card>
+        );
     }
     if (!plan) {
-        return <div className="flex justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-zinc-500" /></div>;
+        return (
+            <div aria-hidden className="flex flex-col gap-4 md:gap-6">
+                <Skeleton className="h-[300px] rounded-3xl" />
+                <Skeleton className="h-[360px] rounded-3xl" />
+            </div>
+        );
     }
 
-    const surplus = plan.cashFlow.monthlySurplus;
-    const committed = plan.portfolio.totalRequired;
+    // Averages over 90 days, so shown in whole amounts like every other figure.
+    const surplus = Math.round(plan.cashFlow.monthlySurplus);
+    const committed = Math.round(plan.portfolio.totalRequired);
     const free = surplus - committed;
     const noIncome = !(plan.cashFlow.monthlyAvgIncome > 0);
+    const claim = surplus > 0 ? committed / surplus : null;
+    const caption = "block mt-2 text-[12.5px] leading-normal font-normal [font-stretch:100%] text-zinc-400";
+    const closeAllocation = () => {
+        setShowAllocation(false);
+        requestAnimationFrame(() => suggestRef.current?.focus());
+    };
 
     return (
-        <section className="p-5 sm:p-6 rounded-3xl bg-zinc-900/50 border border-white/5 space-y-5">
-            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-                <div>
-                    <div className="flex items-center gap-2">
-                        <Compass className="w-5 h-5 text-yellow-500" />
-                        <h3 className="text-white font-medium">Savings plan</h3>
-                    </div>
-                    <p className="text-xs text-zinc-500 mt-1">Based on your average income and expenses over the last 90 days.</p>
-                </div>
-                {plan.goals.length > 0 && !showAllocation && (
+        <div className="flex flex-col gap-4 md:gap-6">
+            <Card
+                title="Savings plan"
+                id="savings-plan"
+                aside={plan.goals.length > 0 ? (
                     <button
-                        onClick={() => setShowAllocation(true)}
-                        className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-sm font-medium hover:bg-yellow-500/20 transition-colors shrink-0"
+                        ref={suggestRef}
+                        type="button"
+                        onClick={() => setShowAllocation((v) => !v)}
+                        aria-expanded={showAllocation}
+                        aria-controls={showAllocation ? "suggested-split-panel" : undefined}
+                        className="btn-secondary"
                     >
-                        <Sparkles className="w-4 h-4" /> Suggest allocation
+                        <Scale className="w-4 h-4" aria-hidden /> {showAllocation ? "Hide the split" : "Suggest a split"}
                     </button>
+                ) : undefined}
+            >
+                <dl className="grid grid-cols-1 sm:grid-cols-3 gap-x-6 gap-y-6">
+                    <Term label="Monthly surplus">
+                        {fmt(surplus)}<span className={caption}>Average income minus average spending</span>
+                    </Term>
+                    <Term label="Committed to goals">
+                        {fmt(committed)}<span className={caption}>Needed each month to meet every deadline</span>
+                    </Term>
+                    <Term label={free >= 0 ? "Free each month" : "Overcommitted by"}>
+                        {fmt(Math.abs(free))}<span className={caption}>{free >= 0 ? "After funding every goal" : "Each month, beyond your surplus"}</span>
+                    </Term>
+                </dl>
+
+                {claim !== null && plan.goals.length > 0 && (
+                    <div className="mt-7">
+                        <div className="flex items-baseline justify-between gap-3 text-[13.5px] text-zinc-300">
+                            <span>What your goals need of your surplus</span>
+                            <span className="text-white tabular-nums">{Math.round(claim * 100)}%</span>
+                        </div>
+                        <Meter fraction={claim} tone={claim > 1 ? "warn" : "plat"} className="mt-2.5" />
+                    </div>
                 )}
-            </div>
+                {surplus < 0 && (
+                    <StateNote tone="bad" icon={CircleAlert} className="mt-5 tabular-nums">
+                        Spending has been {fmt(Math.abs(surplus))} a month above income.
+                    </StateNote>
+                )}
 
-            {/* Surplus / committed / free */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <PlanMetric label="Monthly surplus" value={fmt(surplus)} sub="avg income − avg expenses" tone={surplus < 0 ? "text-red-400" : "text-white"} />
-                <PlanMetric label="Committed to goals" value={fmt(committed)} sub="needed per month to hit every deadline" />
-                <PlanMetric
-                    label={free >= 0 ? "Free each month" : "Overcommitted by"}
-                    value={fmt(Math.abs(free))}
-                    sub={free >= 0 ? "after funding every goal" : "per month"}
-                    tone={free >= 0 ? "text-emerald-400" : "text-red-400"}
-                />
-            </div>
+                {plan.portfolio.overcommitted && plan.goals.length > 0 && (
+                    <Notice tone="warn" className="mt-6">
+                        Your goals need <span className="tabular-nums">{fmt(committed)}</span> a month but your surplus is{" "}
+                        <span className="tabular-nums">{fmt(surplus)}</span>, so not every deadline is reachable. The suggested
+                        split shows what to fund first and which goals will finish later.
+                    </Notice>
+                )}
+                {noIncome && (
+                    <Notice tone="neutral" icon={Info} className="mt-4">
+                        No income logged in the last 90 days. Log income to get a realistic plan.
+                    </Notice>
+                )}
 
-            {plan.portfolio.overcommitted && plan.goals.length > 0 && (
-                <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300">
-                    <AlertTriangle className="w-4 h-4 shrink-0 mt-px" />
-                    <span>
-                        Your goals need {fmt(committed)}/mo but your surplus is {fmt(surplus)}/mo, so not every deadline is reachable.
-                        Use the suggested allocation to see what to fund first and which goals will finish later.
-                    </span>
-                </div>
-            )}
-            {noIncome && (
-                <div className="flex items-start gap-2 text-xs text-zinc-500">
-                    <Info className="w-3.5 h-3.5 shrink-0 mt-px" />
-                    <span>No income logged in the last 90 days — log income to get a realistic plan.</span>
-                </div>
-            )}
+                <p className="mt-6 text-[12.5px] text-zinc-400">Based on your average income and spending over the last 90 days.</p>
+            </Card>
 
             {showAllocation && (
-                <AllocationSuggestion wallet={wallet} onClose={() => setShowAllocation(false)} onAllocated={onAllocated} />
-            )}
-
-            {plan.goals.length === 0 ? (
-                <p className="text-sm text-zinc-500 py-6 text-center">No active goals to plan yet — create one to see whether it&apos;s on track.</p>
-            ) : (
-                <div className="space-y-2">
-                    {plan.goals.map((g) => <PlanRow key={g.goalId} row={g} />)}
+                <div id="suggested-split-panel" className="min-w-0">
+                    <AllocationSuggestion wallet={wallet} onClose={closeAllocation} onAllocated={onAllocated} id="suggested-split" />
                 </div>
             )}
-        </section>
-    );
-}
 
-function PlanMetric({ label, value, sub, tone = "text-white" }: { label: string; value: string; sub: string; tone?: string }) {
-    return (
-        <div className="p-4 rounded-2xl bg-black/20 border border-white/5 min-w-0">
-            <div className="text-[11px] uppercase tracking-wider text-zinc-500">{label}</div>
-            <div className={cn("text-xl font-bold tabular-nums mt-1 truncate", tone)}>{value}</div>
-            <div className="text-[11px] text-zinc-600 mt-0.5">{sub}</div>
+            <Card
+                title="Goals in the plan"
+                id="plan-goals"
+                aside={plan.goals.length > 0 ? <span className="label-caps text-zinc-400">{plan.goals.length} active</span> : undefined}
+            >
+                {plan.goals.length === 0 ? (
+                    <p className="py-6 text-sm text-zinc-400 text-center">No active goals to plan yet. Create one to see whether it&apos;s on track.</p>
+                ) : (
+                    <ul>
+                        {plan.goals.map((g, i) => (
+                            <PlanRow key={g.goalId} row={g} index={i} monthlySurplus={surplus} now={now} fmt={money} />
+                        ))}
+                    </ul>
+                )}
+            </Card>
         </div>
     );
 }
 
-function PlanRow({ row }: { row: GoalPlanRow }) {
-    const { format: fmt } = useCurrency();
+// One goal against its deadline: progress on the left with the verdict, what
+// it needs, what's going in and when it finishes on the right.
+function PlanRow({ row, index, monthlySurplus, now, fmt }: {
+    row: GoalPlanRow;
+    index: number;
+    monthlySurplus: number;
+    now: Date;
+    fmt: MoneyFormatter;
+}) {
     const forecast = describeForecast(row);
-    const pct = row.targetAmount > 0 ? Math.min(100, Math.round((row.currentAmount / row.targetAmount) * 100)) : 0;
-    const target = row.targetDate ? new Date(row.targetDate) : null;
+    // Finishing late is a warning, the same tone as the goal's verdict beside it.
+    const forecastTone = forecast.tone === "bad" ? "warn" : forecast.tone;
+    const fraction = row.targetAmount > 0 ? Math.min(1, row.currentAmount / row.targetAmount) : 0;
+    const target = row.targetDate ? calendarDay(row.targetDate) : null;
     const validTarget = target && !Number.isNaN(target.getTime()) ? target : null;
-    const required = row.requiredMonthly;
-    const actual = row.actualMonthlyRate;
+    const required = row.requiredMonthly === null ? null : Math.round(row.requiredMonthly);
+    const actual = row.actualMonthlyRate === null ? null : Math.round(row.actualMonthlyRate);
 
     return (
-        <div className="p-4 rounded-2xl bg-black/20 border border-white/5">
-            <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                    <div className="text-sm text-white font-medium truncate" title={row.title}>{row.title}</div>
-                    <div className="text-[11px] text-zinc-500 tabular-nums mt-0.5">
-                        {fmt(row.currentAmount)} of {fmt(row.targetAmount)} · {pct}%
-                        {validTarget ? ` · by ${format(validTarget, "MMM d, yyyy")}` : " · no deadline"}
-                    </div>
+        <li className="grid grid-cols-1 lg:grid-cols-12 gap-x-10 gap-y-4 py-6 border-t border-white/[0.07] first:border-t-0 first:pt-0 last:pb-0">
+            <div className="lg:col-span-7 min-w-0">
+                <div className="flex items-baseline justify-between gap-3">
+                    <span className="truncate font-semibold text-white" title={row.title}>{row.title}</span>
+                    <span className="shrink-0 text-[13px] text-zinc-400 tabular-nums">{fmt.format(row.currentAmount)} of {fmt.format(row.targetAmount)}</span>
                 </div>
-                <GoalStatusBadge status={row.status} />
+                <Meter fraction={fraction} delay={index * 0.09} className="mt-3 mb-2.5" />
+                <p className="text-[12.5px] text-zinc-400 tabular-nums">
+                    {Math.round(fraction * 100)}% · {validTarget ? `by ${format(validTarget, "d MMM yyyy")}` : "no deadline"}
+                </p>
+                <GoalStatusBadge row={row} monthlySurplus={monthlySurplus} fmt={fmt} now={now} className="mt-3" />
             </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-4 gap-y-1.5 mt-3 text-xs">
-                <div>
-                    <span className="text-zinc-500">Needs </span>
-                    <span className="text-zinc-200 tabular-nums">{required === null ? "Flexible — no deadline" : `${fmt(required)}/mo`}</span>
+            <dl className="lg:col-span-5 self-center space-y-2.5 text-[13.5px]">
+                <div className="flex items-baseline justify-between gap-4">
+                    <dt className="text-zinc-400">Needs</dt>
+                    <dd className="text-right text-white tabular-nums">{required === null ? "Flexible, no deadline" : `${fmt.format(required)} a month`}</dd>
                 </div>
-                <div>
-                    <span className="text-zinc-500">Saving </span>
-                    <span className={cn("tabular-nums", actual === null ? "text-zinc-500" : required !== null && actual < required ? "text-amber-400" : "text-zinc-200")}>
-                        {actual === null ? "No history yet" : `${fmt(actual)}/mo`}
-                    </span>
-                    <span className="text-zinc-600"> (last 90 days)</span>
+                <div className="flex items-baseline justify-between gap-4">
+                    <dt className="text-zinc-400">Going in (last 90 days)</dt>
+                    <dd className="text-right text-white tabular-nums">{actual === null ? "No history yet" : `${fmt.format(actual)} a month`}</dd>
                 </div>
-                <div className={cn("tabular-nums", TONE_TEXT[forecast.tone])}>{forecast.text}</div>
-            </div>
-        </div>
+                <div className="flex items-baseline justify-between gap-4">
+                    <dt className="text-zinc-400">Finishes</dt>
+                    <dd className="text-right">
+                        <StateNote tone={forecastTone} icon={FORECAST_ICON[forecastTone]} className="tabular-nums">{forecast.text}</StateNote>
+                    </dd>
+                </div>
+            </dl>
+        </li>
     );
 }

@@ -1,14 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { format } from "date-fns";
-import { Check, Loader2, AlertCircle } from "lucide-react";
+import { BadgeCheck, Check, Loader2, ShieldAlert } from "lucide-react";
 import { api } from "@/lib/api";
 import { useCurrency } from "@/lib/useCurrency";
 import { parseAmount } from "@/lib/parseAmount";
+import { calendarDay, formatDay } from "@/lib/dates";
 import { CategoryPicker } from "@/components/CategoryPicker";
-import { CategoryIcon } from "@/components/CategoryIcon";
 import { RowActions } from "@/components/dashboard/RowActions";
+import { FieldError, FieldLabel } from "@/components/dashboard/ui";
 import { apiErrorMessage, apiFieldErrors } from "@/lib/apiError";
 
 export interface ExpenseItem {
@@ -18,6 +19,8 @@ export interface ExpenseItem {
     category: string; // Category ObjectId
     date: string;
     note?: string | null;
+    // Set by the server when the record's signature check fails.
+    integrity?: "missing" | "invalid";
 }
 
 export interface ExpenseCategory {
@@ -34,18 +37,31 @@ interface ExpenseRowProps {
     onDeleted: (id: string) => void;
 }
 
-// One expense in a list: read view with always-visible edit/delete (two-step
-// delete confirm, touch-friendly) and an inline editor (PUT /expenses/:id).
+// One expense in a list, in the Recent spending style: its day set large on
+// the left, the description, a caption with the category and the signature
+// state, the amount in tabular figures, and edit/delete that are always
+// visible (two-step delete, touch-friendly). Edit opens an inline editor
+// (PUT /expenses/:id). The parent supplies the <li> and the hairline.
 export function ExpenseRow({ expense, category, onUpdated, onDeleted }: ExpenseRowProps) {
     const { formatExpense } = useCurrency();
     const [editing, setEditing] = useState(false);
+    const rowRef = useRef<HTMLDivElement>(null);
+    // After the editor closes, focus goes back to the row's Edit button
+    // instead of falling to the top of the page.
+    const refocus = useRef(false);
+    useEffect(() => {
+        if (editing || !refocus.current) return;
+        refocus.current = false;
+        rowRef.current?.querySelector("button")?.focus();
+    }, [editing]);
+    const closeEditor = () => { refocus.current = true; setEditing(false); };
 
     if (editing) {
         return (
             <ExpenseEditForm
                 expense={expense}
-                onCancel={() => setEditing(false)}
-                onSaved={(updated) => { setEditing(false); onUpdated(updated); }}
+                onCancel={closeEditor}
+                onSaved={(updated) => { closeEditor(); onUpdated(updated); }}
             />
         );
     }
@@ -55,34 +71,41 @@ export function ExpenseRow({ expense, category, onUpdated, onDeleted }: ExpenseR
         onDeleted(expense._id);
     };
 
-    return (
-        <div className="flex items-center justify-between gap-3 p-3 sm:p-4 rounded-2xl bg-black/20 hover:bg-white/5 border border-transparent hover:border-white/5 transition-all">
-            <div className="flex items-center gap-3 sm:gap-4 min-w-0">
-                <div
-                    className="p-2.5 sm:p-3 rounded-xl text-zinc-200 shrink-0"
-                    style={{ backgroundColor: category ? `${category.color}22` : "rgba(255,255,255,0.05)" }}
-                >
-                    <CategoryIcon icon={category?.icon} className="w-5 h-5" style={category ? { color: category.color } : undefined} />
-                </div>
-                <div className="min-w-0">
-                    <h4 className="text-white font-medium text-sm truncate" title={expense.description}>{expense.description}</h4>
-                    <div className="flex gap-2 text-xs text-zinc-500 mt-0.5 min-w-0">
-                        <span className="truncate">{category?.name ?? "Uncategorized"}</span>
-                        <span>•</span>
-                        <span className="tabular-nums shrink-0">{format(new Date(expense.date), "MMM d, yyyy")}</span>
-                    </div>
-                </div>
-            </div>
+    const day = calendarDay(expense.date);
 
-            <div className="flex items-center gap-1 sm:gap-3 shrink-0">
-                <span className="text-white font-medium text-sm tabular-nums">{formatExpense(expense.amount)}</span>
+    return (
+        <div ref={rowRef} className="flex items-center gap-3 md:gap-4 py-3.5">
+            <span aria-hidden className="w-10 md:w-12 shrink-0 grid justify-items-center leading-none text-zinc-400">
+                <b className="text-[23px] font-light [font-stretch:112%] text-white tabular-nums">{day.getDate()}</b>
+                <span className="mt-1.5 text-[10.5px] font-medium tracking-[0.14em] [font-stretch:118%] uppercase">{format(day, "EEE")}</span>
+            </span>
+
+            {/* A basis of 8rem keeps the description readable when the delete
+                confirm needs the space on the right. */}
+            <span className="flex-[1_1_8rem] min-w-0">
+                <span className="block truncate font-semibold text-white" title={expense.description}>{expense.description}</span>
+                <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12.5px] text-zinc-400 min-w-0">
+                    <span className="flex items-center gap-2 min-w-0">
+                        {category?.color && <span aria-hidden className="w-2.5 h-2.5 shrink-0 rounded-[3px]" style={{ backgroundColor: category.color }} />}
+                        <span className="truncate">{category?.name ?? "Uncategorized"} · {formatDay(expense.date)}</span>
+                    </span>
+                    {expense.integrity
+                        ? <span className="inline-flex items-center gap-1 shrink-0 text-amber-200"><ShieldAlert className="w-3.5 h-3.5 text-amber-300" aria-hidden />Failed check</span>
+                        : <span className="inline-flex items-center gap-1 shrink-0"><BadgeCheck className="w-3.5 h-3.5 text-emerald-400" aria-hidden />Signed</span>}
+                </span>
+            </span>
+
+            {/* Phones stack the amount over the controls; wider screens set them in a line. */}
+            <span className="flex-[0_1_auto] min-w-0 flex flex-col items-end gap-0.5 md:flex-row md:items-center md:gap-2">
+                <span className="shrink-0 font-medium text-white tabular-nums">{formatExpense(expense.amount)}</span>
                 <RowActions
+                    className="-mr-3.5"
                     itemLabel={expense.description}
                     onEdit={() => setEditing(true)}
                     onDelete={handleDelete}
                     confirmText="Delete expense?"
                 />
-            </div>
+            </span>
         </div>
     );
 }
@@ -96,11 +119,14 @@ const AMOUNT_REASON: Record<string, string> = {
     too_large: "Amount is too large",
 };
 
-// Local calendar day, matching how the list renders the date.
+// The calendar day the row shows (lib/dates.ts › calendarDay), so the editor
+// opens on the same date the list displays.
 function toDateInput(iso: string): string {
     const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? "" : format(d, "yyyy-MM-dd");
+    return Number.isNaN(d.getTime()) ? "" : format(calendarDay(d), "yyyy-MM-dd");
 }
+
+type EditError = { msg: string; field?: "description" | "amount" };
 
 function ExpenseEditForm({ expense, onCancel, onSaved }: {
     expense: ExpenseItem;
@@ -114,8 +140,13 @@ function ExpenseEditForm({ expense, onCancel, onSaved }: {
     const [date, setDate] = useState(initialDate);
     const [category, setCategory] = useState(expense.category);
     const [saving, setSaving] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<EditError | null>(null);
     const [categoryError, setCategoryError] = useState<string | null>(null);
+    const uid = useId();
+    const ids = {
+        title: `${uid}-title`, description: `${uid}-desc`, amount: `${uid}-amount`, amountNote: `${uid}-amount-note`,
+        date: `${uid}-date`, category: `${uid}-cat`, categoryLabel: `${uid}-cat-label`, error: `${uid}-error`,
+    };
 
     const parsed = parseAmount(amount);
 
@@ -123,8 +154,8 @@ function ExpenseEditForm({ expense, onCancel, onSaved }: {
         e.preventDefault();
         setError(null);
         setCategoryError(null);
-        if (!description.trim()) { setError("Description can't be empty"); return; }
-        if (!parsed.ok) { setError(AMOUNT_REASON[parsed.reason]); return; }
+        if (!description.trim()) { setError({ msg: "Description can't be empty", field: "description" }); return; }
+        if (!parsed.ok) { setError({ msg: AMOUNT_REASON[parsed.reason], field: "amount" }); return; }
         if (!category) { setCategoryError("Pick a category"); return; }
 
         // Send only what changed — the server re-validates the category guard
@@ -143,35 +174,54 @@ function ExpenseEditForm({ expense, onCancel, onSaved }: {
         } catch (err) {
             const fieldErrs = apiFieldErrors(err);
             if (fieldErrs.category) setCategoryError(fieldErrs.category);
-            setError(apiErrorMessage(err, "Failed to update expense"));
+            setError({ msg: apiErrorMessage(err, "Failed to update expense") });
         } finally {
             setSaving(false);
         }
     };
 
-    const inputCls = "w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder:text-zinc-600 focus:outline-none focus:border-purple-500/50 transition-colors";
+    const fieldError = (field: EditError["field"]) => (error && error.field === field ? error.msg : null);
+    const descError = fieldError("description");
+    const amountError = fieldError("amount");
+    const formError = error && !error.field && !categoryError ? error.msg : null;
+    const amountDescribedBy = [parsed.ok && parsed.isExpression ? ids.amountNote : null, amountError ? ids.error : null].filter(Boolean).join(" ") || undefined;
 
     return (
-        <form onSubmit={handleSave} className="p-4 rounded-2xl bg-black/30 border border-purple-500/20 space-y-3">
-            <div className="flex flex-col md:flex-row gap-3 md:items-end">
-                <div className="w-full md:flex-1 space-y-1.5 min-w-0">
-                    <label className="text-xs text-zinc-500">Description</label>
-                    <input type="text" value={description} onChange={(e) => setDescription(e.target.value)} maxLength={500} className={inputCls} autoFocus />
+        <form onSubmit={handleSave} aria-labelledby={ids.title} className="my-2 p-4 md:p-5 rounded-2xl bg-white/[0.03] border border-white/10">
+            <p id={ids.title} className="label-caps text-zinc-300">Edit expense</p>
+            {/* Both lists span the page: one column on phones, two from 640px,
+                every field in one line from 1280px. */}
+            <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_9rem_11rem_14rem]">
+                <div className="min-w-0 sm:col-span-2 xl:col-span-1">
+                    <FieldLabel htmlFor={ids.description}>Description</FieldLabel>
+                    <input
+                        id={ids.description} type="text" value={description} onChange={(e) => setDescription(e.target.value)}
+                        maxLength={500} autoFocus className="field"
+                        aria-invalid={descError ? true : undefined} aria-describedby={descError ? ids.error : undefined}
+                    />
+                    {descError && <FieldError id={ids.error}>{descError}</FieldError>}
                 </div>
-                <div className="w-full md:w-32 space-y-1.5">
-                    <label className="text-xs text-zinc-500">Amount</label>
-                    <input type="text" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className={`${inputCls} tabular-nums`} />
+                <div className="min-w-0">
+                    <FieldLabel htmlFor={ids.amount}>Amount</FieldLabel>
+                    <input
+                        id={ids.amount} type="text" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)}
+                        className="field tabular-nums"
+                        aria-invalid={amountError ? true : undefined} aria-describedby={amountDescribedBy}
+                    />
                     {parsed.ok && parsed.isExpression && (
-                        <div className="text-[11px] text-zinc-500 tabular-nums">= {fmtMoney(parsed.value)}</div>
+                        <p id={ids.amountNote} className="mt-2 text-[12.5px] text-zinc-400 tabular-nums">= {fmtMoney(parsed.value)}</p>
                     )}
+                    {amountError && <FieldError id={ids.error}>{amountError}</FieldError>}
                 </div>
-                <div className="w-full md:w-40 space-y-1.5">
-                    <label className="text-xs text-zinc-500">Date</label>
-                    <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={`${inputCls} tabular-nums`} />
+                <div className="min-w-0">
+                    <FieldLabel htmlFor={ids.date}>Date</FieldLabel>
+                    <input id={ids.date} type="date" value={date} onChange={(e) => setDate(e.target.value)} className="field tabular-nums" />
                 </div>
-                <div className="w-full md:w-48 space-y-1.5">
-                    <label className="text-xs text-zinc-500">Category</label>
+                <div className="min-w-0 sm:col-span-2 xl:col-span-1">
+                    <label id={ids.categoryLabel} htmlFor={ids.category} className="block mb-2 text-[13px] font-medium text-zinc-300">Category</label>
                     <CategoryPicker
+                        id={ids.category}
+                        labelledBy={ids.categoryLabel}
                         type="expense"
                         value={category}
                         onChange={(id) => { setCategory(id); setCategoryError(null); }}
@@ -180,19 +230,14 @@ function ExpenseEditForm({ expense, onCancel, onSaved }: {
                 </div>
             </div>
 
-            {error && !categoryError && (
-                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
-                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                    <span>{error}</span>
-                </div>
-            )}
+            {formError && <FieldError>{formError}</FieldError>}
 
-            <div className="flex items-center justify-end gap-2">
-                <button type="button" onClick={onCancel} disabled={saving} className="px-4 py-2.5 text-sm text-zinc-400 hover:text-zinc-200 rounded-xl hover:bg-white/5 transition-colors disabled:opacity-50">
+            <div className="mt-4 flex items-center justify-end gap-2">
+                <button type="button" onClick={onCancel} disabled={saving} className="btn-quiet">
                     Cancel
                 </button>
-                <button type="submit" disabled={saving} className="px-4 py-2.5 bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium rounded-xl transition-colors flex items-center gap-2 disabled:opacity-50">
-                    {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                <button type="submit" disabled={saving} className="btn-primary">
+                    {saving ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden /> : <Check className="w-4 h-4" aria-hidden />}
                     Save
                 </button>
             </div>

@@ -1,62 +1,64 @@
 "use client";
 
-import { AlertCircle, ShoppingBag } from "lucide-react";
-import { useApi } from "@/lib/useApi";
-import { useAuthStore } from "@/lib/store";
-import { iconFor, type IconName } from "@/lib/categoryIcons";
+import { TriangleAlert } from "lucide-react";
+import type { MoneyFormatter } from "@/lib/money";
+import { Card, Empty, Skeleton, StateNote } from "../ui";
+import { LoadError } from "../LoadNotice";
 
-interface Alert {
+// One row of GET /analytics/high-spending: a category whose total over the
+// last 3 months is more than 1.5× the average across the user's categories.
+export interface SpendingAlert {
     _id: string;
     category: string;
     categoryColor: string;
-    categoryIcon: IconName;
+    categoryIcon: string;
     total: number;
 }
 
-export function HighSpendingAlerts() {
-    const currency = useAuthStore((s) => s.user?.currency) || "USD";
-    const fmt = new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 0 });
-
-    const { data, isLoading: loading } = useApi<Alert[]>("/analytics/high-spending");
-    const alerts = data ?? [];
-
-    if (loading) return <div className="h-40 animate-pulse bg-zinc-900/50 rounded-3xl" />;
-
-    if (alerts.length === 0) {
-        return (
-            <div className="p-6 rounded-3xl bg-zinc-900/50 border border-white/5 flex flex-col items-center justify-center text-center h-full">
-                <div className="p-3 rounded-full bg-green-500/10 text-green-500 mb-3">
-                    <ShoppingBag className="w-5 h-5" />
-                </div>
-                <p className="text-zinc-400 text-sm">No unusual spending detected.</p>
-            </div>
-        );
-    }
-
+// Categories running well above the others, as rows in the money-list style:
+// the category with its swatch, a warning in words, the 3-month total.
+export function HighSpendingAlerts({ alerts, loading, failed, onRetry, fmt, className }: {
+    alerts: SpendingAlert[] | undefined;
+    loading: boolean;
+    failed: boolean;
+    onRetry: () => void;
+    fmt: MoneyFormatter;
+    className?: string;
+}) {
+    const rows = alerts ?? [];
     return (
-        <div className="p-6 rounded-3xl bg-zinc-900/50 border border-white/5 h-full">
-            <div className="flex items-center gap-2 mb-4">
-                <AlertCircle className="w-5 h-5 text-red-500" />
-                <h3 className="text-lg font-semibold text-white">Unusual Spending</h3>
-            </div>
-
-            <div className="space-y-2">
-                {alerts.map((item) => {
-                    const Icon = iconFor(item.categoryIcon);
-                    return (
-                        <div key={item._id} className="flex items-center justify-between p-3 rounded-xl bg-red-500/10 border border-red-500/20">
-                            <div className="flex items-center gap-3 min-w-0">
-                                <Icon className="w-4 h-4 text-red-400 shrink-0" />
-                                <div className="min-w-0">
-                                    <div className="text-red-400 text-sm font-medium truncate">{item.category}</div>
-                                    <div className="text-[11px] text-red-300/70 mt-0.5">50%+ above your cross-category average</div>
-                                </div>
-                            </div>
-                            <span className="text-red-400 font-bold tabular-nums shrink-0">{fmt.format(item.total)}</span>
-                        </div>
-                    );
-                })}
-            </div>
-        </div>
+        <Card title="Unusual spending" id="unusual-spending" className={className} aside={<span className="label-caps text-zinc-400">Last 3 months</span>}>
+            {loading ? (
+                <div aria-hidden className="space-y-3">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-12 rounded-xl" />)}</div>
+            ) : failed ? (
+                <LoadError what="your spending alerts" onRetry={onRetry} className="py-6" />
+            ) : rows.length === 0 ? (
+                <Empty title="Nothing unusual" className="py-8">
+                    No category is running well above your others over the last 3 months.
+                </Empty>
+            ) : (
+                <>
+                    <ul>
+                        {rows.map((item) => (
+                            <li key={item._id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 py-3.5 border-t border-white/[0.07] first:border-t-0 first:pt-0">
+                                <span className="min-w-0">
+                                    <span className="flex items-center gap-2 min-w-0">
+                                        <span aria-hidden className="w-2.5 h-2.5 shrink-0 rounded-[3px]" style={{ backgroundColor: item.categoryColor }} />
+                                        <span className="truncate font-semibold text-white">{item.category}</span>
+                                    </span>
+                                    <StateNote tone="warn" icon={TriangleAlert} className="mt-1 items-start [&>svg]:mt-[1px]">
+                                        Over 1.5× your average category
+                                    </StateNote>
+                                </span>
+                                <span className="font-medium text-white tabular-nums shrink-0">{fmt.format(item.total)}</span>
+                            </li>
+                        ))}
+                    </ul>
+                    <p className="mt-5 text-[12.5px] text-zinc-400 max-w-prose">
+                        A category shows here when its total over the last 3 months is more than 1.5 times the average across your categories.
+                    </p>
+                </>
+            )}
+        </Card>
     );
 }

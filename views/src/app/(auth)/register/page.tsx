@@ -1,7 +1,6 @@
 "use client";
 
-import { motion } from "framer-motion";
-import { Lock, Mail, User, ArrowRight, AlertCircle, Check, X, Eye, EyeOff } from "lucide-react";
+import { ArrowRight, Circle, CircleCheck, Eye, EyeOff, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
@@ -10,6 +9,7 @@ import { apiErrorBody } from "@/lib/apiError";
 import { useAuthStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { VerifyCode } from "@/components/auth/VerifyCode";
+import { FieldError, FieldLabel, Notice, PageHeader, StateNote } from "@/components/dashboard/ui";
 
 // Mirrors the server's password policy (Backend/validators/common.js).
 // Showing it client-side stops users from staring at a generic
@@ -18,6 +18,8 @@ import { VerifyCode } from "@/components/auth/VerifyCode";
 const PASSWORD_RULES = [
     { id: "len", label: "At least 8 characters", test: (s: string) => s.length >= 8 },
 ] as const;
+
+const LINK = "inline-flex items-center min-h-11 rounded-lg font-semibold text-plat hover:text-white hover:underline underline-offset-4 transition-colors focus-ring";
 
 export default function RegisterPage() {
     const router  = useRouter();
@@ -50,7 +52,8 @@ export default function RegisterPage() {
         setConfirmTouched(true);   // force-show any mismatch on submit
 
         if (formData.password !== formData.confirmPassword) {
-            setError("Passwords do not match");
+            // The field says so under itself; take the user there.
+            document.getElementById("register-confirm")?.focus();
             return;
         }
 
@@ -92,186 +95,144 @@ export default function RegisterPage() {
     };
 
     return (
-        <div className="relative min-h-screen w-full flex items-center justify-center bg-zinc-950 overflow-hidden text-zinc-200 py-10">
-            <div className="absolute inset-0 pointer-events-none">
-                <div className="absolute top-[-20%] right-[-10%] w-[600px] h-[600px] bg-purple-900/30 rounded-full blur-[100px] mix-blend-screen animate-pulse" />
-                <div className="absolute bottom-[-20%] left-[-10%] w-[500px] h-[500px] bg-violet-900/20 rounded-full blur-[120px] mix-blend-screen opacity-70" />
+        <>
+            <div className="mb-8">
+                {pendingEmail
+                    ? <PageHeader title="Check your email" sub="One last step." />
+                    : <PageHeader title="Create your account" sub="Your spending, budgets and goals in one place." />}
             </div>
 
-            <motion.div
-                initial={{ opacity: 0, y: 30 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.8, ease: "easeOut" }}
-                className="relative z-10 w-full max-w-md p-8 sm:p-10 bg-black/40 backdrop-blur-2xl border border-white/5 rounded-3xl shadow-2xl shadow-purple-900/10 ring-1 ring-white/5"
-            >
-                <div className="text-center mb-8">
-                    <motion.div
-                        initial={{ scale: 0.9, opacity: 0 }}
-                        animate={{ scale: 1, opacity: 1 }}
-                        transition={{ delay: 0.2 }}
-                        className="inline-flex items-center gap-2 mb-2"
-                    >
-                        <div className="w-2 h-2 rounded-full bg-purple-500 shadow-[0_0_10px_#a855f7]" />
-                        <h1 className="text-2xl font-light tracking-wide text-white">
-                            FinAssist
-                        </h1>
-                    </motion.div>
-                    <p className="text-zinc-500 text-sm">{pendingEmail ? "One last step" : "Create your financial identity"}</p>
+            {pendingEmail ? (
+                <VerifyCode
+                    email={pendingEmail}
+                    onVerified={(u) => { setUser(u as Parameters<typeof setUser>[0]); router.push("/dashboard"); }}
+                    onBack={() => setPendingEmail(null)}
+                />
+            ) : (
+            <>
+            {error && <div role="alert" className="mb-5"><Notice tone="bad" className="pr-4">{error}</Notice></div>}
+
+            <form onSubmit={handleSubmit} className="space-y-5" noValidate>
+                <Field id="register-name" label="Full name" type="text" autoComplete="name"
+                    value={formData.name}
+                    onChange={(v) => setFormData({ ...formData, name: v })}
+                    error={fieldErrors.name}
+                    required maxLength={120}
+                />
+
+                <Field id="register-email" label="Email" type="email" autoComplete="email"
+                    value={formData.email}
+                    onChange={(v) => setFormData({ ...formData, email: v })}
+                    error={fieldErrors.email}
+                    required
+                />
+
+                <Field id="register-password" label="Password" type="password" autoComplete="new-password"
+                    value={formData.password}
+                    onChange={(v) => setFormData({ ...formData, password: v })}
+                    error={fieldErrors.password}
+                    hintId="register-password-rules"
+                    required
+                >
+                    {/* Live policy hints: an icon and words for each rule. */}
+                    <ul id="register-password-rules" className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1">
+                        {passwordChecks.map((c) => (
+                            <li key={c.id}>
+                                <StateNote tone={c.ok ? "good" : "neutral"} icon={c.ok ? CircleCheck : Circle}>
+                                    <span className="sr-only">{c.ok ? "Done: " : "Needed: "}</span>{c.label}
+                                </StateNote>
+                            </li>
+                        ))}
+                    </ul>
+                </Field>
+
+                <Field id="register-confirm" label="Confirm password" type="password" autoComplete="new-password"
+                    value={formData.confirmPassword}
+                    onChange={(v) => setFormData({ ...formData, confirmPassword: v })}
+                    onBlur={() => setConfirmTouched(true)}
+                    error={
+                        confirmTouched && formData.confirmPassword.length > 0 && !passwordsMatch
+                            ? "Passwords don't match"
+                            : undefined
+                    }
+                    required
+                />
+
+                <div className="pt-2">
+                    <button type="submit" disabled={isLoading} className="btn-primary w-full min-h-12">
+                        {isLoading
+                            ? <><Loader2 className="w-4 h-4 animate-spin" aria-hidden /><span className="sr-only">Creating your account</span></>
+                            : <>Create account <ArrowRight className="w-4 h-4" aria-hidden /></>}
+                    </button>
                 </div>
+            </form>
 
-                {pendingEmail ? (
-                    <VerifyCode
-                        email={pendingEmail}
-                        onVerified={(u) => { setUser(u as Parameters<typeof setUser>[0]); router.push("/dashboard"); }}
-                        onBack={() => setPendingEmail(null)}
-                    />
-                ) : (
-                <>
-                {error && (
-                    <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: 'auto' }}
-                        className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm flex items-start gap-2"
-                    >
-                        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                        <span>{error}</span>
-                    </motion.div>
-                )}
-
-                <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-                    <FormField icon={User} type="text" placeholder="Full Name"
-                        value={formData.name}
-                        onChange={(v) => setFormData({ ...formData, name: v })}
-                        error={fieldErrors.name}
-                        required maxLength={120}
-                    />
-
-                    <FormField icon={Mail} type="email" placeholder="Email Address"
-                        value={formData.email}
-                        onChange={(v) => setFormData({ ...formData, email: v })}
-                        error={fieldErrors.email}
-                        required
-                    />
-
-                    <div>
-                        <FormField icon={Lock} type="password" placeholder="Password"
-                            value={formData.password}
-                            onChange={(v) => setFormData({ ...formData, password: v })}
-                            error={fieldErrors.password}
-                            required
-                        />
-                        {/* Live policy hints */}
-                        <ul className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
-                            {passwordChecks.map((c) => (
-                                <li
-                                    key={c.id}
-                                    className={cn(
-                                        "flex items-center gap-1.5",
-                                        c.ok ? "text-emerald-400" : "text-zinc-500",
-                                    )}
-                                >
-                                    {c.ok ? <Check className="w-3 h-3" /> : <X className="w-3 h-3 opacity-50" />}
-                                    {c.label}
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-
-                    <FormField icon={Lock} type="password" placeholder="Confirm Password"
-                        value={formData.confirmPassword}
-                        onChange={(v) => setFormData({ ...formData, confirmPassword: v })}
-                        onBlur={() => setConfirmTouched(true)}
-                        error={
-                            confirmTouched && formData.confirmPassword.length > 0 && !passwordsMatch
-                                ? "Passwords don't match"
-                                : undefined
-                        }
-                        required
-                    />
-
-                    <motion.button
-                        whileHover={{ scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
-                        type="submit"
-                        className={cn(
-                            "w-full flex items-center justify-center gap-2 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-medium py-3 rounded-full shadow-lg shadow-purple-900/20 transition-all duration-300 mt-2",
-                            isLoading && "opacity-80 cursor-wait"
-                        )}
-                        disabled={isLoading}
-                    >
-                        {isLoading ? (
-                            <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                        ) : (
-                            <>
-                                Create Account <ArrowRight className="w-4 h-4" />
-                            </>
-                        )}
-                    </motion.button>
-                </form>
-
-                <div className="mt-8 text-center text-xs text-zinc-500">
-                    Already have an account?{" "}
-                    <Link href="/login" className="text-purple-400 hover:text-purple-300 transition-colors font-medium">
-                        Sign In
-                    </Link>
-                </div>
-                </>
-                )}
-            </motion.div>
-        </div>
+            <p className="mt-8 flex flex-wrap items-center gap-x-1.5 text-[13.5px] text-zinc-400">
+                Already have an account?
+                <Link href="/login" className={LINK}>Sign in</Link>
+            </p>
+            </>
+            )}
+        </>
     );
 }
 
-// ── Small field wrapper to keep the JSX flat and the error rendering DRY ──
+// ── One labelled field: its label, the well, an optional hint under it, and
+// its error, wired with aria-invalid and aria-describedby. Password fields
+// get a show/hide toggle. ──
 
-interface FormFieldProps {
-    icon: React.ComponentType<{ className?: string }>;
+interface FieldProps {
+    id: string;
+    label: string;
     type: "text" | "email" | "password";
-    placeholder: string;
+    autoComplete: string;
     value: string;
     onChange: (v: string) => void;
     onBlur?: () => void;
     error?: string;
+    // The id of a hint rendered as `children` (for aria-describedby).
+    hintId?: string;
+    children?: React.ReactNode;
     required?: boolean;
     maxLength?: number;
 }
 
-function FormField({ icon: Icon, type, placeholder, value, onChange, onBlur, error, required, maxLength }: FormFieldProps) {
+function Field({ id, label, type, autoComplete, value, onChange, onBlur, error, hintId, children, required, maxLength }: FieldProps) {
     const [reveal, setReveal] = useState(false);
     const isPassword = type === "password";
     const inputType = isPassword && reveal ? "text" : type;
+    const errorId = `${id}-error`;
+    const describedBy = [hintId, error ? errorId : null].filter(Boolean).join(" ") || undefined;
     return (
-        <div className="group">
+        <div>
+            <FieldLabel htmlFor={id}>{label}</FieldLabel>
             <div className="relative">
-                <Icon className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500 group-focus-within:text-purple-400 transition-colors" />
                 <input
+                    id={id}
                     type={inputType}
-                    placeholder={placeholder}
+                    autoComplete={autoComplete}
                     value={value}
                     onChange={(e) => onChange(e.target.value)}
                     onBlur={onBlur}
                     required={required}
                     maxLength={maxLength}
-                    className={cn(
-                        "w-full bg-zinc-900/50 border-b text-zinc-300 placeholder:text-zinc-600 pl-10 py-3 outline-none transition-all duration-300 rounded-t-sm",
-                        isPassword ? "pr-12" : "pr-4",
-                        error
-                            ? "border-red-500/60 focus:border-red-500"
-                            : "border-zinc-800 focus:border-purple-500",
-                    )}
+                    aria-invalid={error ? true : undefined}
+                    aria-describedby={describedBy}
+                    className={cn("field", isPassword && "pr-14")}
                 />
                 {isPassword && (
-                    <button type="button" onClick={() => setReveal((s) => !s)} className="absolute right-1 top-1/2 -translate-y-1/2 p-2 text-zinc-300 hover:text-white" aria-label={reveal ? "Hide password" : "Show password"}>
-                        {reveal ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                    <button
+                        type="button"
+                        onClick={() => setReveal((s) => !s)}
+                        className="btn-icon absolute right-0.5 top-1/2 -translate-y-1/2"
+                        aria-label={reveal ? "Hide password" : "Show password"}
+                    >
+                        {reveal ? <EyeOff className="w-5 h-5" aria-hidden /> : <Eye className="w-5 h-5" aria-hidden />}
                     </button>
                 )}
             </div>
-            {error && (
-                <div className="mt-1 flex items-center gap-1.5 text-red-400 text-xs">
-                    <AlertCircle className="w-3 h-3 shrink-0" />
-                    <span>{error}</span>
-                </div>
-            )}
+            {children}
+            {error && <FieldError id={errorId}>{error}</FieldError>}
         </div>
     );
 }

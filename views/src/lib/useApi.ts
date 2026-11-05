@@ -13,7 +13,8 @@ import { cacheKey, load, readEntry, revalidateActive, subscribe, type CacheEntry
 // - A page you've already seen renders from the cache at once; it is
 //   refetched in the background when older than MAX_AGE_MS.
 // - `error` is set only when there is nothing to show. If a background
-//   refresh fails, the last good data stays on screen.
+//   refresh fails, the last good data stays on screen, `refreshFailed` is
+//   true and `updatedAt` says when that data was fetched.
 // - Pass `null` as the url to skip the request (e.g. until an id is known).
 // - Writes through lib/api.ts invalidate the cache, so after saving anything
 //   the reads on screen refresh themselves; `refresh()` forces one.
@@ -75,6 +76,8 @@ export function useApi<T = unknown>(url: string | null, params?: Params) {
         data: body?.data,
         body,
         error: body === undefined ? entry.error : undefined,
+        refreshFailed: body !== undefined && entry.error !== undefined,
+        updatedAt: entry.bodyAt,
         isLoading: key !== null && body === undefined && entry.error === undefined,
         refresh,
     };

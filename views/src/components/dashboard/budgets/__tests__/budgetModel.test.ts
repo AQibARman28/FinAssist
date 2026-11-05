@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { usageTone, summarizeBudgets, previousMonth, nextMonth, type BudgetRow } from "../budgetModel.ts";
+import { usageTone, summarizeBudgets, previousMonth, nextMonth, monthPace, budgetState, type BudgetRow } from "../budgetModel.ts";
 
 function row(over: Partial<BudgetRow>): BudgetRow {
     return {
@@ -51,5 +51,36 @@ describe("month stepping", () => {
         assert.deepEqual(previousMonth(2026, 1), { year: 2025, month: 12 });
         assert.deepEqual(previousMonth(2026, 10), { year: 2026, month: 9 });
         assert.deepEqual(nextMonth(2026, 12), { year: 2027, month: 1 });
+    });
+});
+
+describe("monthPace", () => {
+    const now = new Date(2026, 10, 6, 12); // 6 Nov 2026, local noon
+    it("is the share of the viewed month gone by, for the current month", () => {
+        assert.equal(monthPace(2026, 11, now), 6 / 30);
+    });
+    it("is the whole month for a month already over", () => {
+        assert.equal(monthPace(2026, 10, now), 1);
+        assert.equal(monthPace(2025, 12, now), 1);
+    });
+    it("is nothing yet for a month still to come", () => {
+        assert.equal(monthPace(2026, 12, now), 0);
+    });
+});
+
+describe("budgetState", () => {
+    const row = (spent: number, extra: Partial<{ isOverLimit: boolean; isNearLimit: boolean }> = {}) =>
+        ({ limit: 1000, spent, isOverLimit: spent > 1000, isNearLimit: false, ...extra });
+    it("says over once spending passes the limit", () => {
+        assert.equal(budgetState(row(1200), 0.5), "over");
+    });
+    it("says the alert threshold has passed before pace", () => {
+        assert.equal(budgetState(row(850, { isNearLimit: true }), 0.9), "alert");
+    });
+    it("says ahead of pace when spending runs ahead of the month", () => {
+        assert.equal(budgetState(row(600), 0.4), "ahead");
+    });
+    it("says on pace otherwise", () => {
+        assert.equal(budgetState(row(300), 0.4), "on");
     });
 });

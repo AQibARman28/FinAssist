@@ -76,6 +76,21 @@ describe("parseExpenseInput — full parse", () => {
     });
 });
 
+describe("parseExpenseInput — words students in Bangladesh use", () => {
+    for (const [input, category] of [
+        ["rickshaw 60", "Transport"],
+        ["cng to campus 150", "Transport"],
+        ["recharge 300", "Bills"],
+        ["hostel seat 4500", "Bills"],
+        ["canteen 120", "Food"],
+        ["fuchka 80", "Food"],
+    ] as const) {
+        it(`"${input}" -> ${category}`, () => {
+            assert.equal(parse(input).category?.name, category);
+        });
+    }
+});
+
 describe("parseExpenseInput — suggestions never silently override", () => {
     it("unknown category stays null (user must pick)", () => {
         const r = parse("widget 99");

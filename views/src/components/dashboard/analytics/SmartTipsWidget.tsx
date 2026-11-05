@@ -1,89 +1,67 @@
 "use client";
 
-import { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { Lightbulb, ChevronRight, ChevronLeft } from "lucide-react";
-import { useApi } from "@/lib/useApi";
+import { Clapperboard, Lightbulb, PiggyBank, Scale, Utensils } from "lucide-react";
+import { Card, Empty, Skeleton } from "../ui";
+import { LoadError } from "../LoadNotice";
 
-interface Tip {
+// One tip from GET /ai/smart-tips. They come from fixed rules about this
+// month's spending against income (controllers/aiController.js), not a model.
+export interface Tip {
     category: string;
     message: string;
 }
 
-export function SmartTipsWidget() {
-    const { data, isLoading: loading } = useApi<Tip[]>("/ai/smart-tips");
-    const tips = data ?? [];
-    const [tipIndex, setCurrentIndex] = useState(0);
-    // A background refresh can return fewer tips than the index points past.
-    const currentIndex = tips.length ? tipIndex % tips.length : 0;
+// A short line for each rule the server has; anything new falls back to its
+// category name.
+const HEADLINE: Record<string, string> = {
+    Food: "Food is taking a big share",
+    Entertainment: "Entertainment is taking a big share",
+    Savings: "A surplus you could put to work",
+    Budget: "Spending has passed income",
+};
+const ICON: Record<string, typeof Lightbulb> = {
+    Food: Utensils,
+    Entertainment: Clapperboard,
+    Savings: PiggyBank,
+    Budget: Scale,
+};
 
-    const nextTip = () => {
-        setCurrentIndex((prev) => (prev + 1) % tips.length);
-    };
-
-    const prevTip = () => {
-        setCurrentIndex((prev) => (prev - 1 + tips.length) % tips.length);
-    };
-
-    if (loading) return <div className="h-40 animate-pulse bg-zinc-900/50 rounded-3xl" />;
-
-    if (tips.length === 0) {
-        return (
-            <div className="p-6 rounded-3xl bg-zinc-900/50 border border-white/5 h-full flex flex-col items-center justify-center text-center">
-                <Lightbulb className="w-8 h-8 text-zinc-700 mb-2" />
-                <p className="text-zinc-500 text-sm">No tips available yet. Keep tracking your expenses!</p>
-            </div>
-        );
-    }
-
+// What to change, as rows: a quiet icon, the point in a few words, and the
+// tip itself under it.
+export function SmartTipsWidget({ tips, loading, failed, onRetry, className }: {
+    tips: Tip[] | undefined;
+    loading: boolean;
+    failed: boolean;
+    onRetry: () => void;
+    className?: string;
+}) {
+    const rows = tips ?? [];
     return (
-        <div className="p-6 rounded-3xl bg-gradient-to-br from-indigo-900/20 to-purple-900/20 border border-white/10 relative overflow-hidden h-full">
-            <div className="flex justify-between items-center mb-4">
-                <div className="flex items-center gap-2">
-                    <div className="p-2 rounded-lg bg-yellow-500/10 text-yellow-500">
-                        <Lightbulb className="w-4 h-4" />
-                    </div>
-                    <h3 className="text-lg font-semibold text-white">Smart Tips</h3>
-                </div>
-
-                <div className="flex gap-1">
-                    <button onClick={prevTip} className="p-1 rounded-full hover:bg-white/10 text-zinc-400 transition-colors">
-                        <ChevronLeft className="w-4 h-4" />
-                    </button>
-                    <button onClick={nextTip} className="p-1 rounded-full hover:bg-white/10 text-zinc-400 transition-colors">
-                        <ChevronRight className="w-4 h-4" />
-                    </button>
-                </div>
-            </div>
-
-            <div className="relative h-24">
-                <AnimatePresence mode="wait">
-                    <motion.div
-                        key={currentIndex}
-                        initial={{ opacity: 0, x: 20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: -20 }}
-                        transition={{ duration: 0.2 }}
-                        className="absolute inset-0"
-                    >
-                        <span className="inline-block px-2 py-1 rounded-md bg-white/10 text-xs text-white/80 mb-2">
-                            {tips[currentIndex].category}
-                        </span>
-                        <p className="text-white text-sm leading-relaxed">
-                            {tips[currentIndex].message}
-                        </p>
-                    </motion.div>
-                </AnimatePresence>
-            </div>
-
-            <div className="flex justify-center gap-1 mt-2">
-                {tips.map((_, idx) => (
-                    <div
-                        key={idx}
-                        className={`w-1.5 h-1.5 rounded-full transition-colors ${idx === currentIndex ? 'bg-white' : 'bg-white/20'}`}
-                    />
-                ))}
-            </div>
-        </div>
+        <Card title="Tips" id="tips" className={className} aside={<span className="label-caps text-zinc-400">Rule-based</span>}>
+            {loading ? (
+                <div aria-hidden className="grid md:grid-cols-2 gap-x-10 gap-y-4">{[0, 1].map((i) => <Skeleton key={i} className="h-14 rounded-xl" />)}</div>
+            ) : failed ? (
+                <LoadError what="your tips" onRetry={onRetry} className="py-6" />
+            ) : rows.length === 0 ? (
+                <Empty title="No tips right now" className="py-8">
+                    Tips appear here when something in this month&apos;s spending stands out against your income.
+                </Empty>
+            ) : (
+                <ul className="grid md:grid-cols-2 gap-x-10">
+                    {rows.map((tip, i) => {
+                        const Icon = ICON[tip.category] ?? Lightbulb;
+                        return (
+                            <li key={`${tip.category}-${i}`} className="flex gap-3.5 py-4 border-t border-white/[0.07] first:border-t-0 first:pt-0 md:[&:nth-child(2)]:border-t-0 md:[&:nth-child(2)]:pt-0">
+                                <Icon aria-hidden className="w-[18px] h-[18px] mt-0.5 shrink-0 text-zinc-400" />
+                                <span className="min-w-0">
+                                    <span className="block font-semibold text-white">{HEADLINE[tip.category] ?? tip.category}</span>
+                                    <span className="mt-1 block text-[13.5px] leading-relaxed text-zinc-400 max-w-prose">{tip.message}</span>
+                                </span>
+                            </li>
+                        );
+                    })}
+                </ul>
+            )}
+        </Card>
     );
 }

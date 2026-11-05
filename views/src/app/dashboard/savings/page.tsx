@@ -1,12 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { format } from "date-fns";
-import { PiggyBank, Wallet, ArrowDownToLine, ArrowUpFromLine, Loader2, Info } from "lucide-react";
+import { ArrowDownToLine, ArrowUpFromLine, Loader2, PiggyBank } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import { useCurrency } from "@/lib/useCurrency";
-import { cn } from "@/lib/utils";
+import { calendarDay, formatDay } from "@/lib/dates";
+import { savingsByMonth } from "@/lib/savings";
+import { ColumnChart } from "@/components/dashboard/ColumnChart";
+import { LoadError } from "@/components/dashboard/LoadNotice";
+import { Card, Empty, FieldError, FieldLabel, HeroFigure, Page, PageHeader, Segmented, Skeleton, Term } from "@/components/dashboard/ui";
 
 interface Entry {
     _id: string;
@@ -22,22 +26,40 @@ interface SavingsData {
     entries: Entry[];
 }
 
+type Mode = "deposit" | "withdraw";
+
+// Enough history rows to end level with the chart beside them.
+const HISTORY_ROWS = 5;
+
 export default function SavingsPage() {
-    const { format: fmt } = useCurrency();
+    const money = useCurrency();
+    const { format: fmt, currency } = money;
     // Cached; a deposit or withdrawal is a write, which refreshes it in the
-    // background — the page no longer blanks to a spinner after each one.
+    // background, so the page never blanks to a spinner after each one.
     const savings = useApi<SavingsData>("/savings");
     const data = savings.data ?? null;
     const loading = savings.isLoading;
-    const [mode, setMode] = useState<"deposit" | "withdraw">("deposit");
+    const failed = !data && savings.error !== undefined;
+    const [mode, setMode] = useState<Mode>("deposit");
     const [amount, setAmount] = useState("");
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [showAll, setShowAll] = useState(false);
+    const [now] = useState(() => new Date());
+    const ids = { amount: useId(), hint: useId(), error: useId() };
+
+    const months = useMemo(() => (data ? savingsByMonth(data.entries, now) : []), [data, now]);
+    const thisMonth = months.at(-1)?.net ?? 0;
+    const entries = data?.entries ?? [];
+    const shown = showAll ? entries : entries.slice(0, HISTORY_ROWS);
 
     const submit = async (e: React.FormEvent) => {
         e.preventDefault();
         const value = parseFloat(amount);
-        if (!value || value <= 0) return;
+        if (!value || value <= 0) { setError("Enter an amount above 0."); return; }
+        // The limit is in the hint below; say it here before the server does.
+        if (data && mode === "deposit" && value > data.wallet) { setError("That's more than is in your wallet."); return; }
+        if (data && mode === "withdraw" && value > data.balance) { setError("That's more than is in your savings."); return; }
         setSubmitting(true);
         setError(null);
         try {
@@ -52,105 +74,119 @@ export default function SavingsPage() {
     };
 
     return (
-        <div className="p-4 md:p-6 space-y-5 md:space-y-6 max-w-5xl mx-auto">
-            <div>
-                <h1 className="text-xl md:text-2xl font-bold text-white">Savings</h1>
-                <p className="text-zinc-500 text-sm">Money set aside from your wallet. Move it in and out anytime.</p>
-            </div>
+        <Page>
+            <PageHeader title="Savings" sub="Money set aside from your wallet. Move it in or out whenever you need it." />
 
-            {loading ? (
-                <div className="h-28 animate-pulse bg-zinc-900/50 rounded-2xl" />
-            ) : data ? (
+            {failed ? (
+                <Card><LoadError what="your savings" onRetry={() => { void savings.refresh(); }} /></Card>
+            ) : (
                 <>
-                    {/* Balance hero + wallet */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <div className="p-5 rounded-2xl border bg-gradient-to-br from-emerald-900/20 to-black border-emerald-500/20">
-                            <div className="flex items-center justify-between">
-                                <span className="text-xs uppercase tracking-wider text-zinc-500">Savings balance</span>
-                                <PiggyBank className="w-4 h-4 text-emerald-400" />
-                            </div>
-                            <div className="text-2xl md:text-3xl font-bold tabular-nums text-emerald-400 mt-2">{fmt(data.balance)}</div>
-                        </div>
-                        <div className="p-5 rounded-2xl border bg-zinc-900/50 border-white/5">
-                            <div className="flex items-center justify-between">
-                                <span className="text-xs uppercase tracking-wider text-zinc-500">Wallet (spendable)</span>
-                                <Wallet className="w-4 h-4 text-zinc-400" />
-                            </div>
-                            <div className="text-2xl md:text-3xl font-bold tabular-nums text-white mt-2">{fmt(data.wallet)}</div>
-                        </div>
-                    </div>
+                    <div className="grid gap-6 lg:gap-14 lg:grid-cols-[minmax(0,1fr)_minmax(0,400px)] items-center py-2 md:py-4">
+                        <HeroFigure label="In savings" value={data ? fmt(data.balance) : null} loading={loading}>
+                            <dl className="mt-6 grid grid-cols-2 gap-6 sm:flex sm:gap-x-12">
+                                <Term label="In your wallet">{data ? fmt(data.wallet) : "…"}</Term>
+                                <Term label="This month">
+                                    {data ? `${thisMonth > 0 ? "+" : thisMonth < 0 ? "−" : ""}${fmt(Math.abs(thisMonth))}` : "…"}
+                                </Term>
+                            </dl>
+                        </HeroFigure>
 
-                    {/* Move money */}
-                    <div className="p-5 rounded-2xl bg-zinc-900/50 border border-white/5">
-                        <div className="flex items-center gap-1 p-1 rounded-xl bg-black/30 border border-white/5 w-fit mb-4">
-                            {(["deposit", "withdraw"] as const).map((m) => (
-                                <button
-                                    key={m}
-                                    onClick={() => { setMode(m); setError(null); }}
-                                    className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium capitalize transition-colors",
-                                        mode === m ? "bg-emerald-500 text-black" : "text-zinc-400 hover:text-white")}
-                                >
-                                    {m === "deposit" ? <ArrowDownToLine className="w-4 h-4" /> : <ArrowUpFromLine className="w-4 h-4" />}
-                                    {m === "deposit" ? "Add to savings" : "Withdraw"}
-                                </button>
-                            ))}
-                        </div>
-                        <form onSubmit={submit} className="flex flex-col sm:flex-row gap-3 sm:items-center">
-                            <input
-                                type="number" min={1} step="any" placeholder="Amount"
-                                value={amount} onChange={(e) => setAmount(e.target.value)}
-                                className="w-full sm:flex-1 bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white tabular-nums placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500/50"
-                                required
+                        <Card title="Move money" id="move-money">
+                            <Segmented<Mode>
+                                label="Direction"
+                                value={mode}
+                                onChange={(m) => { setMode(m); setError(null); }}
+                                items={[
+                                    { key: "deposit", label: "Add to savings", icon: ArrowDownToLine },
+                                    { key: "withdraw", label: "Withdraw", icon: ArrowUpFromLine },
+                                ]}
                             />
-                            <button
-                                type="submit" disabled={submitting}
-                                className="px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-                            >
-                                {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : (mode === "deposit" ? "Move to savings" : "Withdraw to wallet")}
-                            </button>
-                        </form>
-                        {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
-                        <p className="mt-2 flex items-center gap-1.5 text-[11px] text-zinc-600">
-                            <Info className="w-3 h-3 shrink-0" />
-                            {mode === "deposit"
-                                ? `You can set aside up to ${fmt(data.wallet)} from your wallet.`
-                                : `You can withdraw up to ${fmt(data.balance)} back to your wallet.`}
-                        </p>
+                            <form onSubmit={submit} className="mt-5 space-y-4">
+                                <div>
+                                    <FieldLabel htmlFor={ids.amount}>Amount ({currency})</FieldLabel>
+                                    <input
+                                        id={ids.amount}
+                                        type="number" min={1} step="any" inputMode="decimal" placeholder="e.g. 500"
+                                        value={amount} onChange={(e) => { setAmount(e.target.value); setError(null); }}
+                                        aria-describedby={error ? `${ids.hint} ${ids.error}` : ids.hint}
+                                        aria-invalid={error ? true : undefined}
+                                        className="field tabular-nums"
+                                        required
+                                    />
+                                    {error && <FieldError id={ids.error}>{error}</FieldError>}
+                                    <p id={ids.hint} className="mt-2 text-[12.5px] text-zinc-400 tabular-nums">
+                                        {!data ? " " : mode === "deposit"
+                                            ? `You can set aside up to ${fmt(data.wallet)} from your wallet.`
+                                            : `You can move up to ${fmt(data.balance)} back to your wallet.`}
+                                    </p>
+                                </div>
+                                <button type="submit" disabled={submitting || !data} className="btn-primary w-full">
+                                    {submitting ? <><Loader2 className="w-4 h-4 animate-spin" aria-hidden /><span className="sr-only">Moving</span></> : mode === "deposit" ? "Move to savings" : "Move to wallet"}
+                                </button>
+                            </form>
+                        </Card>
                     </div>
 
-                    {/* Ledger */}
-                    <div className="p-5 rounded-2xl bg-zinc-900/50 border border-white/5">
-                        <h2 className="text-white font-medium mb-3">History</h2>
-                        {data.entries.length === 0 ? (
-                            <p className="text-zinc-600 text-sm py-6 text-center">No savings activity yet.</p>
-                        ) : (
-                            <div className="space-y-1.5">
-                                {data.entries.map((e) => {
-                                    const isDeposit = e.direction === "deposit";
-                                    return (
-                                        <div key={e._id} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-black/20">
-                                            <div className="flex items-center gap-3 min-w-0">
-                                                <div className={cn("p-2 rounded-lg shrink-0", isDeposit ? "bg-emerald-500/10 text-emerald-400" : "bg-zinc-700/40 text-zinc-300")}>
-                                                    {isDeposit ? <ArrowDownToLine className="w-4 h-4" /> : <ArrowUpFromLine className="w-4 h-4" />}
-                                                </div>
-                                                <div className="min-w-0">
-                                                    <div className="text-sm text-white truncate">{e.note || (isDeposit ? "Added to savings" : "Withdrawn to wallet")}{e.source === "rollover" ? " · month-end" : ""}</div>
-                                                    <div className="text-[11px] text-zinc-500 tabular-nums">{format(new Date(e.date), "MMM d, yyyy")}</div>
-                                                </div>
-                                            </div>
-                                            <span className={cn("text-sm font-medium tabular-nums shrink-0", isDeposit ? "text-emerald-400" : "text-zinc-300")}>
-                                                {isDeposit ? "+" : "−"}{fmt(e.amount)}
-                                            </span>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        )}
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 md:gap-6">
+                        <Card title="Savings by month" id="savings-by-month" className="lg:col-span-7">
+                            {loading || !data ? (
+                                <Skeleton className="h-[300px]" />
+                            ) : (
+                                <>
+                                    <ColumnChart
+                                        title="Savings balance at the end of each month"
+                                        rows={months.map((m) => ({ key: m.key, label: m.label, title: m.title, values: [m.closing] }))}
+                                        series={[{ label: "Balance", tone: "plat" }]}
+                                        fmt={money}
+                                    />
+                                    <p className="mt-3 text-[12.5px] text-zinc-400">Each bar is what you had saved at the end of that month.</p>
+                                </>
+                            )}
+                        </Card>
+
+                        <Card title="History" id="savings-history" className="lg:col-span-5"
+                            aside={entries.length > 0 ? <span className="label-caps text-zinc-400">{entries.length} move{entries.length === 1 ? "" : "s"}</span> : undefined}>
+                            {loading || !data ? (
+                                <div aria-hidden className="space-y-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-12" />)}</div>
+                            ) : entries.length === 0 ? (
+                                <Empty icon={PiggyBank} title="Nothing saved yet" className="py-8">
+                                    Move some money from your wallet and it shows up here.
+                                </Empty>
+                            ) : (
+                                <>
+                                    <ul>
+                                        {shown.map((e) => {
+                                            const isDeposit = e.direction === "deposit";
+                                            const day = calendarDay(e.date);
+                                            return (
+                                                <li key={e._id} className="grid grid-cols-[48px_minmax(0,1fr)_auto] items-center gap-4 py-3.5 border-t border-white/[0.07] first:border-t-0 first:pt-0">
+                                                    <span aria-hidden className="grid justify-items-center leading-none text-zinc-400">
+                                                        <b className="text-[23px] font-light [font-stretch:112%] text-white">{day.getDate()}</b>
+                                                        <span className="mt-1.5 text-[10.5px] font-medium tracking-[0.14em] [font-stretch:118%] uppercase">{format(day, "MMM")}</span>
+                                                    </span>
+                                                    <span className="min-w-0">
+                                                        <span className="block truncate font-semibold text-white">{e.note || (isDeposit ? "Added to savings" : "Moved to wallet")}</span>
+                                                        <span className="mt-0.5 flex items-center gap-1.5 text-[12.5px] text-zinc-400">
+                                                            {isDeposit ? <ArrowDownToLine className="w-3.5 h-3.5" aria-hidden /> : <ArrowUpFromLine className="w-3.5 h-3.5" aria-hidden />}
+                                                            <span className="truncate">{isDeposit ? "Into savings" : "Out to wallet"}{e.source === "rollover" ? " · month-end" : ""} · {formatDay(e.date, now)}</span>
+                                                        </span>
+                                                    </span>
+                                                    <span className="font-medium text-white tabular-nums shrink-0">{isDeposit ? "+" : "−"}{fmt(e.amount)}</span>
+                                                </li>
+                                            );
+                                        })}
+                                    </ul>
+                                    {entries.length > HISTORY_ROWS && (
+                                        <button type="button" onClick={() => setShowAll((v) => !v)} aria-expanded={showAll} className="btn-quiet -ml-3 mt-2 text-plat hover:text-white">
+                                            {showAll ? "Show fewer" : `Show all ${entries.length}`}
+                                        </button>
+                                    )}
+                                </>
+                            )}
+                        </Card>
                     </div>
                 </>
-            ) : (
-                <div className="p-6 rounded-2xl bg-zinc-900/50 border border-white/5 text-zinc-500 text-sm">Couldn&apos;t load savings.</div>
             )}
-        </div>
+        </Page>
     );
 }

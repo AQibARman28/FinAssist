@@ -1,14 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { motion } from "framer-motion";
-import { Sparkles, X, Loader2, Check, AlertCircle, ArrowLeft, Info, ShieldCheck } from "lucide-react";
+import { useEffect, useId, useMemo, useState } from "react";
+import { ArrowLeft, Check, CircleCheck, Info, Loader2, ShieldCheck, TriangleAlert, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { useCurrency } from "@/lib/useCurrency";
 import { cn } from "@/lib/utils";
 import { apiErrorMessage } from "@/lib/apiError";
+import { Card, Missing, Notice, Skeleton, StateNote, Term } from "../ui";
 import {
-    allocationTotal, buildAllocations, formatMonths, suggestionToInputs,
+    allocationTotal, buildAllocations, formatMonths, parseAllocationInput, suggestionToInputs,
     type AllocationData, type Tradeoff,
 } from "./goalPlanModel";
 
@@ -18,14 +18,18 @@ interface AllocationSuggestionProps {
     onClose: () => void;
     /** Called after POST /goals/allocate succeeds so goals/balance/plan refresh. */
     onAllocated: () => void;
+    id?: string;
+    className?: string;
 }
 
 type Step = "edit" | "confirm" | "done";
 
 // Recommend-and-confirm: GET /goals/allocation-suggestion proposes a split of
 // the monthly surplus; the user can change any amount; NOTHING is recorded
-// until they press Confirm on the review step (POST /goals/allocate).
-export function AllocationSuggestion({ wallet, onClose, onAllocated }: AllocationSuggestionProps) {
+// until they press Confirm on the review step (POST /goals/allocate). A row
+// still at the suggested amount keeps the 40% platinum edge of a suggested
+// choice; changing it makes the row plainly the user's.
+export function AllocationSuggestion({ wallet, onClose, onAllocated, id = "suggested-split", className }: AllocationSuggestionProps) {
     const { format: fmt } = useCurrency();
     const [data, setData] = useState<AllocationData | null>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -34,6 +38,7 @@ export function AllocationSuggestion({ wallet, onClose, onAllocated }: Allocatio
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [recorded, setRecorded] = useState<{ count: number; total: number } | null>(null);
+    const uid = useId();
 
     useEffect(() => {
         let cancelled = false;
@@ -54,7 +59,7 @@ export function AllocationSuggestion({ wallet, onClose, onAllocated }: Allocatio
     const rows = useMemo(() => buildAllocations(goals, inputs), [goals, inputs]);
     const total = allocationTotal(rows);
     const overWallet = wallet !== null && total > wallet + 0.005;
-    const titleOf = (id: string) => goals.find((g) => g.goalId === id)?.title ?? "Goal";
+    const titleOf = (gid: string) => goals.find((g) => g.goalId === gid)?.title ?? "Goal";
 
     const confirm = async () => {
         setSubmitting(true);
@@ -71,100 +76,108 @@ export function AllocationSuggestion({ wallet, onClose, onAllocated }: Allocatio
         }
     };
 
-    return (
-        <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="p-4 sm:p-5 rounded-2xl bg-black/30 border border-yellow-500/20 space-y-4"
-        >
-            <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-2">
-                    <Sparkles className="w-4 h-4 text-yellow-500" />
-                    <h4 className="text-white font-medium">Suggested allocation</h4>
-                </div>
-                <button onClick={onClose} aria-label="Close allocation" className="p-2 -m-1 rounded-lg text-zinc-500 hover:text-zinc-200 hover:bg-white/5 transition-colors">
-                    <X className="w-4 h-4" />
-                </button>
-            </div>
+    const caption = "block mt-2 text-[12.5px] leading-normal font-normal [font-stretch:100%] text-zinc-400";
 
-            <p className="flex items-start gap-2 text-xs text-zinc-500">
-                <ShieldCheck className="w-3.5 h-3.5 mt-0.5 shrink-0 text-zinc-500" />
+    return (
+        <Card
+            title="Suggested split"
+            id={id}
+            className={className}
+            aside={(
+                <button type="button" onClick={onClose} aria-label="Close the suggested split" className="btn-icon -mr-2">
+                    <X className="w-4 h-4" aria-hidden />
+                </button>
+            )}
+        >
+            <p className="flex items-start gap-2 text-[13px] text-zinc-400 max-w-prose">
+                <ShieldCheck className="w-4 h-4 mt-px shrink-0 text-zinc-400" aria-hidden />
                 <span>
-                    A suggestion only — nothing is recorded until you confirm. Confirming records these as goal
-                    contributions in FinAssist (money set aside from your wallet). It doesn&apos;t move money between bank accounts.
+                    This is only a suggestion: nothing is recorded until you confirm. Confirming records these as goal
+                    contributions in FinAssist, money set aside from your wallet. It doesn&apos;t move money between bank accounts.
                 </span>
             </p>
 
             {loadError ? (
-                <div className="flex items-center gap-2 text-sm text-red-400"><AlertCircle className="w-4 h-4" />{loadError}</div>
+                <div role="alert" className="mt-6"><Notice tone="bad">{loadError}</Notice></div>
             ) : !data ? (
-                <div className="flex justify-center py-6"><Loader2 className="w-5 h-5 animate-spin text-zinc-500" /></div>
+                <div aria-hidden className="mt-6 space-y-3">
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-14 rounded-lg" />)}</div>
+                    {[0, 1, 2].map((i) => <Skeleton key={i} className="h-[76px] rounded-xl" />)}
+                </div>
             ) : step === "done" && recorded ? (
-                <div className="space-y-3">
-                    <div className="flex items-center gap-2 text-sm text-emerald-400">
-                        <Check className="w-4 h-4" />
+                <div className="mt-6 flex flex-wrap items-center justify-between gap-3" role="status">
+                    <StateNote tone="good" icon={CircleCheck} className="text-[13.5px] tabular-nums">
                         Recorded {recorded.count} contribution{recorded.count === 1 ? "" : "s"} totalling {fmt(recorded.total)}.
-                    </div>
-                    <button onClick={onClose} className="px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-sm text-zinc-300 hover:bg-white/10 transition-colors">
-                        Done
-                    </button>
+                    </StateNote>
+                    <button type="button" onClick={onClose} className="btn-secondary">Done</button>
                 </div>
             ) : (
                 <>
-                    {/* Context numbers */}
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                        <Metric label="Monthly surplus" value={fmt(data.cashFlow.monthlySurplus)} tone={data.cashFlow.monthlySurplus < 0 ? "text-red-400" : "text-white"} />
-                        <Metric label="Emergency baseline" value={fmt(data.emergencyBaseline)} hint="3 × monthly expenses" />
-                        <Metric label="Left unallocated" value={fmt(data.freeSurplus)} />
-                        <Metric label="In your wallet" value={wallet === null ? "—" : fmt(wallet)} />
-                    </div>
+                    {/* What the split is drawn from. */}
+                    <dl className="mt-6 grid grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-6">
+                        {/* Averages, so whole amounts (the plan card shows the same). */}
+                        <Term label="Monthly surplus">{fmt(Math.round(data.cashFlow.monthlySurplus))}</Term>
+                        <Term label="Emergency baseline">{fmt(Math.round(data.emergencyBaseline))}<span className={caption}>3 × monthly expenses</span></Term>
+                        <Term label="Left unallocated">{fmt(Math.round(data.freeSurplus))}</Term>
+                        <Term label="In your wallet">{wallet === null ? <Missing /> : fmt(wallet)}</Term>
+                    </dl>
 
                     {goals.length === 0 ? (
-                        <p className="text-sm text-zinc-500">No active goals to allocate to.</p>
+                        <p className="mt-6 text-sm text-zinc-400">No active goals to put money towards.</p>
                     ) : step === "edit" ? (
-                        <div className="space-y-2">
-                            {goals.map((g) => (
-                                <div key={g.goalId} className="p-3 rounded-xl bg-zinc-900/60 border border-white/5">
-                                    <div className="flex items-center justify-between gap-3">
-                                        <div className="min-w-0">
-                                            <div className="flex items-center gap-2 min-w-0">
-                                                <span className="text-sm text-white font-medium truncate">{g.title}</span>
-                                                {g.goalType === "Emergency Fund" && (
-                                                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-yellow-500/10 text-yellow-500 border border-yellow-500/20 shrink-0">Emergency</span>
-                                                )}
+                        <ul className="mt-6 space-y-3">
+                            {goals.map((g) => {
+                                const amount = parseAllocationInput(inputs[g.goalId]);
+                                const suggested = g.suggested > 0 && amount !== null && Math.abs(amount - g.suggested) < 0.005;
+                                const inputId = `${uid}-${g.goalId}`;
+                                return (
+                                    <li
+                                        key={g.goalId}
+                                        className={cn("px-4 py-3 rounded-xl border transition-colors", suggested ? "border-plat/40 bg-white/[0.03]" : "border-white/10")}
+                                    >
+                                        <div className="flex items-center justify-between gap-4">
+                                            <div className="min-w-0">
+                                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
+                                                    <span className="truncate font-semibold text-white">{g.title}</span>
+                                                    {g.goalType === "Emergency Fund" && <span className="label-caps text-zinc-400">Emergency</span>}
+                                                    {suggested && <span className="label-caps text-plat">Suggested</span>}
+                                                </div>
+                                                <p className="mt-0.5 text-[12.5px] text-zinc-400 tabular-nums">
+                                                    {fmt(Math.max(g.targetAmount - g.currentAmount, 0))} to go · suggested {fmt(g.suggested)}
+                                                </p>
                                             </div>
-                                            <div className="text-[11px] text-zinc-500 tabular-nums mt-0.5">
-                                                {fmt(Math.max(g.targetAmount - g.currentAmount, 0))} to go · suggested {fmt(g.suggested)}
+                                            <div className="w-32 shrink-0">
+                                                <input
+                                                    id={inputId}
+                                                    aria-label={`Amount for ${g.title}`}
+                                                    type="number"
+                                                    min={0}
+                                                    step="any"
+                                                    inputMode="decimal"
+                                                    placeholder="0"
+                                                    value={inputs[g.goalId] ?? ""}
+                                                    onChange={(e) => setInputs((prev) => ({ ...prev, [g.goalId]: e.target.value }))}
+                                                    className="field text-right tabular-nums"
+                                                />
                                             </div>
                                         </div>
-                                        <input
-                                            type="number"
-                                            min={0}
-                                            step="any"
-                                            inputMode="decimal"
-                                            placeholder="0"
-                                            aria-label={`Amount for ${g.title}`}
-                                            value={inputs[g.goalId] ?? ""}
-                                            onChange={(e) => setInputs((prev) => ({ ...prev, [g.goalId]: e.target.value }))}
-                                            className="w-28 shrink-0 bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm text-white text-right tabular-nums focus:outline-none focus:border-yellow-500/50"
-                                        />
-                                    </div>
-                                    <TradeoffLine tradeoff={tradeoffs.get(g.goalId)} />
-                                </div>
-                            ))}
-                        </div>
+                                        <TradeoffLine tradeoff={tradeoffs.get(g.goalId)} />
+                                    </li>
+                                );
+                            })}
+                        </ul>
                     ) : (
-                        <div className="space-y-2">
-                            <p className="text-sm text-zinc-300">
+                        <div className="mt-6">
+                            <p className="text-[13.5px] text-zinc-300 max-w-prose">
                                 Record {rows.length} contribution{rows.length === 1 ? "" : "s"} totalling{" "}
-                                <span className="text-white font-semibold tabular-nums">{fmt(total)}</span>? This sets the money aside
+                                <span className="text-white tabular-nums">{fmt(total)}</span>? This sets the money aside
                                 from your wallet into these goals.
                             </p>
-                            <ul className="space-y-1">
+                            <ul className="mt-4">
                                 {rows.map((r) => (
-                                    <li key={r.goalId} className="flex justify-between gap-3 text-sm px-3 py-2 rounded-lg bg-zinc-900/60">
-                                        <span className="text-zinc-300 truncate">{titleOf(r.goalId)}</span>
-                                        <span className="text-white tabular-nums shrink-0">{fmt(r.amount)}</span>
+                                    <li key={r.goalId} className="flex items-baseline justify-between gap-3 py-3 border-t border-white/[0.07] first:border-t-0">
+                                        <span className="truncate font-semibold text-white">{titleOf(r.goalId)}</span>
+                                        <span className="shrink-0 text-white tabular-nums">{fmt(r.amount)}</span>
                                     </li>
                                 ))}
                             </ul>
@@ -172,54 +185,44 @@ export function AllocationSuggestion({ wallet, onClose, onAllocated }: Allocatio
                     )}
 
                     {overWallet && (
-                        <div className="flex items-start gap-2 text-xs text-amber-400">
-                            <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-                            <span>That&apos;s more than the {fmt(wallet ?? 0)} available in your wallet — saving can&apos;t exceed what&apos;s available.</span>
-                        </div>
+                        <Notice tone="warn" className="mt-5">
+                            That&apos;s more than the <span className="tabular-nums">{fmt(wallet ?? 0)}</span> in your wallet. You can&apos;t save more than is available.
+                        </Notice>
                     )}
-                    {error && (
-                        <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-xs text-red-400">
-                            <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-                            <span>{error}</span>
-                        </div>
-                    )}
+                    {error && <div role="alert" className="mt-5"><Notice tone="bad">{error}</Notice></div>}
 
                     {goals.length > 0 && (
-                        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                            <span className="text-sm text-zinc-400">
-                                Total <span className="text-white font-semibold tabular-nums">{fmt(total)}</span>
-                            </span>
+                        <div className="mt-6 pt-5 border-t border-white/[0.07] flex flex-wrap items-center justify-between gap-3">
+                            <p className="flex items-baseline gap-3">
+                                <span className="label-caps text-zinc-400">Total</span>
+                                <span className="text-[26px] leading-none font-light [font-stretch:112%] tabular-nums text-white">{fmt(total)}</span>
+                            </p>
                             {step === "edit" ? (
-                                <div className="flex gap-2">
-                                    <button
-                                        onClick={() => setInputs(suggestionToInputs(goals))}
-                                        className="px-3 py-2.5 text-sm text-zinc-400 hover:text-zinc-200 rounded-xl hover:bg-white/5 transition-colors"
-                                    >
+                                <div className="flex flex-wrap gap-2">
+                                    <button type="button" onClick={() => setInputs(suggestionToInputs(goals))} className="btn-quiet">
                                         Reset
                                     </button>
                                     <button
+                                        type="button"
                                         onClick={() => { setError(null); setStep("confirm"); }}
                                         disabled={rows.length === 0}
-                                        className="px-5 py-2.5 bg-yellow-600 hover:bg-yellow-500 text-black text-sm font-semibold rounded-xl transition-colors disabled:opacity-40"
+                                        className="btn-primary"
                                     >
                                         Review
                                     </button>
                                 </div>
                             ) : (
-                                <div className="flex gap-2">
+                                <div className="flex flex-wrap gap-2">
                                     <button
+                                        type="button"
                                         onClick={() => { setError(null); setStep("edit"); }}
                                         disabled={submitting}
-                                        className="flex items-center gap-1.5 px-3 py-2.5 text-sm text-zinc-400 hover:text-zinc-200 rounded-xl hover:bg-white/5 transition-colors disabled:opacity-50"
+                                        className="btn-quiet"
                                     >
-                                        <ArrowLeft className="w-4 h-4" /> Back
+                                        <ArrowLeft className="w-4 h-4" aria-hidden /> Back
                                     </button>
-                                    <button
-                                        onClick={confirm}
-                                        disabled={submitting || rows.length === 0}
-                                        className="flex items-center gap-2 px-5 py-2.5 bg-yellow-600 hover:bg-yellow-500 text-black text-sm font-semibold rounded-xl transition-colors disabled:opacity-50"
-                                    >
-                                        {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                                    <button type="button" onClick={confirm} disabled={submitting || rows.length === 0} className="btn-primary">
+                                        {submitting ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden /> : <Check className="w-4 h-4" aria-hidden />}
                                         Confirm
                                     </button>
                                 </div>
@@ -228,24 +231,15 @@ export function AllocationSuggestion({ wallet, onClose, onAllocated }: Allocatio
                     )}
 
                     {data.overcommitted && step === "edit" && (
-                        <p className="flex items-start gap-2 text-[11px] text-zinc-500">
-                            <Info className="w-3 h-3 mt-0.5 shrink-0" />
-                            Your surplus can&apos;t cover every deadline. The emergency fund is topped up first, then the nearest deadlines; goals marked short above will finish later at this pace.
+                        <p className="mt-4 flex items-start gap-2 text-[12.5px] text-zinc-400 max-w-prose">
+                            <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" aria-hidden />
+                            Your surplus can&apos;t cover every deadline. The emergency fund is topped up first, then the nearest
+                            deadlines; goals marked short above will finish later at this pace.
                         </p>
                     )}
                 </>
             )}
-        </motion.div>
-    );
-}
-
-function Metric({ label, value, hint, tone = "text-white" }: { label: string; value: string; hint?: string; tone?: string }) {
-    return (
-        <div className="p-2.5 rounded-xl bg-zinc-900/60 border border-white/5 min-w-0">
-            <div className="text-[10px] uppercase tracking-wider text-zinc-500 truncate">{label}</div>
-            <div className={cn("text-sm font-semibold tabular-nums truncate", tone)}>{value}</div>
-            {hint && <div className="text-[10px] text-zinc-600 truncate">{hint}</div>}
-        </div>
+        </Card>
     );
 }
 
@@ -253,13 +247,15 @@ function TradeoffLine({ tradeoff }: { tradeoff?: Tradeoff }) {
     const { format: fmt } = useCurrency();
     if (!tradeoff) return null;
     return (
-        <div className="mt-1.5 text-[11px] text-amber-400/90">
-            At the suggested amount it&apos;s {fmt(tradeoff.shortfall)}/mo short of what its deadline needs
-            {tradeoff.extendMonths === null
-                ? " — not funded this round."
-                : tradeoff.extendMonths > 0
-                    ? ` — at this pace it finishes ~${formatMonths(tradeoff.extendMonths)} late.`
-                    : "."}
-        </div>
+        <StateNote tone="warn" icon={TriangleAlert} className="mt-2 items-start [&>svg]:mt-[2px] tabular-nums">
+            <span>
+                At the suggested amount it&apos;s {fmt(tradeoff.shortfall)} a month short of what its deadline needs
+                {tradeoff.extendMonths === null
+                    ? ", so it isn't funded this round."
+                    : tradeoff.extendMonths > 0
+                        ? `. At this pace it finishes about ${formatMonths(tradeoff.extendMonths)} late.`
+                        : "."}
+            </span>
+        </StateNote>
     );
 }

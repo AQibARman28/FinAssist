@@ -1,34 +1,35 @@
-import { CheckCircle2, AlertTriangle, XCircle, CircleDashed } from "lucide-react";
+import { CircleAlert, CircleCheck, CircleDashed, TriangleAlert } from "lucide-react";
+import { goalStatus, type GoalPlanRow, type GoalTone } from "@/lib/dashboard";
+import type { MoneyFormatter } from "@/lib/money";
 import { cn } from "@/lib/utils";
-import { statusLabel, statusTone, type Tone } from "./goalPlanModel";
+import { StateNote } from "../ui";
 
-export const TONE_TEXT: Record<Tone, string> = {
-    good:    "text-emerald-400",
-    warn:    "text-amber-400",
-    bad:     "text-red-400",
-    neutral: "text-zinc-500",
+const ICON: Record<GoalTone, typeof CircleCheck> = {
+    good: CircleCheck, done: CircleCheck, warn: TriangleAlert, bad: CircleAlert, neutral: CircleDashed,
+};
+// Same tones as the dashboard's Goals card: a goal out of reach is a warning, not an error (red is for limits passed and failures).
+const TONE: Record<GoalTone, "good" | "warn" | "bad" | "neutral"> = {
+    good: "good", done: "good", warn: "warn", bad: "warn", neutral: "neutral",
 };
 
-const TONE_BADGE: Record<Tone, string> = {
-    good:    "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
-    warn:    "bg-amber-500/10 text-amber-400 border-amber-500/20",
-    bad:     "bg-red-500/10 text-red-400 border-red-500/20",
-    neutral: "bg-white/5 text-zinc-400 border-white/10",
-};
-
-const TONE_ICON = { good: CheckCircle2, warn: AlertTriangle, bad: XCircle, neutral: CircleDashed } as const;
-
-// Feasibility badge from GET /goals/plan: On track / At risk / Not feasible.
-export function GoalStatusBadge({ status, className }: { status: string | null | undefined; className?: string }) {
-    const tone = statusTone(status);
-    const Icon = TONE_ICON[tone];
+// A goal's verdict from the savings plan (GET /goals/plan) as a State Note:
+// an icon and words, never colour alone. The words are the dashboard's
+// (lib/dashboard goalStatus), so a goal reads the same on both screens:
+// "On track", "Behind: needs about ৳1,250 a month", "Reached". A completed
+// goal needs no plan row.
+export function GoalStatusBadge({ row, completed = false, monthlySurplus = 0, fmt, now, className }: {
+    row?: GoalPlanRow;
+    completed?: boolean;
+    monthlySurplus?: number;
+    fmt: MoneyFormatter;
+    now?: Date;
+    className?: string;
+}) {
+    const status = completed ? { tone: "done" as const, text: "Reached" } : row ? goalStatus(row, monthlySurplus, fmt, now) : null;
+    if (!status) return null;
     return (
-        <span
-            className={cn("inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full border whitespace-nowrap", TONE_BADGE[tone], className)}
-            title={status ?? undefined}
-        >
-            <Icon className="w-3 h-3" />
-            {statusLabel(status)}
-        </span>
+        <StateNote tone={TONE[status.tone]} icon={ICON[status.tone]} className={cn("items-start [&>svg]:mt-[2px] tabular-nums", className)}>
+            <span>{status.text}</span>
+        </StateNote>
     );
 }

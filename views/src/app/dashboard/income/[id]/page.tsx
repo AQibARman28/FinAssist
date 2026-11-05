@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
-import { Loader2, AlertCircle } from "lucide-react";
 import { api } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/apiError";
-import { IncomeForm } from "@/components/dashboard/income/IncomeForm";
+import { IncomeForm, IncomeFormFrame } from "@/components/dashboard/income/IncomeForm";
+import { Notice, Skeleton } from "@/components/dashboard/ui";
 
 interface IncomeApi {
     _id: string;
@@ -42,39 +43,42 @@ export default function EditIncomePage() {
         return () => { cancelled = true; };
     }, [id]);
 
-    if (loading) {
-        return (
-            <div className="flex items-center justify-center p-20">
-                <Loader2 className="w-6 h-6 animate-spin text-zinc-500" />
-            </div>
-        );
-    }
-
-    if (error || !loaded) {
-        return (
-            <div className="p-6 max-w-2xl mx-auto">
-                <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4 shrink-0" />
-                    <span>{error || "Income not found"}</span>
-                </div>
-            </div>
-        );
-    }
-
     return (
-        <IncomeForm
-            mode="edit"
-            incomeId={loaded._id}
-            initial={{
-                amount:             String(loaded.amount),
-                category:           loaded.category,
-                description:        loaded.description,
-                date:               new Date(loaded.date).toISOString().split("T")[0],
-                isRecurring:        loaded.isRecurring,
-                recurringFrequency: loaded.recurringFrequency ?? "",
-                isPostTax:          loaded.isPostTax,
-                note:               loaded.note ?? "",
-            }}
-        />
+        <IncomeFormFrame mode="edit">
+            {loading ? (
+                <>
+                    <p role="status" className="sr-only">Loading this income entry</p>
+                    {/* The form's shape: two fields side by side, then full-width rows. */}
+                    <div aria-hidden className="p-5 md:p-7 rounded-3xl bg-graphite space-y-6">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5"><Skeleton className="h-[76px]" /><Skeleton className="h-[76px]" /></div>
+                        <Skeleton className="h-[76px]" />
+                        <Skeleton className="h-[76px]" />
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><Skeleton className="h-[92px]" /><Skeleton className="h-[92px]" /></div>
+                        <Skeleton className="h-[76px]" />
+                    </div>
+                </>
+            ) : error || !loaded ? (
+                <div role="alert">
+                    <Notice tone="bad" action={<Link href="/dashboard/income" className="btn-secondary">Back to Income</Link>}>
+                        {error || "Income not found"}
+                    </Notice>
+                </div>
+            ) : (
+                <IncomeForm
+                    mode="edit"
+                    incomeId={loaded._id}
+                    initial={{
+                        amount:             String(loaded.amount),
+                        category:           loaded.category,
+                        description:        loaded.description,
+                        date:               new Date(loaded.date).toISOString().split("T")[0],
+                        isRecurring:        loaded.isRecurring,
+                        recurringFrequency: loaded.recurringFrequency ?? "",
+                        isPostTax:          loaded.isPostTax,
+                        note:               loaded.note ?? "",
+                    }}
+                />
+            )}
+        </IncomeFormFrame>
     );
 }

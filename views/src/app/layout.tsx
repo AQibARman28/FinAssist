@@ -1,13 +1,17 @@
 import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Archivo, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ServiceWorkerRegister } from "@/components/ServiceWorkerRegister";
 import { NetworkStatus } from "@/components/NetworkStatus";
+import { MotionProvider } from "@/components/MotionProvider";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+// Archivo carries the whole app (DESIGN.md › Typography). Its width axis gives
+// the extra-wide light figures and the wide, spaced labels their character.
+const archivo = Archivo({
+  variable: "--font-archivo",
   subsets: ["latin"],
+  axes: ["wdth"],
 });
 
 const geistMono = Geist_Mono({
@@ -31,7 +35,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#7c3aed",
+  themeColor: "#09090b",
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
@@ -49,9 +53,9 @@ export default async function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${archivo.variable} ${geistMono.variable} antialiased`}
       >
-        {children}
+        <MotionProvider>{children}</MotionProvider>
         <NetworkStatus />
         <ServiceWorkerRegister />
       </body>

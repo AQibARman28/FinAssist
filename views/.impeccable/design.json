@@ -1,0 +1,841 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-05T11:59:10Z",
+  "title": "Design System: FinAssist",
+  "extensions": {
+    "colorMeta": {
+      "ground": {
+        "role": "neutral",
+        "displayName": "Ground",
+        "canonical": "#09090b",
+        "tonalRamp": [
+          "oklch(15% 0.002 285.8)",
+          "oklch(26% 0.003 285.8)",
+          "oklch(37% 0.004 285.8)",
+          "oklch(48% 0.004 285.8)",
+          "oklch(60% 0.004 285.8)",
+          "oklch(71% 0.004 285.8)",
+          "oklch(83% 0.003 285.8)",
+          "oklch(95% 0.002 285.8)"
+        ],
+        "cssVar": "--background"
+      },
+      "graphite": {
+        "role": "neutral",
+        "displayName": "Graphite",
+        "canonical": "#121215",
+        "tonalRamp": [
+          "oklch(15% 0.003 285.8)",
+          "oklch(26% 0.004 285.8)",
+          "oklch(37% 0.005 285.8)",
+          "oklch(48% 0.006 285.8)",
+          "oklch(60% 0.006 285.8)",
+          "oklch(71% 0.005 285.8)",
+          "oklch(83% 0.004 285.8)",
+          "oklch(95% 0.003 285.8)"
+        ],
+        "cssVar": "--color-graphite"
+      },
+      "graphite-raised": {
+        "role": "neutral",
+        "displayName": "Raised Graphite",
+        "canonical": "#19191d",
+        "tonalRamp": [
+          "oklch(15% 0.004 285.7)",
+          "oklch(26% 0.005 285.7)",
+          "oklch(37% 0.006 285.7)",
+          "oklch(48% 0.007 285.7)",
+          "oklch(60% 0.007 285.7)",
+          "oklch(71% 0.006 285.7)",
+          "oklch(83% 0.005 285.7)",
+          "oklch(95% 0.004 285.7)"
+        ],
+        "cssVar": "--color-graphite-raised"
+      },
+      "plat": {
+        "role": "primary",
+        "displayName": "Platinum",
+        "canonical": "#d9d9de",
+        "tonalRamp": [
+          "oklch(15% 0.004 286.3)",
+          "oklch(26% 0.005 286.3)",
+          "oklch(37% 0.005 286.3)",
+          "oklch(48% 0.006 286.3)",
+          "oklch(60% 0.006 286.3)",
+          "oklch(71% 0.006 286.3)",
+          "oklch(83% 0.005 286.3)",
+          "oklch(95% 0.004 286.3)"
+        ],
+        "cssVar": "--color-plat"
+      },
+      "plat-ink": {
+        "role": "primary",
+        "displayName": "Platinum Ink",
+        "canonical": "#111113",
+        "tonalRamp": [
+          "oklch(15% 0.002 286.0)",
+          "oklch(26% 0.003 286.0)",
+          "oklch(37% 0.003 286.0)",
+          "oklch(48% 0.004 286.0)",
+          "oklch(60% 0.004 286.0)",
+          "oklch(71% 0.003 286.0)",
+          "oklch(83% 0.003 286.0)",
+          "oklch(95% 0.002 286.0)"
+        ],
+        "cssVar": "--color-plat-ink"
+      },
+      "plat-track": {
+        "role": "primary",
+        "displayName": "Platinum Track",
+        "canonical": "rgba(217, 217, 222, 0.12)",
+        "tonalRamp": [
+          "rgba(217, 217, 222, 0.025)",
+          "rgba(217, 217, 222, 0.05)",
+          "rgba(217, 217, 222, 0.07)",
+          "rgba(217, 217, 222, 0.1)",
+          "rgba(217, 217, 222, 0.15)",
+          "rgba(217, 217, 222, 0.2)",
+          "rgba(217, 217, 222, 0.3)",
+          "rgba(217, 217, 222, 0.4)"
+        ]
+      },
+      "foreground": {
+        "role": "neutral",
+        "displayName": "Foreground",
+        "canonical": "#f2f2f0",
+        "tonalRamp": [
+          "oklch(15% 0.001 106.4)",
+          "oklch(26% 0.002 106.4)",
+          "oklch(37% 0.002 106.4)",
+          "oklch(48% 0.002 106.4)",
+          "oklch(60% 0.003 106.4)",
+          "oklch(71% 0.002 106.4)",
+          "oklch(83% 0.002 106.4)",
+          "oklch(95% 0.001 106.4)"
+        ],
+        "cssVar": "--foreground"
+      },
+      "figure-white": {
+        "role": "neutral",
+        "displayName": "Figure White",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "oklch(15% 0.0 285.9)",
+          "oklch(26% 0.0 285.9)",
+          "oklch(37% 0.0 285.9)",
+          "oklch(48% 0.0 285.9)",
+          "oklch(60% 0.0 285.9)",
+          "oklch(71% 0.0 285.9)",
+          "oklch(83% 0.0 285.9)",
+          "oklch(95% 0.0 285.9)"
+        ]
+      },
+      "text-bright": {
+        "role": "neutral",
+        "displayName": "Bright Text",
+        "canonical": "#f4f4f5",
+        "tonalRamp": [
+          "oklch(15% 0.001 285.9)",
+          "oklch(26% 0.001 285.9)",
+          "oklch(37% 0.001 285.9)",
+          "oklch(48% 0.001 285.9)",
+          "oklch(60% 0.001 285.9)",
+          "oklch(71% 0.001 285.9)",
+          "oklch(83% 0.001 285.9)",
+          "oklch(95% 0.001 285.9)"
+        ]
+      },
+      "text-body": {
+        "role": "neutral",
+        "displayName": "Body Text",
+        "canonical": "#e4e4e7",
+        "tonalRamp": [
+          "oklch(15% 0.002 286.3)",
+          "oklch(26% 0.003 286.3)",
+          "oklch(37% 0.003 286.3)",
+          "oklch(48% 0.004 286.3)",
+          "oklch(60% 0.004 286.3)",
+          "oklch(71% 0.003 286.3)",
+          "oklch(83% 0.003 286.3)",
+          "oklch(95% 0.002 286.3)"
+        ]
+      },
+      "text-secondary": {
+        "role": "neutral",
+        "displayName": "Secondary Text",
+        "canonical": "#d4d4d8",
+        "tonalRamp": [
+          "oklch(15% 0.003 286.3)",
+          "oklch(26% 0.004 286.3)",
+          "oklch(37% 0.004 286.3)",
+          "oklch(48% 0.005 286.3)",
+          "oklch(60% 0.005 286.3)",
+          "oklch(71% 0.004 286.3)",
+          "oklch(83% 0.004 286.3)",
+          "oklch(95% 0.003 286.3)"
+        ]
+      },
+      "text-muted": {
+        "role": "neutral",
+        "displayName": "Muted Text",
+        "canonical": "#9f9fa9",
+        "tonalRamp": [
+          "oklch(15% 0.008 286.0)",
+          "oklch(26% 0.01 286.0)",
+          "oklch(37% 0.012 286.0)",
+          "oklch(48% 0.013 286.0)",
+          "oklch(60% 0.014 286.0)",
+          "oklch(71% 0.012 286.0)",
+          "oklch(83% 0.01 286.0)",
+          "oklch(95% 0.008 286.0)"
+        ]
+      },
+      "text-faint": {
+        "role": "neutral",
+        "displayName": "Faint Text",
+        "canonical": "#71717b",
+        "tonalRamp": [
+          "oklch(15% 0.009 285.9)",
+          "oklch(26% 0.01 285.9)",
+          "oklch(37% 0.012 285.9)",
+          "oklch(48% 0.014 285.9)",
+          "oklch(60% 0.015 285.9)",
+          "oklch(71% 0.013 285.9)",
+          "oklch(83% 0.011 285.9)",
+          "oklch(95% 0.009 285.9)"
+        ]
+      },
+      "text-missing": {
+        "role": "neutral",
+        "displayName": "Missing Dash",
+        "canonical": "#52525c",
+        "tonalRamp": [
+          "oklch(15% 0.009 285.7)",
+          "oklch(26% 0.011 285.7)",
+          "oklch(37% 0.013 285.7)",
+          "oklch(48% 0.015 285.7)",
+          "oklch(60% 0.015 285.7)",
+          "oklch(71% 0.013 285.7)",
+          "oklch(83% 0.011 285.7)",
+          "oklch(95% 0.009 285.7)"
+        ]
+      },
+      "wash": {
+        "role": "neutral",
+        "displayName": "Wash",
+        "canonical": "rgba(255, 255, 255, 0.05)",
+        "tonalRamp": [
+          "rgba(255, 255, 255, 0.025)",
+          "rgba(255, 255, 255, 0.05)",
+          "rgba(255, 255, 255, 0.07)",
+          "rgba(255, 255, 255, 0.1)",
+          "rgba(255, 255, 255, 0.15)",
+          "rgba(255, 255, 255, 0.2)",
+          "rgba(255, 255, 255, 0.3)",
+          "rgba(255, 255, 255, 0.4)"
+        ]
+      },
+      "rail-active": {
+        "role": "neutral",
+        "displayName": "Rail Active",
+        "canonical": "rgba(255, 255, 255, 0.09)",
+        "tonalRamp": [
+          "rgba(255, 255, 255, 0.025)",
+          "rgba(255, 255, 255, 0.05)",
+          "rgba(255, 255, 255, 0.07)",
+          "rgba(255, 255, 255, 0.1)",
+          "rgba(255, 255, 255, 0.15)",
+          "rgba(255, 255, 255, 0.2)",
+          "rgba(255, 255, 255, 0.3)",
+          "rgba(255, 255, 255, 0.4)"
+        ]
+      },
+      "hairline": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "rgba(255, 255, 255, 0.07)",
+        "tonalRamp": [
+          "rgba(255, 255, 255, 0.025)",
+          "rgba(255, 255, 255, 0.05)",
+          "rgba(255, 255, 255, 0.07)",
+          "rgba(255, 255, 255, 0.1)",
+          "rgba(255, 255, 255, 0.15)",
+          "rgba(255, 255, 255, 0.2)",
+          "rgba(255, 255, 255, 0.3)",
+          "rgba(255, 255, 255, 0.4)"
+        ]
+      },
+      "edge": {
+        "role": "neutral",
+        "displayName": "Edge",
+        "canonical": "rgba(255, 255, 255, 0.1)",
+        "tonalRamp": [
+          "rgba(255, 255, 255, 0.025)",
+          "rgba(255, 255, 255, 0.05)",
+          "rgba(255, 255, 255, 0.07)",
+          "rgba(255, 255, 255, 0.1)",
+          "rgba(255, 255, 255, 0.15)",
+          "rgba(255, 255, 255, 0.2)",
+          "rgba(255, 255, 255, 0.3)",
+          "rgba(255, 255, 255, 0.4)"
+        ]
+      },
+      "field-well": {
+        "role": "neutral",
+        "displayName": "Field Well",
+        "canonical": "rgba(0, 0, 0, 0.4)",
+        "tonalRamp": [
+          "rgba(0, 0, 0, 0.025)",
+          "rgba(0, 0, 0, 0.05)",
+          "rgba(0, 0, 0, 0.07)",
+          "rgba(0, 0, 0, 0.1)",
+          "rgba(0, 0, 0, 0.15)",
+          "rgba(0, 0, 0, 0.2)",
+          "rgba(0, 0, 0, 0.3)",
+          "rgba(0, 0, 0, 0.4)"
+        ]
+      },
+      "chart-grid": {
+        "role": "neutral",
+        "displayName": "Chart Grid",
+        "canonical": "#232327",
+        "tonalRamp": [
+          "oklch(15% 0.004 285.9)",
+          "oklch(26% 0.005 285.9)",
+          "oklch(37% 0.006 285.9)",
+          "oklch(48% 0.007 285.9)",
+          "oklch(60% 0.007 285.9)",
+          "oklch(71% 0.006 285.9)",
+          "oklch(83% 0.005 285.9)",
+          "oklch(95% 0.004 285.9)"
+        ]
+      },
+      "chart-baseline": {
+        "role": "neutral",
+        "displayName": "Chart Baseline",
+        "canonical": "#3a3a40",
+        "tonalRamp": [
+          "oklch(15% 0.006 285.9)",
+          "oklch(26% 0.007 285.9)",
+          "oklch(37% 0.008 285.9)",
+          "oklch(48% 0.01 285.9)",
+          "oklch(60% 0.01 285.9)",
+          "oklch(71% 0.009 285.9)",
+          "oklch(83% 0.007 285.9)",
+          "oklch(95% 0.006 285.9)"
+        ]
+      },
+      "titanium": {
+        "role": "material",
+        "displayName": "Brushed Titanium",
+        "canonical": "#1d1d20",
+        "tonalRamp": [
+          "oklch(15% 0.003 285.9)",
+          "oklch(26% 0.004 285.9)",
+          "oklch(37% 0.005 285.9)",
+          "oklch(48% 0.005 285.9)",
+          "oklch(60% 0.005 285.9)",
+          "oklch(71% 0.005 285.9)",
+          "oklch(83% 0.004 285.9)",
+          "oklch(95% 0.003 285.9)"
+        ],
+        "texture": "/textures/brushed-titanium.webp (scripts/render-metal.py)"
+      },
+      "platinum-chip": {
+        "role": "material",
+        "displayName": "Brushed Platinum",
+        "canonical": "#d4d4d2",
+        "tonalRamp": [
+          "oklch(15% 0.002 106.5)",
+          "oklch(26% 0.002 106.5)",
+          "oklch(37% 0.002 106.5)",
+          "oklch(48% 0.003 106.5)",
+          "oklch(60% 0.003 106.5)",
+          "oklch(71% 0.002 106.5)",
+          "oklch(83% 0.002 106.5)",
+          "oklch(95% 0.002 106.5)"
+        ],
+        "texture": "/textures/brushed-platinum.webp (scripts/render-metal.py)"
+      },
+      "platinum-chip-ink": {
+        "role": "material",
+        "displayName": "Chip Ink",
+        "canonical": "#2a2a2e",
+        "tonalRamp": [
+          "oklch(15% 0.004 285.9)",
+          "oklch(26% 0.005 285.9)",
+          "oklch(37% 0.006 285.9)",
+          "oklch(48% 0.007 285.9)",
+          "oklch(60% 0.007 285.9)",
+          "oklch(71% 0.006 285.9)",
+          "oklch(83% 0.005 285.9)",
+          "oklch(95% 0.004 285.9)"
+        ]
+      },
+      "engraved": {
+        "role": "material",
+        "displayName": "Engraved Lettering",
+        "canonical": "#e8e8eb",
+        "tonalRamp": [
+          "oklch(15% 0.002 286.3)",
+          "oklch(26% 0.003 286.3)",
+          "oklch(37% 0.003 286.3)",
+          "oklch(48% 0.004 286.3)",
+          "oklch(60% 0.004 286.3)",
+          "oklch(71% 0.003 286.3)",
+          "oklch(83% 0.003 286.3)",
+          "oklch(95% 0.002 286.3)"
+        ]
+      },
+      "state-good": {
+        "role": "state",
+        "displayName": "Good",
+        "canonical": "#00d492",
+        "tonalRamp": [
+          "oklch(15% 0.095 161.9)",
+          "oklch(26% 0.115 161.9)",
+          "oklch(37% 0.136 161.9)",
+          "oklch(48% 0.156 161.9)",
+          "oklch(60% 0.16 161.9)",
+          "oklch(71% 0.139 161.9)",
+          "oklch(83% 0.117 161.9)",
+          "oklch(95% 0.095 161.9)"
+        ]
+      },
+      "state-income": {
+        "role": "state",
+        "displayName": "Income Mark",
+        "canonical": "#00bc7d",
+        "tonalRamp": [
+          "oklch(15% 0.089 160.4)",
+          "oklch(26% 0.108 160.4)",
+          "oklch(37% 0.127 160.4)",
+          "oklch(48% 0.146 160.4)",
+          "oklch(60% 0.149 160.4)",
+          "oklch(71% 0.13 160.4)",
+          "oklch(83% 0.11 160.4)",
+          "oklch(95% 0.089 160.4)"
+        ]
+      },
+      "state-warn": {
+        "role": "state",
+        "displayName": "Warn",
+        "canonical": "#ffb900",
+        "tonalRamp": [
+          "oklch(15% 0.097 81.0)",
+          "oklch(26% 0.117 81.0)",
+          "oklch(37% 0.138 81.0)",
+          "oklch(48% 0.158 81.0)",
+          "oklch(60% 0.162 81.0)",
+          "oklch(71% 0.141 81.0)",
+          "oklch(83% 0.119 81.0)",
+          "oklch(95% 0.097 81.0)"
+        ]
+      },
+      "state-warn-icon": {
+        "role": "state",
+        "displayName": "Warn Icon",
+        "canonical": "#ffd230",
+        "tonalRamp": [
+          "oklch(15% 0.095 91.9)",
+          "oklch(26% 0.115 91.9)",
+          "oklch(37% 0.136 91.9)",
+          "oklch(48% 0.156 91.9)",
+          "oklch(60% 0.16 91.9)",
+          "oklch(71% 0.139 91.9)",
+          "oklch(83% 0.117 91.9)",
+          "oklch(95% 0.095 91.9)"
+        ]
+      },
+      "state-warn-text": {
+        "role": "state",
+        "displayName": "Warn Text",
+        "canonical": "#fee685",
+        "tonalRamp": [
+          "oklch(15% 0.068 95.8)",
+          "oklch(26% 0.082 95.8)",
+          "oklch(37% 0.097 95.8)",
+          "oklch(48% 0.111 95.8)",
+          "oklch(60% 0.114 95.8)",
+          "oklch(71% 0.099 95.8)",
+          "oklch(83% 0.084 95.8)",
+          "oklch(95% 0.068 95.8)"
+        ]
+      },
+      "state-bad": {
+        "role": "state",
+        "displayName": "Bad",
+        "canonical": "#ff6467",
+        "tonalRamp": [
+          "oklch(15% 0.107 22.2)",
+          "oklch(26% 0.129 22.2)",
+          "oklch(37% 0.152 22.2)",
+          "oklch(48% 0.175 22.2)",
+          "oklch(60% 0.179 22.2)",
+          "oklch(71% 0.156 22.2)",
+          "oklch(83% 0.131 22.2)",
+          "oklch(95% 0.107 22.2)"
+        ]
+      },
+      "state-bad-text": {
+        "role": "state",
+        "displayName": "Bad Text",
+        "canonical": "#ffa2a2",
+        "tonalRamp": [
+          "oklch(15% 0.063 19.8)",
+          "oklch(26% 0.076 19.8)",
+          "oklch(37% 0.089 19.8)",
+          "oklch(48% 0.102 19.8)",
+          "oklch(60% 0.105 19.8)",
+          "oklch(71% 0.092 19.8)",
+          "oklch(83% 0.077 19.8)",
+          "oklch(95% 0.063 19.8)"
+        ]
+      },
+      "category-other": {
+        "role": "data",
+        "displayName": "Other Category",
+        "canonical": "#71717a",
+        "tonalRamp": [
+          "oklch(15% 0.008 285.9)",
+          "oklch(26% 0.009 285.9)",
+          "oklch(37% 0.011 285.9)",
+          "oklch(48% 0.013 285.9)",
+          "oklch(60% 0.013 285.9)",
+          "oklch(71% 0.011 285.9)",
+          "oklch(83% 0.01 285.9)",
+          "oklch(95% 0.008 285.9)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "The safe-to-spend figure; extra-wide light, proportional digits (figure-wide utility)."
+      },
+      "score": {
+        "displayName": "Score",
+        "purpose": "The health score."
+      },
+      "statement": {
+        "displayName": "Statement",
+        "purpose": "Hero words when there is no figure; 1.875rem on phones, 2.25rem from 768px."
+      },
+      "wallet-figure": {
+        "displayName": "Wallet Figure",
+        "purpose": "The balance engraved on the titanium card."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "The greeting; 26px on phones, 30px from 768px."
+      },
+      "readout": {
+        "displayName": "Readout",
+        "purpose": "The runway chart's scrubbed-day amount."
+      },
+      "figure-small": {
+        "displayName": "Figure Small",
+        "purpose": "Ring total (26px) and Recent spending day numbers (23px)."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Sentence headings: month-end card, quick-add sheet; get-started 1.125rem, first run 1.5-1.875rem."
+      },
+      "body-lead": {
+        "displayName": "Body Lead",
+        "purpose": "Hero sentence (16px, 17px from 768px) and hero state paragraphs (15px)."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "List content, item names (600), buttons (600)."
+      },
+      "body-small": {
+        "displayName": "Body Small",
+        "purpose": "13-13.5px: date line, today meter, factor names, card links, ring shares."
+      },
+      "caption": {
+        "displayName": "Caption",
+        "purpose": "12-12.5px: state notes, chart key, readout title, fine print, helper text."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "label-caps utility: wide spaced capitals naming a figure, term or qualifier."
+      },
+      "label-heading": {
+        "displayName": "Label Heading",
+        "purpose": "Card headings in label-caps at 12px."
+      },
+      "axis": {
+        "displayName": "Axis",
+        "purpose": "Chart scale, day numbers and marks."
+      },
+      "micro": {
+        "displayName": "Micro",
+        "purpose": "Phone tab labels and the wallet card's bottom line; the smallest reading text."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Geist Mono for one-time and recovery codes only."
+      }
+    },
+    "shadows": [
+      {
+        "name": "card-highlight",
+        "value": "inset 0 1px 0 rgb(255 255 255 / 0.04)",
+        "purpose": "Every graphite card and the chart panel."
+      },
+      {
+        "name": "plate-drop",
+        "value": "0 40px 60px -30px rgb(0 0 0 / 0.95)",
+        "purpose": "The titanium wallet card."
+      },
+      {
+        "name": "chip-drop",
+        "value": "0 10px 22px -10px rgb(0 0 0 / 0.9)",
+        "purpose": "Brushed-platinum chips."
+      },
+      {
+        "name": "rail-label",
+        "value": "0 0 0 1px rgb(255 255 255 / 0.08), 0 12px 24px -12px rgb(0 0 0 / 0.8)",
+        "purpose": "The name tag beside a rail icon."
+      },
+      {
+        "name": "popover",
+        "value": "0 25px 50px -12px rgb(0 0 0 / 0.5)",
+        "purpose": "The security explanation popover."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-out-expo",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Default ease (--ease-out-expo) for arrivals, bars, sheets and hovers."
+      },
+      {
+        "name": "runway-rise",
+        "value": "0.7s ease-out-expo, stagger 60ms from 0.35s",
+        "purpose": "Spent bars rise from the baseline left to right."
+      },
+      {
+        "name": "runway-fade",
+        "value": "0.5s ease-out, from 0.8s (ahead) / 1.2s (income)",
+        "purpose": "Days ahead and income marks fade in after the bars."
+      },
+      {
+        "name": "runway-in",
+        "value": "0.22s ease-out-expo, translateY 5px",
+        "purpose": "The chart readout rolls up to each scrubbed day."
+      },
+      {
+        "name": "ring-draw",
+        "value": "0.8s ease-out-expo, stagger 120ms",
+        "purpose": "The spending ring inks in clockwise."
+      },
+      {
+        "name": "metal-arrive",
+        "value": "1.6s cubic-bezier(0.45, 0, 0.2, 1) 0.5s",
+        "purpose": "One sweep of light across the wallet card."
+      },
+      {
+        "name": "card-present",
+        "value": "1s ease-out-expo, y 28px, rotateX 16deg",
+        "purpose": "The wallet card lifts in; leans up to 5/7deg under a mouse."
+      },
+      {
+        "name": "rolling-number",
+        "value": "1100ms + 110ms per digit, ease-out-expo",
+        "purpose": "Figures roll into place like a counter."
+      },
+      {
+        "name": "meter-fill",
+        "value": "0.9s ease-out-expo, stagger 90ms, on first view",
+        "purpose": "Budget and goal fills grow from the left."
+      },
+      {
+        "name": "sheet",
+        "value": "0.25s ease-out tween (quick add); 0.28s ease-out-expo (More)",
+        "purpose": "Bottom sheets rise."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "prefers-reduced-motion: reduce",
+        "purpose": "Rises, ring draw, card sweep, lean and rolling digits stop; fades and state changes stay; skeletons hold; spinners 2.5s."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "sm",
+        "value": "640px"
+      },
+      {
+        "name": "md",
+        "value": "768px"
+      },
+      {
+        "name": "lg",
+        "value": "1024px"
+      },
+      {
+        "name": "chart-narrow",
+        "value": "560px (chart container width)"
+      }
+    ],
+    "knownDrift": "The Timeline world covers the dashboard home and the shared shell: rail, tab bar, More sheet and quick-add sheet. The other dashboard pages (Analytics, Budgets, Income, Expenses and Expense history, Goals, Savings, Settings) sit inside the new shell but still have the old purple insides: violet and purple buttons and focus states, citrine goal actions, emerald savings actions, and older Recharts colours. The sign-in, register and forgot-password screens, and shared pieces such as CategoryPicker, VerifyCode and NetworkStatus, are also still purple. These are not part of the system. Migrate them to Platinum, Graphite and the State Has Words Rule as each page is reworked."
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The platinum pill: Quick add expense, Add income, Add expense, the current step.",
+      "html": "<button class=\"ds-btn-primary\"><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" width=\"16\" height=\"16\" stroke-width=\"2\"><path d=\"M5 12h14\"/><path d=\"M12 5v14\"/></svg> Quick add expense</button>",
+      "css": ".ds-btn-primary { font-family: 'Taka Sign', var(--font-archivo), Archivo, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 20px; border: none; border-radius: 9999px; background: var(--color-plat, #d9d9de); color: var(--color-plat-ink, #111113); font-size: 14px; font-weight: 600; cursor: pointer; transition: background-color 150ms, scale 150ms; } .ds-btn-primary:hover { background: #ffffff; } .ds-btn-primary:active { scale: 0.97; } .ds-btn-primary:focus-visible { outline: 2px solid var(--color-plat, #d9d9de); outline-offset: 2px; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Retry, Continue, and get-started steps that are not current.",
+      "html": "<button class=\"ds-btn-secondary\">Try again</button>",
+      "css": ".ds-btn-secondary { font-family: 'Taka Sign', var(--font-archivo), Archivo, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 16px; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 12px; background: rgba(255, 255, 255, 0.05); color: #ffffff; font-size: 14px; font-weight: 500; cursor: pointer; transition: background-color 150ms; } .ds-btn-secondary:hover { background: rgba(255, 255, 255, 0.1); } .ds-btn-secondary:focus-visible { outline: 2px solid var(--color-plat, #d9d9de); outline-offset: 2px; }"
+    },
+    {
+      "name": "Home Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Graphite section frame: wide-caps heading, platinum card link, inset top highlight, no shadow.",
+      "html": "<section class=\"ds-card\"><div class=\"ds-card__head\"><h2 class=\"ds-card__title\">Goals</h2><a class=\"ds-card__link\" href=\"#\">Savings plan <svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" width=\"16\" height=\"16\" stroke-width=\"2\"><path d=\"m9 18 6-6-6-6\"/></svg></a></div><div class=\"ds-card__row\"><span class=\"ds-card__name\">New laptop</span><span class=\"ds-card__meta\">৳12,000 of ৳60,000</span></div><div class=\"ds-meter\"><div class=\"ds-meter__fill\" style=\"width:20%\"></div></div><span class=\"ds-note\"><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" width=\"15\" height=\"15\" stroke-width=\"2\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"m9 12 2 2 4-4\"/></svg> On track · about ৳1,053 a month</span></section>",
+      "css": ".ds-card { font-family: 'Taka Sign', var(--font-archivo), Archivo, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; box-sizing: border-box; width: 380px; padding: 28px; border-radius: 24px; background: var(--color-graphite, #121215); box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04); color: #e4e4e7; } .ds-card__head { display: flex; align-items: center; justify-content: space-between; min-height: 44px; margin-bottom: 20px; } .ds-card__title { margin: 0; font-size: 12px; font-weight: 500; line-height: 1.25; font-stretch: 118%; letter-spacing: 0.18em; text-transform: uppercase; color: #d4d4d8; } .ds-card__link { display: inline-flex; align-items: center; gap: 2px; min-height: 44px; margin-right: -8px; padding: 0 8px; border-radius: 8px; color: var(--color-plat, #d9d9de); font-size: 13px; font-weight: 600; text-decoration: none; transition: color 150ms, background-color 150ms; } .ds-card__link:hover { color: #ffffff; background: rgba(255, 255, 255, 0.05); } .ds-card__link:focus-visible { outline: 2px solid var(--color-plat, #d9d9de); outline-offset: 2px; } .ds-card__row { display: flex; justify-content: space-between; align-items: baseline; } .ds-card__name { font-weight: 600; color: #ffffff; } .ds-card__meta { font-size: 13px; color: #9f9fa9; font-variant-numeric: tabular-nums; } .ds-meter { height: 8px; margin: 12px 0 10px; border-radius: 9999px; background: rgba(217, 217, 222, 0.12); overflow: hidden; } .ds-meter__fill { height: 100%; border-radius: 9999px; background: var(--color-plat, #d9d9de); } .ds-note { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: #d4d4d8; } .ds-note svg { color: #00d492; flex-shrink: 0; }"
+    },
+    {
+      "name": "Segmented Control",
+      "kind": "chip",
+      "refersTo": "segmented",
+      "description": "Card-header month toggle; the selected option is a platinum pill.",
+      "html": "<div class=\"ds-seg\" role=\"group\" aria-label=\"Month shown\"><button class=\"ds-seg__opt\" aria-pressed=\"true\">Nov</button><button class=\"ds-seg__opt\" aria-pressed=\"false\">Oct</button></div>",
+      "css": ".ds-seg { font-family: 'Taka Sign', var(--font-archivo), Archivo, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; display: inline-flex; padding: 3px; border-radius: 9999px; background: rgba(255, 255, 255, 0.07); } .ds-seg__opt { font-family: 'Taka Sign', var(--font-archivo), Archivo, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; min-height: 36px; padding: 0 14px; border: none; border-radius: 9999px; background: transparent; color: #9f9fa9; font-size: 12px; font-weight: 600; cursor: pointer; transition: color 150ms, background-color 150ms; } .ds-seg__opt:hover { color: #e4e4e7; } .ds-seg__opt[aria-pressed='true'] { background: var(--color-plat, #d9d9de); color: var(--color-plat-ink, #111113); } .ds-seg__opt:focus-visible { outline: 2px solid var(--color-plat, #d9d9de); outline-offset: 2px; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "The quick-add field: a recessed well whose border turns platinum on focus.",
+      "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"e.g. &quot;lunch 2*175 food&quot;\" aria-label=\"Expense, in your own words\" />",
+      "css": ".ds-input { font-family: 'Taka Sign', var(--font-archivo), Archivo, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; box-sizing: border-box; width: 340px; padding: 12px 16px; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 12px; background: rgba(0, 0, 0, 0.4); color: #ffffff; font-size: 16px; outline: none; transition: border-color 150ms; } .ds-input::placeholder { color: #9f9fa9; } .ds-input:focus-visible { border-color: rgb(217 217 222 / 0.5); outline: 2px solid var(--color-plat, #d9d9de); outline-offset: 2px; }"
+    },
+    {
+      "name": "Icon Rail",
+      "kind": "nav",
+      "refersTo": "rail",
+      "description": "80px desktop rail: monogram chip, platinum quick-add tile, section tiles with a 1px platinum mark on the current page.",
+      "html": "<nav class=\"ds-rail\" aria-label=\"Main\"><a class=\"ds-rail__mono\" href=\"#\" aria-label=\"FinAssist home\">FA</a><button class=\"ds-rail__add\" aria-label=\"Quick add expense\"><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" width=\"16\" height=\"16\" stroke-width=\"2\"><path d=\"M5 12h14\"/><path d=\"M12 5v14\"/></svg></button><a class=\"ds-rail__item ds-rail__item--active\" href=\"#\" aria-current=\"page\" aria-label=\"Dashboard\"><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" width=\"20\" height=\"20\" stroke-width=\"2.25\"><rect width=\"7\" height=\"9\" x=\"3\" y=\"3\" rx=\"1\"/><rect width=\"7\" height=\"5\" x=\"14\" y=\"3\" rx=\"1\"/><rect width=\"7\" height=\"9\" x=\"14\" y=\"12\" rx=\"1\"/><rect width=\"7\" height=\"5\" x=\"3\" y=\"16\" rx=\"1\"/></svg></a><a class=\"ds-rail__item\" href=\"#\" aria-label=\"Analytics\"><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" width=\"20\" height=\"20\" stroke-width=\"1.75\"><path d=\"M21 12c.552 0 1.005-.449.95-.998a10 10 0 0 0-8.953-8.951c-.55-.055-.998.398-.998.95v8a1 1 0 0 0 1 1z\"/><path d=\"M21.21 15.89A10 10 0 1 1 8 2.83\"/></svg></a></nav>",
+      "css": ".ds-rail { font-family: 'Taka Sign', var(--font-archivo), Archivo, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; gap: 6px; width: 80px; padding: 20px 0; background: #09090b; border-right: 1px solid rgba(255, 255, 255, 0.06); } .ds-rail__mono { display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 4px; border-radius: 14px; background: url('/textures/brushed-platinum.webp') center / cover, #d4d4d2; box-shadow: 0 10px 22px -10px rgb(0 0 0 / 0.9); color: #2a2a2e; font-size: 11px; font-weight: 600; letter-spacing: 0.12em; font-stretch: 125%; text-decoration: none; } .ds-rail__add, .ds-rail__item { position: relative; display: grid; place-items: center; width: 48px; height: 48px; border: none; border-radius: 16px; background: transparent; color: #9f9fa9; cursor: pointer; transition: color 150ms, background-color 150ms; } .ds-rail__add { margin-bottom: 16px; background: var(--color-plat, #d9d9de); color: var(--color-plat-ink, #111113); } .ds-rail__add:hover { background: #ffffff; } .ds-rail__item:hover { color: #ffffff; background: rgba(255, 255, 255, 0.05); } .ds-rail__item--active, .ds-rail__item--active:hover { color: #ffffff; background: rgba(255, 255, 255, 0.09); } .ds-rail__item--active::before { content: ''; position: absolute; left: -16px; top: 12px; bottom: 12px; width: 1px; background: var(--color-plat, #d9d9de); } .ds-rail__mono:focus-visible { outline: 2px solid var(--color-plat, #d9d9de); outline-offset: 2px; } .ds-rail__add:focus-visible { outline: 2px solid var(--color-plat, #d9d9de); outline-offset: 2px; } .ds-rail__item:focus-visible { outline: 2px solid var(--color-plat, #d9d9de); outline-offset: 2px; }"
+    },
+    {
+      "name": "Phone Tab Bar",
+      "kind": "nav",
+      "refersTo": "tab-bar",
+      "description": "Bottom tabs within thumb reach, with the raised brushed-platinum Add chip.",
+      "html": "<nav class=\"ds-tabs\" aria-label=\"Main\"><a class=\"ds-tab ds-tab--active\" href=\"#\" aria-current=\"page\"><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" width=\"20\" height=\"20\" stroke-width=\"2.25\"><rect width=\"7\" height=\"9\" x=\"3\" y=\"3\" rx=\"1\"/><rect width=\"7\" height=\"5\" x=\"14\" y=\"3\" rx=\"1\"/><rect width=\"7\" height=\"9\" x=\"14\" y=\"12\" rx=\"1\"/><rect width=\"7\" height=\"5\" x=\"3\" y=\"16\" rx=\"1\"/></svg>Home</a><button class=\"ds-tab\"><span class=\"ds-tab__chip\"><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" width=\"16\" height=\"16\" stroke-width=\"2\"><path d=\"M5 12h14\"/><path d=\"M12 5v14\"/></svg></span>Add</button><button class=\"ds-tab\"><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" width=\"20\" height=\"20\" stroke-width=\"1.75\"><path d=\"M4 12h16\"/><path d=\"M4 6h16\"/><path d=\"M4 18h16\"/></svg>More</button></nav>",
+      "css": ".ds-tabs { font-family: 'Taka Sign', var(--font-archivo), Archivo, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; display: grid; grid-template-columns: repeat(3, 1fr); align-items: end; gap: 4px; width: 300px; padding: 32px 8px 8px; background: rgba(9, 9, 11, 0.9); backdrop-filter: blur(24px); border-top: 1px solid rgba(255, 255, 255, 0.08); } .ds-tab { font-family: 'Taka Sign', var(--font-archivo), Archivo, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; display: grid; justify-items: center; align-content: center; gap: 4px; min-height: 48px; border: none; border-radius: 12px; background: transparent; color: #9f9fa9; font-size: 10.5px; font-weight: 500; text-decoration: none; cursor: pointer; } .ds-tab--active { color: #ffffff; } .ds-tab__chip { display: grid; place-items: center; width: 52px; height: 52px; margin-top: -24px; border-radius: 9999px; background: url('/textures/brushed-platinum.webp') center / cover, #d4d4d2; box-shadow: 0 10px 22px -10px rgb(0 0 0 / 0.9); color: #2a2a2e; } .ds-tab:focus-visible { outline: 2px solid var(--color-plat, #d9d9de); outline-offset: 2px; }"
+    },
+    {
+      "name": "Wallet Card",
+      "kind": "custom",
+      "refersTo": "wallet-card",
+      "description": "The one brushed-titanium plate: balance engraved, light follows the pointer, opens Savings.",
+      "html": "<a class=\"ds-wallet\" href=\"#\" aria-label=\"Wallet ৳14,110, savings ৳1,500. Open Savings\"><div class=\"ds-wallet__top\"><span class=\"ds-wallet__brand\">FINASSIST</span><span class=\"ds-wallet__chip\">FA</span></div><div><span class=\"ds-wallet__label\">Wallet</span><span class=\"ds-wallet__amount\">৳14,110</span></div><div class=\"ds-wallet__foot\"><span>Savings<b>৳1,500</b></span><span>Rafi Ahmed</span></div></a>",
+      "css": ".ds-wallet { font-family: 'Taka Sign', var(--font-archivo), Archivo, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; box-sizing: border-box; display: grid; grid-template-rows: auto 1fr auto; width: 400px; aspect-ratio: 1.586; padding: 24px; border-radius: 22px; overflow: hidden; background: radial-gradient(110% 120% at 28% 0%, rgb(255 255 255 / 0.16), rgb(255 255 255 / 0) 50%), url('/textures/brushed-titanium.webp') center / cover, #1d1d20; box-shadow: 0 40px 60px -30px rgb(0 0 0 / 0.95); color: #e8e8eb; text-decoration: none; transition: transform 500ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-wallet:hover { transform: perspective(1100px) rotateX(2deg) rotateY(-3deg); } .ds-wallet:focus-visible { outline: 2px solid var(--color-plat, #d9d9de); outline-offset: 2px; } .ds-wallet__top { display: flex; justify-content: space-between; align-items: center; } .ds-wallet__brand { font-size: 11px; font-weight: 500; letter-spacing: 0.32em; font-stretch: 125%; color: #b9b9be; } .ds-wallet__chip { display: grid; place-items: center; width: 34px; height: 26px; border-radius: 6px; background: url('/textures/brushed-platinum.webp') center / cover, #d4d4d2; box-shadow: 0 10px 22px -10px rgb(0 0 0 / 0.9); color: #2a2a2e; font-size: 10px; font-weight: 600; letter-spacing: 0.1em; font-stretch: 125%; } .ds-wallet__label { display: block; margin-top: 8px; font-size: 11px; font-weight: 500; letter-spacing: 0.18em; font-stretch: 118%; text-transform: uppercase; color: #a9a9ae; } .ds-wallet__amount { display: block; margin-top: 8px; font-size: 2.6rem; font-weight: 300; font-stretch: 118%; line-height: 1; letter-spacing: -0.01em; color: #ededf0; text-shadow: 0 -1px 0 rgb(0 0 0 / 0.6), 0 1px 0 rgb(255 255 255 / 0.1); } .ds-wallet__foot { display: flex; justify-content: space-between; align-items: flex-end; font-size: 10.5px; font-weight: 500; letter-spacing: 0.16em; font-stretch: 118%; text-transform: uppercase; color: #b3b3b8; } .ds-wallet__foot b { display: block; margin-top: 6px; font-size: 15px; font-weight: 400; letter-spacing: normal; text-transform: none; color: #e2e2e6; font-variant-numeric: tabular-nums; }"
+    },
+    {
+      "name": "Runway Chart",
+      "kind": "custom",
+      "refersTo": "card",
+      "description": "Signature: the pay period day by day. Spent bars, today outlined at the daily amount, days ahead faint, a scrubbable readout.",
+      "html": "<section class=\"ds-runway\"><div class=\"ds-runway__head\"><h2 class=\"ds-runway__title\">November, day by day</h2><div class=\"ds-runway__read\"><p class=\"ds-runway__when\">Today · Thu 5 Nov</p><p class=\"ds-runway__val\">৳0<span>spent of ৳542</span></p></div></div><div class=\"ds-runway__plot\" tabindex=\"0\" role=\"slider\" aria-label=\"November, day by day\" aria-valuemin=\"1\" aria-valuemax=\"12\" aria-valuenow=\"5\"><i class=\"s\" style=\"height:80%\"></i><i class=\"s\" style=\"height:24%\"></i><i class=\"s\" style=\"height:30%\"></i><i class=\"s\" style=\"height:20%\"></i><i class=\"t\"></i><i class=\"a\"></i><i class=\"a\"></i><i class=\"a\"></i><i class=\"a\"></i><i class=\"a\"></i><i class=\"a\"></i><i class=\"a\"></i></div></section>",
+      "css": ".ds-runway { font-family: 'Taka Sign', var(--font-archivo), Archivo, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; box-sizing: border-box; width: 560px; padding: 28px; border-radius: 24px; background: var(--color-graphite, #121215); box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04); } .ds-runway__head { display: flex; justify-content: space-between; gap: 16px; } .ds-runway__title { margin: 0; font-size: 12px; font-weight: 500; font-stretch: 118%; letter-spacing: 0.18em; text-transform: uppercase; color: #d4d4d8; } .ds-runway__read { text-align: right; } .ds-runway__when { margin: 0; font-size: 12.5px; color: #9f9fa9; } .ds-runway__val { margin: 4px 0 0; font-size: 30px; font-weight: 300; font-stretch: 112%; line-height: 1.25; color: #ffffff; font-variant-numeric: tabular-nums; } .ds-runway__val span { margin-left: 8px; font-size: 14px; font-weight: 400; font-stretch: 100%; color: #d4d4d8; } .ds-runway__plot { display: flex; align-items: flex-end; gap: 14px; height: 160px; margin-top: 16px; padding: 0 8px; border-bottom: 1px solid #3a3a40; border-radius: 12px; cursor: ew-resize; } .ds-runway__plot:focus-visible { outline: 2px solid var(--color-plat, #d9d9de); outline-offset: 2px; } .ds-runway__plot i { flex: 1; border-radius: 4px 4px 0 0; } .ds-runway__plot .s { background: var(--color-plat, #d9d9de); transition: background-color 150ms; } .ds-runway__plot .s:hover { background: #ffffff; } .ds-runway__plot .t { height: 45%; box-sizing: border-box; background: rgb(217 217 222 / 0.08); border: 1.5px solid var(--color-plat, #d9d9de); border-bottom: none; } .ds-runway__plot .a { height: 45%; background: rgb(217 217 222 / 0.13); transition: background-color 150ms; } .ds-runway__plot .a:hover { background: rgb(217 217 222 / 0.32); }"
+    },
+    {
+      "name": "State Note",
+      "kind": "custom",
+      "refersTo": "",
+      "description": "Every status in words with an icon; the tone colours only the icon.",
+      "html": "<div class=\"ds-notes\"><span class=\"ds-state ds-state--good\"><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" width=\"15\" height=\"15\" stroke-width=\"2\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"m9 12 2 2 4-4\"/></svg> On pace</span><span class=\"ds-state ds-state--warn\"><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" width=\"15\" height=\"15\" stroke-width=\"2\"><path d=\"m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3\"/><path d=\"M12 9v4\"/><path d=\"M12 17h.01\"/></svg> Ahead of pace</span></div>",
+      "css": ".ds-notes { font-family: 'Taka Sign', var(--font-archivo), Archivo, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; display: flex; gap: 20px; padding: 16px; background: var(--color-graphite, #121215); border-radius: 16px; } .ds-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: #d4d4d8; } .ds-state svg { flex-shrink: 0; } .ds-state--good svg { color: #00d492; } .ds-state--warn svg { color: #ffd230; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Timeline",
+    "overview": "FinAssist lays the student's pay period out as a runway of days: the days already spent, today, and every day still ahead at the safe daily amount. The whole world is graphite and brushed platinum. The ground is near-black, surfaces are two steps of graphite, and the only accent is platinum. It marks the action, the bar and the current place. Money is the loudest thing on screen. It is set extra-wide and light at display size, so a balance reads like lettering engraved on a metal card, not like a stat tile.\n\nThe world is physical but quiet. There is one brushed-titanium wallet card, a rendered plate under a light that follows the pointer. A few small brushed-platinum chips (the monogram and the phone's Add button) repeat its material. Everything else is flat graphite with a faint top highlight. Motion follows the timeline: bars rise from the baseline left to right, the ring inks in clockwise, figures roll into place like a counter, and the wallet card arrives with one sweep of light. Colour other than platinum carries meaning only. Amber, green and red say state, and always come with an icon and words. Users choose category colours, and those colours appear only where categories are shown.\n\nThe world is dark only. There is no light theme.",
+    "keyCharacteristics": [
+      "Graphite ground and surfaces, platinum as the one UI accent.",
+      "Archivo throughout, using its width axis: extra-wide light for money, wide spaced capitals for labels, regular for reading.",
+      "One brushed-titanium wallet card and small brushed-platinum chips. These are real rendered textures, not gradients.",
+      "Thin platinum bars on platinum-tinted tracks, and a scrubbable day-by-day chart as the signature.",
+      "Depth comes from tone and one inset highlight. There are no glows.",
+      "State is shown in words with an icon, never by colour alone."
+    ],
+    "rules": [
+      {
+        "name": "The One Accent Rule",
+        "body": "Platinum is the only UI accent. Actions, progress and position are platinum. No other hue may mark an action, a link or the current page.",
+        "section": "colors"
+      },
+      {
+        "name": "The State Has Words Rule",
+        "body": "Amber, green and red appear only as state. Each use carries an icon and a phrase (\"Ahead of pace\", \"Over by ৳200\", \"Failed check\"). Colour alone never tells the story.",
+        "section": "colors"
+      },
+      {
+        "name": "The Data Colour Rule",
+        "body": "A category's colour follows the category, never its rank. It appears only where that category is shown, and never on UI chrome.",
+        "section": "colors"
+      },
+      {
+        "name": "The Wide-and-Light Money Rule",
+        "body": "Money at hero, score and card size is light (200–300) and wide (wdth 112–122%). Bold large figures are not part of this world.",
+        "section": "typography"
+      },
+      {
+        "name": "The Tabular Rows Rule",
+        "body": "Amounts in rows, meters, readouts and axes use tabular figures so they line up. Only the display figures stay proportional.",
+        "section": "typography"
+      },
+      {
+        "name": "The Label-Is-the-Heading Rule",
+        "body": "Wide spaced capitals name the thing they head: a card, a figure, a term. A caps label is never stacked as a kicker above another heading.",
+        "section": "typography"
+      },
+      {
+        "name": "The Tone, Not Glow Rule",
+        "body": "Surfaces separate by graphite step and the top highlight. Coloured glows, blurred light behind elements, and drop shadows on resting cards are not part of this world.",
+        "section": "elevation"
+      },
+      {
+        "name": "The One Plate Rule",
+        "body": "A screen has at most one titanium plate: the wallet card. Brushed platinum appears only as small chips (a monogram, a single action).",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do keep every screen on Ground with Graphite cards. FinAssist is dark only.",
+      "Do use Platinum, and only Platinum, for actions, progress, the current place and focus.",
+      "Do set money at hero, score and card size light and wide with Archivo's width axis, and use tabular figures in rows, meters, readouts and axes.",
+      "Do head cards with wide spaced capitals (the `label-caps` utility, 12px) in `text-secondary`.",
+      "Do say every state with an icon and words, in the State Note pattern.",
+      "Do keep category colours on the ring, its legend and category swatches only.",
+      "Do separate surfaces by graphite step and the inset top highlight.",
+      "Do give every control the shared `focus-ring` and at least a 44px target.",
+      "Do show a dash, never a zero, for a figure that failed to load."
+    ],
+    "donts": [
+      "Don't introduce a second accent hue, or bring the old amethyst purple, citrine or jewel tones into new work.",
+      "Don't use amber, green or red as decoration or without words.",
+      "Don't add glows or coloured light behind elements, or drop shadows on resting cards.",
+      "Don't put a second titanium plate on a screen, or fake the metal with a CSS gradient. Re-render the textures with `scripts/render-metal.py`.",
+      "Don't set large money bold or narrow.",
+      "Don't stack a caps label above a heading as a kicker.",
+      "Don't set reading text below 10.5px."
+    ]
+  }
+}
