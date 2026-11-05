@@ -4,7 +4,7 @@
 allowance, where the month's money went, and whether savings goals are actually
 reachable.**
 
-[![CI](https://github.com/AQibARman28/FinAssist/actions/workflows/ci.yml/badge.svg?branch=feature/initial-scaffolding)](https://github.com/AQibARman28/FinAssist/actions/workflows/ci.yml)
+[![CI](https://github.com/AQibARman28/FinAssist/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AQibARman28/FinAssist/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **Live app:** <https://finassist101.vercel.app>. Create an account to try it. The API

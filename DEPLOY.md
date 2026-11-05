@@ -154,7 +154,7 @@ See `docs/security/key-management.md` for the details.
 
 ### Updating later
 Push to the branch Render and Vercel are connected to (for the live FinAssist site,
-`feature/initial-scaffolding`, the repo's default branch) → CI runs → both auto-deploy.
+`main`, the repo's default branch) → CI runs → both auto-deploy.
 
 ### If login fails after deploy
 Almost always one of: `FRONTEND_URL` (Render) or `BACKEND_ORIGIN` (Vercel) has a typo or a
