@@ -33,7 +33,7 @@
 
 const Expense = require('../models/Expense');
 const Income = require('../models/Income');
-const { computeRecurringDates, materializedDates, occurrenceKey } = require('./recurring');
+const { computeRecurringDates, occurrenceKey } = require('./recurring');
 
 const FREQ_MULTIPLIER = Object.freeze({
     weekly:   52,
@@ -55,11 +55,24 @@ async function incomeTotalForPeriod(userId, fromDate, toDate) {
     //     entries (parentRecurringId === null) and materialized instances
     //     of recurring templates (parentRecurringId !== null). Both have
     //     isRecurring === false by design (only templates carry the flag).
-    const oneOff = await Income.aggregate([
+    //
+    //     The sum and the list of materialized instances come from ONE read
+    //     ($facet over the same matched documents). GET /incomes materializes
+    //     instances while the dashboard reads the balance; with two separate
+    //     reads an instance written between them was counted neither as a row
+    //     nor as a scheduled amount, and the wallet showed one allowance short.
+    const [rows] = await Income.aggregate([
         { $match: { user: userId, isRecurring: false, date: { $gte: fromDate, $lte: toDate } } },
-        { $group: { _id: null, total: { $sum: '$amount' } } },
+        { $facet: {
+            sum: [{ $group: { _id: null, total: { $sum: '$amount' } } }],
+            instances: [
+                { $match: { parentRecurringId: { $ne: null } } },
+                { $project: { _id: 0, parentRecurringId: 1, date: 1 } },
+            ],
+        } },
     ]);
-    let total = oneOff.length ? oneOff[0].total : 0;
+    let total = rows.sum.length ? rows.sum[0].total : 0;
+    const materialized = new Set(rows.instances.map((r) => occurrenceKey(r.parentRecurringId, r.date)));
 
     // (2) Recurring templates: project schedule dates into the window. For
     //     each date, count the template's amount UNLESS an instance has
@@ -71,12 +84,6 @@ async function incomeTotalForPeriod(userId, fromDate, toDate) {
         user: userId, isRecurring: true, parentRecurringId: null,
     }).select('amount date recurringFrequency').lean();
     if (templates.length === 0) return total;
-
-    // Every materialized instance of these templates in the window, fetched
-    // in one query (it used to be one Income.exists per occurrence date).
-    const materialized = await materializedDates(
-        Income, userId, templates.map((t) => t._id), fromDate, toDate,
-    );
 
     for (const tpl of templates) {
         if (!tpl.recurringFrequency) continue;

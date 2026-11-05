@@ -134,6 +134,36 @@ describe('incomeTotalForPeriod with a partially materialized template', () => {
         expect(total).toBe((WEEKS + 1) * AMOUNT + 1000);
     });
 
+    // The dashboard reads /analytics/balance while /incomes materializes the
+    // same occurrences. A write that lands mid-computation must not make an
+    // occurrence vanish (counted neither as a row nor as a scheduled amount).
+    test('counts an occurrence once even when it is materialized mid-computation', async () => {
+        const fixture = await weeklyTemplate();
+        const original = Income.aggregate;
+        let wrote = false;
+        Income.aggregate = function (...args) {
+            const agg = original.apply(this, args);
+            const exec = agg.exec.bind(agg);
+            agg.exec = async (...rest) => {
+                const out = await exec(...rest);
+                if (!wrote) {
+                    wrote = true;
+                    await recurring.materializeRecurring(Income, fixture.user._id, new Date(0), new Date());
+                }
+                return out;
+            };
+            return agg;
+        };
+        try {
+            const total = await finance.incomeTotalForPeriod(fixture.user._id, new Date(0), new Date());
+            expect(wrote).toBe(true);
+            expect(await Income.countDocuments({ parentRecurringId: fixture.template._id })).toBe(WEEKS);
+            expect(total).toBe((WEEKS + 1) * AMOUNT);
+        } finally {
+            Income.aggregate = original;
+        }
+    });
+
     test('uses a constant number of Income queries, not one per occurrence', async () => {
         const fixture = await weeklyTemplate();
         await materializeFirst(10, fixture);
