@@ -69,7 +69,9 @@ function budgetAdherenceFactor(budgets) {
         if (b.spent > b.limit) over++;
     }
     const score = clamp(Math.round((weighted / totalLimit) * 100), 0, 100);
-    const detail = over === 0 ? `Within all ${valid.length} budget(s)` : `Over budget in ${over} of ${valid.length}`;
+    const detail = over === 0
+        ? `Within ${valid.length === 1 ? "your budget" : `all ${valid.length} budgets`}`
+        : `Over budget in ${over} of ${valid.length}`;
     return { ...base, score, detail };
 }
 
@@ -95,7 +97,9 @@ function goalProgressFactor(goals, nowMs) {
         sum += s;
     }
     const score = clamp(Math.round(sum / goals.length), 0, 100);
-    const detail = behind === 0 ? `On pace on ${goals.length} goal(s)` : `${behind} of ${goals.length} goal(s) behind`;
+    const detail = behind === 0
+        ? `On pace on ${goals.length === 1 ? "your goal" : `all ${goals.length} goals`}`
+        : `${behind} of ${goals.length} ${goals.length === 1 ? "goal" : "goals"} behind`;
     return { ...base, score, detail };
 }
 
