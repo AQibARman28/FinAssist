@@ -47,14 +47,14 @@ The tips and the health score are rule-based; no external AI service is called.
 ## How it's built
 
 ```mermaid
-flowchart LR
-    B[Browser] -->|same origin, httpOnly cookies| V["Next.js 16 on Vercel<br/>pages + /api proxy"]
-    V -->|"/api/* + proxy secret"| R["Express 4 API on Render<br/>(Docker)"]
+flowchart TB
+    B["Browser"] -->|"HTTPS, httpOnly cookies"| V["Next.js on Vercel<br/>pages and the /api proxy"]
+    V -->|"/api/* signed with the proxy secret"| R["Express API on Render"]
     R --> M[("MongoDB Atlas")]
-    R -.->|codes| E["Resend email"]
+    R -.->|"sign-in and reset codes"| E["Resend email"]
 ```
 
-| | |
+| Part | Built with |
 |---|---|
 | **Web** (`views/`) | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS 4, Framer Motion, Zustand, date-fns, chrono-node. Hand-built SVG charts, no chart library. |
 | **API** (`Backend/`) | Node 22, Express 4, Mongoose 7, zod (a strict schema on every route), Argon2id, speakeasy (TOTP), helmet, rate limiting. |
@@ -81,6 +81,20 @@ The app holds financial data, so security was designed in rather than added on:
 The full write-ups: [October 2026 hardening](docs/security/HARDENING-2026-10.md)
 (28 findings, each closed test-first), [key management](docs/security/key-management.md)
 and [the ECDSA decision](docs/decisions/SEC-1-ecdsa.md).
+
+### Crypto lab
+
+`Backend/legacy_crypto/` holds from-scratch implementations of SHA-256, HMAC-SHA256,
+AES-256-GCM, PBKDF2, RSA-2048 with OAEP, ECDSA P-256, JWT HS256 and TOTP, written for a
+university cryptography course in both Python and JavaScript from primitive operations,
+with no crypto libraries. They're checked against published test vectors (RFC 6979,
+RFC 7515, RFC 4231, RFC 6238, RFC 7914, NIST SP 800-38D and Project Wycheproof) and
+cross-checked against Node's `crypto`, `jsonwebtoken` and `speakeasy`.
+
+They're a learning artefact: not constant-time, and never used by the app. The API uses
+Node's built-in `crypto` and vetted packages, and a CI check fails the build if anything
+imports the lab. It's also where the repository's Python comes from. Details:
+[legacy_crypto/README.md](Backend/legacy_crypto/README.md).
 
 ## Run it locally
 
