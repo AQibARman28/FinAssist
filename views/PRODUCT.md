@@ -29,7 +29,7 @@ Alongside these, the **financial health score and finance-management scores** ar
 
 ## Operating Context
 
-- Used on phones as much as on laptops. The app is installable (PWA manifest and icons), and the UI was built mobile-first, with a sticky top bar and slide-out menu on phones and a floating quick-add button.
+- Used on phones as much as on laptops. The app is installable (PWA manifest and icons), and the UI was built mobile-first, with a bottom tab bar on phones (Home, Expenses, a raised Add button for quick add, Budgets, and More for the other pages).
 - Amounts default to Bangladeshi Taka (BDT). Users can switch their profile to USD, EUR, GBP, INR, CAD, AUD, SGD or AED.
 - Money follows a monthly rhythm: budgets are per month, and at the start of a month a rollover prompt asks what to do with last month's leftover.
 - Quick entry accepts plain text with simple maths, such as "lunch 2*175 food".
@@ -38,7 +38,7 @@ Alongside these, the **financial health score and finance-management scores** ar
 ## Capabilities and Constraints
 
 - **Features today:** expenses with natural-language quick add and user-owned categories; one-off and recurring income; category budgets per month; wallet, savings account and monthly rollover; savings goals with the planner; analytics (health score, spending comparison, high-spending alerts, tips); account settings (profile, currency, password, email change, 2FA).
-- **AI:** tips and scores are rule-based today, and no AI service is called. The owner plans to add Google's free Gemini Flash for AI-assisted scores and insights once the current cleanup is finished. *Open discrepancy:* the site title, description and install text already say "AI-powered financial insights".
+- **AI:** tips and scores are rule-based today, and no AI service is called. The owner plans to add Google's free Gemini Flash for AI-assisted scores and insights once the current cleanup is finished. The site description and install text say "rule-based tips", not AI.
 - **No investment-product recommendations anywhere.** Advice only splits the user's own surplus across their own goals.
 - **The user decides.** Category and other suggestions never silently override the user's choice; anything the app can't match stays empty for the user to pick.
 - **English only.** No Bangla version is planned.
@@ -55,7 +55,7 @@ Alongside these, the **financial health score and finance-management scores** ar
 - Live app: https://finassist101.vercel.app
 - App icons: `public/icons/` (apple-touch-icon, favicon-32, icon-192, icon-512, maskable-512).
 - Engineering write-ups that back the security claim: `../docs/security/HARDENING-2026-10.md`, `../docs/security/key-management.md`, `../docs/decisions/SEC-1-ecdsa.md`, and the sprint plans and postmortems in `../docs/sprints/`.
-- Automated tests: a backend Jest suite of about 390 tests and a frontend suite of 86.
+- Automated tests: a backend Jest suite of about 400 tests and a frontend node:test suite of about 175, run by CI on every push.
 - **Absent, so never invent:** real user numbers, testimonials, reviews, press, partner logos, or bank and mobile-money integrations.
 
 ## Product Principles

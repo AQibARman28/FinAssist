@@ -17,9 +17,14 @@
 | `RESEND_API_KEY` / `SMTP_PASS` | outbound email | provider format | at the provider |
 | `MONGO_URI` | database connection (contains the DB password) | URI | at Atlas |
 
-`utils/config.js` checks every one of these at boot and the API refuses to start on a
-missing or malformed value — the format rules match what the crypto layer actually
-needs, so a key that passes the check can't fail on the first request.
+`utils/config.js` checks the cryptographic secrets at boot (`JWT_SECRET`,
+`MASTER_ENCRYPTION_KEY`, `EMAIL_HASH_SECRET` and their `_PREVIOUS` rotation values) and
+the API refuses to start on a missing or malformed one; the format rules match what the
+crypto layer actually needs, so a key that passes can't fail on the first request. In
+production it also requires `FRONTEND_URL`, and a mail provider while email verification
+is on, and warns when `PROXY_SHARED_SECRET` is unset. `MONGO_URI` and the mail
+credentials are not format-checked: a bad value shows up as a connection error in the
+log.
 
 Refresh tokens are not signed: they are 32 random bytes per session, the plaintext
 lives only in the `fa_refresh` cookie and the database stores its SHA-256.
@@ -85,4 +90,5 @@ get a 403 and the client retries.
 - CI runs `npm audit --omit=dev --audit-level=high` in both workspaces on every push.
 - CI runs `node legacy_crypto/check-no-imports.js`: the from-scratch crypto lab must
   never be imported by the request path.
-- The startup check (`utils/config.js`) covers every secret above.
+- The startup check (`utils/config.js`) covers the cryptographic secrets above (see
+  "Secrets" for exactly what it checks).

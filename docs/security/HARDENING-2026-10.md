@@ -12,7 +12,7 @@ by running them.
 | | Before | After |
 |---|---|---|
 | Backend tests (Jest) | 236 in 19 suites | 383 in 37 suites |
-| Frontend tests (node:test) | 36 | see final run |
+| Frontend tests (node:test) | 36 | 54 |
 | Crypto-lab self-tests | 38 | 56 (+ RFC 6979, RFC 7515, Wycheproof vectors) |
 | Crypto-lab cross-checks vs Node | 530/530 | 530/530 |
 | Vulnerable shipped packages (npm audit --omit=dev) | 19 (2 critical) | 0 |
@@ -25,7 +25,7 @@ by running them.
 | # | Finding | Fix | Proof |
 |---|---|---|---|
 | F01 | Session could change password/email without re-auth | Current password (+TOTP when 2FA on) required; new email confirmed by code; password change revokes other sessions | `tests/accountSecurity.test.js` › profile changes |
-| F02 | Shipped deps with critical advisories | Next 16.4.2, nodemailer 10, mathjs 15, patched transitive deps; unused `validator`, `vitest`, nodemon removed; CI audit gate | `npm audit --omit=dev` = 0 in both workspaces |
+| F02 | Shipped deps with critical advisories | Next 16.4.2, nodemailer 10, mathjs 15 (since removed: `views/src/lib/parseAmount.ts` now has its own evaluator), patched transitive deps; unused `validator`, `vitest`, nodemon removed; CI audit gate | `npm audit --omit=dev` = 0 in both workspaces |
 | F03 | Compose published unauthenticated MongoDB | Mongo internal-only with auth; least-privilege app user (`docker/mongo-init.js`); API not published | `docker-compose.yml` |
 | F04 | Per-IP limits bypassable via direct calls + forged XFF | Proxy shared secret (`middleware/proxyGuard.js`, `views/src/proxy.ts`); per-account sign-in throttle independent of IP | `tests/http.test.js` › proxy shared secret; live probe: direct + forged XFF → 403 |
 | F05 | CSP protected the API, not the pages | Per-request nonce CSP in `views/src/proxy.ts`; frame, MIME, referrer, permissions, COOP, HSTS headers in `next.config.ts` | production build + browser check |

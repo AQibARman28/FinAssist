@@ -5,7 +5,8 @@ This puts FinAssist online at **$0/month** and makes it installable as an app (P
 - **Frontend** → Vercel (Hobby, free)
 - **Backend** → Render (free web service, Docker)
 - **Database** → MongoDB Atlas (M0, free forever)
-- **Email** → Resend (free tier) — required: production proves email ownership
+- **Email** → Resend (free tier), optional at first: needed once you turn on email
+  verification, so production proves each new account's email address
 
 The app and API end up **same-origin** (Vercel's proxy forwards `/api` to Render),
 which is what makes the secure login cookies work. The proxy also signs every API
@@ -39,7 +40,10 @@ Run this **four times** and keep each result (label them JWT, MASTER, EMAIL, PRO
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
-Each must be exactly 64 hex characters; the API refuses to start otherwise.
+`MASTER_ENCRYPTION_KEY` and `EMAIL_HASH_SECRET` must be exactly 64 hex characters and
+`JWT_SECRET` at least 32 bytes, or the API refuses to start (`Backend/utils/config.js`).
+`PROXY_SHARED_SECRET` can be any long random string; generating all four this way is
+simplest.
 
 ## 2. Database — MongoDB Atlas (free)
 
@@ -53,15 +57,16 @@ Each must be exactly 64 hex characters; the API refuses to start otherwise.
 
 ## 3. Email — Resend (free)
 
-Production keeps an account inactive until its owner enters the code we email, so the
-API **won't start without a mail provider**.
+`render.yaml` ships with `REQUIRE_EMAIL_VERIFICATION: "false"`, so sign-up works before
+any email is set up; the API warns in its log that ownership isn't proven. To have
+production keep each new account inactive until its owner enters the code we email
+(recommended for real users):
 
 1. Sign up at <https://resend.com>, verify your sending domain, and create an API key.
-2. You'll paste it into Render as `RESEND_API_KEY` (Resend's HTTPS API — Render's free
-   tier blocks SMTP ports, so use the key, not SMTP).
-
-*(Only for a private demo: you can set `REQUIRE_EMAIL_VERIFICATION=false` instead. The
-API then starts without email but warns in its log that ownership isn't proven.)*
+2. Paste it into Render as `RESEND_API_KEY` (Resend's HTTPS API — Render's free tier
+   blocks SMTP ports, so use the key, not SMTP).
+3. Change `REQUIRE_EMAIL_VERIFICATION` to `"true"`. With it on and no mail provider,
+   the API refuses to start.
 
 ## 4. Backend — Render (free)
 
@@ -75,7 +80,7 @@ API then starts without email but warns in its log that ownership isn't proven.)
    | `MASTER_ENCRYPTION_KEY` | your MASTER secret |
    | `EMAIL_HASH_SECRET` | your EMAIL secret |
    | `PROXY_SHARED_SECRET` | your PROXY secret (same value goes into Vercel) |
-   | `RESEND_API_KEY` | your Resend key from step 3 |
+   | `RESEND_API_KEY` | your Resend key from step 3 (optional until verification is on) |
    | `FRONTEND_URL` | *leave blank for now — you'll set it in step 6* |
 4. Deploy. When it's live, copy the URL: `https://finassist-api-XXXX.onrender.com`.
    Check `https://…onrender.com/api/health` returns `{"success":true,...}`. Any other
@@ -96,7 +101,8 @@ API then starts without email but warns in its log that ownership isn't proven.)
 
 1. Back in **Render → finassist-api → Environment**, set `FRONTEND_URL` to your Vercel URL
    (no trailing slash). Save → it redeploys.
-2. Open your Vercel URL → register. You'll get a 6-digit code by email.
+2. Open your Vercel URL → register. With email verification on you'll get a 6-digit
+   code by email; with it off you're signed straight in.
 
 ## 7. Upgrading an existing deployment to the October 2026 hardening
 

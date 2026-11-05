@@ -1,8 +1,9 @@
 # SEC-1 — ECDSA on records: kept, renamed, scoped
 
-**Status:** accepted
+**Status:** accepted; **revised 2026-10-20** (see "Revision" at the end: records are
+now re-signed on update and checked on read, and Income is covered too)
 **Phase:** SEC-1 Phase 2
-**Field name:** `signature` → **`serverAttestation`** (Expense, Budget, Goal)
+**Field name:** `signature` → **`serverAttestation`** (Expense, Budget, Goal; Income since the revision)
 
 ## Context
 

@@ -24,8 +24,11 @@ services:
       # docker/mongo-init.js on first start.
       MONGO_URI: mongodb://${MONGO_APP_USER:?set MONGO_APP_USER}:${MONGO_APP_PASSWORD:?set MONGO_APP_PASSWORD}@mongo:27017/finassist?authSource=finassist
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      # Only during a rotation (docs/security/key-management.md).
+      JWT_SECRET_PREVIOUS: ${JWT_SECRET_PREVIOUS:-}
       ACCESS_TOKEN_TTL: ${ACCESS_TOKEN_TTL:-15m}
       MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:?set MASTER_ENCRYPTION_KEY}
+      MASTER_ENCRYPTION_KEY_PREVIOUS: ${MASTER_ENCRYPTION_KEY_PREVIOUS:-}
       EMAIL_HASH_SECRET: ${EMAIL_HASH_SECRET:?set EMAIL_HASH_SECRET}
       PROXY_SHARED_SECRET: ${PROXY_SHARED_SECRET:?set PROXY_SHARED_SECRET}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
@@ -38,6 +41,8 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-FinAssist <no-reply@finassist.local>}
+      PASSWORD_BREACH_CHECK: ${PASSWORD_BREACH_CHECK:-}
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-180}
     depends_on:
       - mongo
 
