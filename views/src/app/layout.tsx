@@ -21,7 +21,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "FinAssist — Personal Finance Manager",
-  description: "Track expenses, manage budgets, set goals, and get AI-powered financial insights.",
+  description: "Track expenses, manage budgets, set savings goals, and see what's safe to spend each day, with rule-based tips.",
   applicationName: "FinAssist",
   appleWebApp: {
     capable: true,

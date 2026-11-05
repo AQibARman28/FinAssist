@@ -7,7 +7,7 @@ export default function manifest(): MetadataRoute.Manifest {
     return {
         name: "FinAssist — Personal Finance Manager",
         short_name: "FinAssist",
-        description: "Track expenses, manage budgets, set savings goals, and get AI-powered insights.",
+        description: "Track expenses, manage budgets, set savings goals, and see what's safe to spend each day.",
         start_url: "/dashboard",
         scope: "/",
         display: "standalone",
